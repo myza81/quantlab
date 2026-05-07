@@ -222,7 +222,7 @@ The frontend must not contain:
 * broker execution logic
 * risk engine logic
 * data normalization logic
-* halal compliance logic
+* compliance policy logic
 * business-critical decision logic
 
 Any calculation required for official strategy evaluation must be performed in the backend or strategy engine, not only in the browser.
@@ -266,6 +266,8 @@ Execution services may handle:
 Strategies must produce signals or trade intents only.
 
 Execution services decide whether and how those intents become orders.
+
+Compliance must be enforceable before execution.
 
 ---
 
@@ -337,17 +339,13 @@ Live execution must require explicit approval gates, including:
 * strategy validation status
 * risk configuration
 * portfolio constraints
-* halal compliance checks
+* compliance policy validation (configurable per deployment)
 * broker configuration
 * manual enablement
 * audit logging
 * kill-switch capability
 
 No strategy should be able to directly place a live order.
-
----
-
-Compliance must be enforceable before execution.
 
 ---
 
@@ -442,7 +440,7 @@ Required test focus areas:
 * strategy input/output contracts
 * backtest determinism
 * execution safety gates
-* halal compliance rules
+* configurable compliance policy rules
 * broker adapter behavior using mocks
 * strategy lifecycle transitions
 * API service behavior
@@ -537,7 +535,7 @@ Before submitting any implementation, the agent must check:
 * Does this use normalized data contracts?
 * Does this avoid hardcoded provider assumptions?
 * Does this support future forward testing and paper trading?
-* Does this preserve halal compliance enforcement?
+* Does this preserve compliance policy configurability?
 * Does this avoid uncontrolled live trading?
 * Does this include tests or clear validation steps?
 * Does this update documentation if architecture changed?

@@ -1,329 +1,312 @@
 # HANDOFF.md
-> Project Handoff & Continuity Reference  
-> Purpose: Ensure any AI agent or human developer can immediately continue the project with minimal context loss.
+
+## Purpose
+
+This document provides operational continuity between implementation sessions inside QuantLab.
+
+It acts as a lightweight persistent memory layer for:
+* orchestration AI
+* implementation agents
+* future contributors
+
+The objective is to:
+* reduce context rebuilding
+* preserve implementation continuity
+* prevent duplicated work
+* maintain architectural alignment
+* minimize token waste
+
+This document must remain:
+* short
+* operational
+* high-signal
+* current
+
+
+Do not convert this file into a long-form knowledge base.
 
 ---
 
-# 1. Project Overview
+# Current Project State
 
 ## Project Name
-[edgelab]
+
+QuantLab
 
 ## Project Type
-Rule-based automated trading system with:
-- Multi-strategy architecture
-- Multi-instrument support
-- Backtesting engine
-- Live execution engine
-- Risk management framework
-- Charting & analytics platform
-- Agentic-AI-assisted development workflow
 
-## Primary Objective
-Build a robust, scalable, modular, production-grade automated trading ecosystem that:
-- Eliminates discretionary execution
-- Converts strategy logic into deterministic rules
-- Supports systematic validation
-- Supports continuous improvement & iteration
-- Preserves architectural consistency across all future developments
+Modular strategy research and execution ecosystem.
 
-## Core Philosophy
-- If it cannot be coded, it does not exist
-- Strategy rules must be deterministic
-- Risk management overrides strategy logic
-- All execution must be traceable and auditable
-- No hidden logic
-- No magic numbers
-- Modular > monolithic
-- Reusable components first
-- Long-term maintainability over short-term speed
+## Current Development Stage
 
-## Compliance Constraint
-The trading framework must remain halal-compliant:
-- No short-selling
-- No interest-based mechanics
-- No leverage structures violating Shariah principles
-- Strategy validation must include compliance screening
+Foundation and architecture governance stage.
+
+The project is currently establishing:
+* architectural guardrails
+* workflow discipline
+* AI orchestration structure
+* repository governance
+* implementation protocols
+* modular system boundaries
+
+Core implementation has not started yet.
 
 ---
 
-# 2. Current Project Status
+# Current Primary Objective
 
-## Current Development Phase
-[CURRENT_PHASE]
+Establish a scalable AI-assisted engineering foundation before major implementation begins.
 
-Examples:
-- Architecture Planning
-- Directive Design
-- Strategy Framework
-- Charting Engine
-- Backtesting Engine
-- Live Trading Integration
-- Risk Engine
-- Optimization Engine
+Primary focus:
+* repository governance
+* AI orchestration discipline
+* architecture definition
+* modular system planning
+* workflow standardization
 
-## Current Active Branch
-[BRANCH_NAME]
+Current priority is NOT:
+* live trading
+* broker integration
+* execution automation
+* production deployment
 
-## Current Priority Task
-[TASK_REFERENCE]
-
-## Completion Status
-| Module | Status |
-|---|---|
-| Project Architecture | COMPLETE |
-| Directive System | IN_PROGRESS |
-| Strategy Engine | NOT_STARTED |
-| Charting Platform | PLANNED |
-| Backtesting Engine | PLANNED |
-| Live Execution Engine | PLANNED |
+The immediate objective is building a disciplined modular research ecosystem.
 
 ---
 
-# 3. Required Reading Order
+# Core Architectural Direction
 
-Every incoming AI agent or developer MUST read the following files in sequence before making any changes.
+QuantLab is designed as:
+* market-agnostic
+* modular
+* research-first
+* execution-isolated
+* strategy-portable
 
-## Mandatory Reading Sequence
-1. `README.md`
-2. `CLAUDE.md`
-3. `CODEX.md`
-4. `docs/architecture/system_architecture.md`
-5. `docs/architecture/coding_standards.md`
-6. `docs/architecture/project_structure.md`
-7. `docs/workflow/development_workflow.md`
-8. `TASK.md`
-9. `REVIEW_CHECKLIST.md`
-10. Relevant directive files
+The platform must support:
+* multiple independent strategies
+* multiple asset classes
+* unconventional research methods
+* historical backtesting
+* forward testing
+* paper trading
+* future live trading
+* reusable feature engineering
+* modular execution systems
 
----
-
-# 4. Project Architecture Summary
-
-## Backend Stack
-- Python
-- Django
-- Django REST Framework
-- PostgreSQL
-- Redis
-- Celery
-
-## Frontend Stack
-- React
-- TypeScript
-- TailwindCSS
-- TradingView Lightweight Charts
-- Zustand / Redux
-
-## Core Principles
-- Modular architecture
-- Service-oriented design
-- Shared utilities
-- Strict separation of concerns
-- Strong typing where applicable
-- Reusable components
-- Minimal coupling
+Strategies must remain portable across environments.
 
 ---
 
-# 5. Major Architectural Rules
+# Current Governance Documents
 
-## DO NOT
-- Create business logic inside UI components
-- Hardcode trading parameters
-- Mix strategy logic with execution logic
-- Use hidden global states
-- Create duplicate utility functions
-- Bypass validation layers
-- Modify core engine behavior without review
-- Introduce discretionary trading logic
+The following governance documents currently exist:
+* agent/ARCHITECTURE_GUARDRAILS.md
+* agent/WORKFLOW_GOVERNANCE.md
+* agent/WORKFLOW_AGENT.md
+* agent/PROMPT_RULES.md
+* agent/CLAUDE.md
+* agent/CODEX.md
+* agent/HANDOFF.md
 
-## ALWAYS
-- Keep logic deterministic
-- Create reusable modules
-- Add validation layers
-- Handle edge cases
-- Add logging
-- Add error handling
-- Maintain auditability
-- Keep functions focused and small
-- Preserve backward compatibility where possible
+These documents define:
+* architecture law
+* orchestration model and governance rules
+* agent behavioral contracts
+* AI communication protocol
+* operational continuity
+
+Implementation agents must read `agent/WORKFLOW_AGENT.md` and `agent/HANDOFF.md` before significant implementation work.
 
 ---
 
-# 6. Development Workflow
+# Important Architectural Decisions
 
-## Standard Workflow
-1. Read TASK.md
-2. Understand scope
-3. Read related directives
-4. Review architecture constraints
-5. Plan implementation
-6. Implement incrementally
-7. Self-review
-8. Run checklist validation
-9. Update documentation
-10. Update TASK.md
-11. Update HANDOFF.md
+## Strategy Portability
 
----
+Strategies must not directly depend on:
 
-# 7. Current Known Constraints
+* brokers
+* APIs
+* frontend
+* storage implementation
+* execution engines
 
-## Technical Constraints
-- Frontend rendering must remain performant with large datasets
-- Waveform/chart rendering expected at high sample rate
-- Backtesting engine must support large historical datasets
-- Future multi-strategy concurrent execution expected
-- Strategy engine must support parameter optimization
-
-## UI/UX Constraints
-- TradingView-like interaction experience
-- Professional charting workflow
-- Technical analysis drawing tools required
-- Responsive performance during zoom/pan
-- Component-based frontend design
-
-## Risk Constraints
-- Capital preservation prioritized
-- Risk engine must override strategy engine
-- Exposure limits mandatory
-- Daily risk caps mandatory
+Strategies must operate through normalized internal contracts.
 
 ---
 
-# 8. Current Open Problems
+## Research-First Design
 
-List unresolved issues here.
+QuantLab is primarily a research and strategy development environment.
 
-Example:
+Autonomous execution is a future capability — not the current priority.
 
-## Example
-### Charting Engine
-- Evaluate best drawing layer architecture
-- Determine annotation persistence structure
-- Optimize large candle rendering
-
-### Backtesting
-- Event-driven vs vectorized architecture decision pending
-
----
-
-# 9. Pending Decisions
-
-| Topic | Status |
-|---|---|
-| Database schema finalization | PENDING |
-| Broker integration selection | PENDING |
-| Optimization framework | PENDING |
-| Deployment architecture | PENDING |
+The system must support:
+* experimental logic
+* cycle research
+* planetary/astronomical analysis
+* feature experimentation
+* manual intervention workflows
+* iterative validation
 
 ---
 
-# 10. Coding Standards Summary
+## Execution Isolation
 
-## Naming
-- Clear semantic naming
-- No abbreviations unless industry-standard
+Execution systems must remain isolated from strategies.
 
-## Function Design
-- Single responsibility
-- Deterministic output
-- Small & composable
+Strategies generate:
+* signals
+* trade ideas
+* analytical outputs
 
-## Error Handling
-- Explicit
-- Logged
-- Recoverable where possible
-
-## Logging
-- Structured logging only
-- No print debugging in production
-
-## Comments
-- Explain WHY
-- Avoid obvious comments
+Execution systems handle:
+* routing
+* risk
+* broker integration
+* portfolio constraints
+* execution lifecycle
 
 ---
 
-# 11. Testing Philosophy
+## Data Abstraction
 
-Every major component must support:
-- Unit testing
-- Integration testing
-- Edge-case testing
-- Failure testing
-- Performance testing
+All data sources must pass through normalization layers.
 
-Trading systems additionally require:
-- Backtesting validation
-- Walk-forward testing
-- Monte Carlo robustness testing
-- Slippage simulation
-- Latency simulation
+Strategies must not know the underlying provider.
 
 ---
 
-# 12. Agentic AI Responsibilities
+## Market-Agnostic Direction
 
-## ChatGPT
-Role:
-- System architect
-- Strategy designer
-- Workflow planner
-- Risk framework designer
-- Technical reviewer
+The platform is intentionally market-agnostic.
 
-## Claude Code
-Role:
-- Primary implementation agent
-- Refactoring
-- Code generation
-- Integration
-- Documentation support
+No hardcoded assumptions for:
+* equities only
+* crypto only
+* halal-only workflows
+* specific broker workflows
 
-## Human
-Role:
-- Final authority
-- Strategic validation
-- Market understanding
-- Risk approval
-- Production approval
+Market restrictions and compliance rules should be implemented as configurable policy layers later.
 
 ---
 
-# 13. Before Ending Any Session
+# Current Repository Philosophy
 
-ALWAYS:
-- Update TASK.md
-- Update HANDOFF.md
-- Update implementation status
-- Record unresolved issues
-- Record architectural decisions
-- Record blockers
-- Record next recommended action
+QuantLab is being designed as:
+* AI-managed engineering ecosystem
 
----
+not merely:
+* a coding repository
 
-# 14. Immediate Next Recommended Action
-
-[NEXT_RECOMMENDED_ACTION]
-
-Example:
-"Start building the Directive System framework under `/directives/core/`."
+The repository architecture must support:
+* AI orchestration
+* modular context retrieval
+* scoped implementation
+* long-term maintainability
+* low token waste
+* deterministic workflows
 
 ---
 
-# 15. Important Reminder
+# Current Known Risks
 
-The goal is NOT merely to make the system work.
+## Architectural Drift
 
-The goal is to build:
-- A scalable framework
-- A reusable ecosystem
-- A robust trading infrastructure
-- A maintainable long-term platform
-- A deterministic execution environment
-- A professional institutional-grade architecture
+Without strict governance, implementation agents may:
+* tightly couple modules
+* rewrite unrelated systems
+* introduce unstable abstractions
+* embed business logic in wrong layers
 
-Never sacrifice architecture quality for short-term implementation speed.
+Governance documents are intended to prevent this.
+
+---
+
+## Token Explosion
+
+Large uncontrolled prompts and oversized documentation can degrade:
+
+* implementation quality
+* reasoning quality
+* cost efficiency
+* architectural consistency
+
+Repository context should remain modular and retrievable.
+
+---
+
+## Overengineering Risk
+
+The project vision is large.
+
+Agents must avoid implementing speculative infrastructure too early.
+
+Prioritize:
+* small deterministic foundations
+* clear interfaces
+* modular boundaries
+* incremental evolution
+
+---
+
+# Current Immediate Next Steps
+
+Current recommended next priorities:
+1. TASKS.md
+2. repository structure blueprint
+3. SYSTEM_OVERVIEW.md
+4. architecture module mapping
+5. backend domain structure
+6. data layer blueprint
+7. strategy engine contracts
+
+Avoid premature implementation of:
+* live trading
+* broker execution
+* complex infrastructure
+* production deployment
+
+---
+
+# Current Operational Rules
+
+Before major implementation:
+* read governance documents
+* identify scope
+* preserve architecture boundaries
+* avoid uncontrolled rewrites
+* keep implementation modular
+* update documentation when needed
+
+If prompts are unclear:
+* ask clarification before high-impact modifications
+
+---
+
+# Important AI Workflow Direction
+
+Preferred workflow:
+human intent
+→ orchestration/refinement
+→ scoped implementation prompt
+→ controlled implementation
+→ validation
+→ documentation update
+→ handoff update
+
+Avoid:
+* large vague prompts
+* uncontrolled repository rewrites
+* whole-system implementation requests
+
+---
+
+# Current State Summary
+
+QuantLab is currently establishing the institutional-grade governance and orchestration foundation required for a long-term modular strategy research ecosystem.
+
+Architecture quality and workflow discipline currently take priority over implementation speed.
+
+The repository should evolve incrementally through controlled modular engineering.
