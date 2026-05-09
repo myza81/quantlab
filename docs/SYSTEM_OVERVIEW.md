@@ -39,7 +39,9 @@ The platform is intended to evolve into an institutional-grade environment for:
 
 QuantLab is not designed as a simple trading bot.
 
-The platform is designed as a long-term modular research laboratory capable of supporting many independent strategies, datasets, execution models, and runtime environments.
+The platform is designed as a long-term modular research laboratory and strategy-building ecosystem capable of supporting many independent strategies, reusable analytical tools, unconventional datasets, execution models, and runtime environments.
+
+A core permanent capability of QuantLab is the Strategy Tools Builder Layer — a growing ecosystem of reusable tools, indicators, and analytical modules from which users compose strategies through the frontend interface.
 
 ---
 
@@ -227,8 +229,16 @@ Responsible for:
 * drawing tools
 * strategy inspection
 * user interaction
+* strategy composition and tool orchestration
+* indicator parameter configuration
+* rule and condition building
+* strategy definition authoring interface
+
+The frontend is both a visualization terminal and a strategy composition interface.
 
 Frontend systems must not contain core business logic.
+
+The backend remains the official execution and validation authority for all strategy logic.
 
 ---
 
@@ -380,17 +390,20 @@ This separation preserves long-term portability and execution safety.
 
 # Frontend Philosophy
 
-The frontend is a research and visualization terminal.
+The frontend is a research terminal, visualization environment, and strategy composition interface.
 
 Frontend responsibilities include:
 
-* charting
-* drawing tools
-* overlays
-* signal inspection
+* charting and visualization
+* drawing tools and annotation systems
+* overlays and signal inspection
 * workflow interaction
-* visualization
-* annotation systems
+* strategy tool selection and orchestration
+* rule and condition composition
+* indicator and filter configuration
+* strategy definition authoring
+* parameter editing
+* research workflow navigation
 
 Frontend systems must not become the source of truth for:
 
@@ -399,8 +412,55 @@ Frontend systems must not become the source of truth for:
 * backtesting logic
 * market normalization
 * compliance validation
+* official signal generation
 
 Business-critical logic belongs in backend and runtime systems.
+
+The frontend may express user intent. The backend validates and executes it.
+
+---
+
+# Strategy Tools Builder Philosophy
+
+QuantLab treats strategy construction as a process of orchestrating reusable tools.
+
+Users select tools, configure parameters, compose conditions, and assemble strategy definitions through the frontend interface.
+
+The backend validates, runs, and enforces all resulting logic.
+
+## Tool Ecosystem Evolution
+
+The strategy tools ecosystem is expected to continuously expand.
+
+Current and anticipated tool categories:
+
+* classical indicators (MA, EMA, RSI, MACD, Bollinger, ATR, VWAP)
+* volatility and momentum systems
+* harmonic and geometric formulas
+* planetary and astronomical cycle systems
+* seasonal and cyclical timing systems
+* sentiment and macro datasets
+* AI-generated feature modules
+* custom research modules
+* hybrid analytical engines
+
+No single tool category is considered complete.
+
+The architecture must remain expandable without requiring core rewrites.
+
+## Tool Design Requirements
+
+All tools and analytical modules must be:
+
+* reusable across multiple strategies
+* modular and independently testable
+* parameterized and explicitly configured
+* versionable and auditable
+* backend-compatible and validatable
+* frontend-configurable
+* portable across all runtime modes (research, backtest, forward test, paper trade, future live)
+
+One-off tightly-coupled indicators are architectural violations.
 
 ---
 

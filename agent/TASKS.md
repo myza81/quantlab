@@ -43,7 +43,7 @@ However, it must not become a full historical archive. Completed or obsolete det
 
 ## Active Phase
 
-PHASE 2J — FIRST REAL HISTORICAL PROVIDER + PROVIDER REGISTRY FOUNDATION COMPLETE
+PHASE 2K — MINIMAL OHLCV + STRATEGY VISUALIZATION FOUNDATION COMPLETE
 
 Current repository focus:
 * base scaffold established (backend, frontend, strategies, datasets)
@@ -60,9 +60,14 @@ Current repository focus:
 * provider symbol mapping foundation complete (`backend/data_providers/provider_symbol_map.py`)
 * Yahoo Finance provider adapter complete (`backend/data_providers/yahoo/` — adapter + metadata)
 * OHLCVService extended with registry integration method
-* 526 tests passing
+* market data API route added (`GET /market-data/ohlcv`)
+* frontend npm install confirmed, `tsc && vite build` passes
+* candlestick chart component (lightweight-charts v5)
+* provider/symbol/timeframe/date-range controls
+* strategy overlay type placeholders
+* 537 tests passing
 
-Real historical data ingestion now possible via Yahoo Finance adapter through ProviderRegistry → OHLCVService pipeline.
+Real historical data ingestion and frontend chart visualization now possible end-to-end via Yahoo Finance adapter through ProviderRegistry → OHLCVService → API → React chart pipeline.
 
 ---
 
@@ -152,6 +157,10 @@ Establish core governance and orchestration documents.
 * [x] ARCHITECTURE.md
 * [x] REPOSITORY_STRUCTURE.md
 * [x] README.md (root)
+* [x] STRATEGY_DEFINITION_ARCHITECTURE.md — formal vocabulary and composition model for strategy definitions
+* [x] TOOL_REGISTRY_CONTRACT.md — governance and discovery contract for the Strategy Tools Builder ecosystem
+* [x] FRONTEND_COMPOSITION_INTERFACE_CONTRACT.md — architectural bridge between frontend composition and backend validation/execution
+* [x] BACKTESTING_ENGINE_CONTRACT.md — deterministic historical simulation architecture; reproducibility, audit, and lookahead-bias governance
 
 ### Notes
 
@@ -393,6 +402,46 @@ COMPLETED (2026-05-08)
 * `tests/fixtures/strategies/missing_callable_strategy/` — new fixture
 * `tests/unit/test_strategy_runtime.py` — 38 tests, all passing
 * Current verification: `187 tests` passing
+
+---
+
+## Implementation Priority 2K — Minimal OHLCV + Strategy Visualization Foundation
+
+### Status
+
+COMPLETED (2026-05-09)
+
+### Deliverables
+
+* `backend/api/schemas/market_data.py` — `OHLCVCandleResponse`, `MarketDataOHLCVResponse`
+* `backend/api/services/market_data_service.py` — `fetch_ohlcv`, `MarketDataError`, `UnsupportedProviderError`
+* `backend/api/routes/market_data.py` — `GET /market-data/ohlcv`
+* `backend/api/main.py` — market_data router registered
+* `frontend/package.json` — `lightweight-charts@^5.2.0` added
+* `frontend/vite.config.ts` — proxy extended to `/market-data`, `/datasets`
+* `frontend/src/api/marketData.ts` — `fetchOHLCV()` typed API client
+* `frontend/src/types/strategy.ts` — `StrategySignalOverlay`, `StrategyForecastOverlay` placeholder interfaces
+* `frontend/src/components/Chart.tsx` — candlestick chart via lightweight-charts v5 `CandlestickSeries`
+* `frontend/src/components/Controls.tsx` — provider/symbol/asset_class/exchange/timeframe/start/end controls + Fetch button
+* `frontend/src/App.tsx` — updated with Controls + Chart + idle/loading/error/empty states
+* `tests/unit/test_market_data_api.py` — 11 tests: happy path, field values, empty result, validation errors, 422 missing params, default values
+* Current verification: `537 tests` passing (backend); `tsc && vite build` passes (frontend)
+
+### Key Behaviour
+
+* `GET /market-data/ohlcv` accepts provider, symbol, timeframe, start, end (required) + asset_class, exchange, adjustment_mode, currency (optional)
+* Naive datetime query params treated as UTC at the route boundary
+* Currently only `yahoo` provider supported; extend by adding to `_SUPPORTED_PROVIDERS` and wiring adapter in service
+* Frontend chart uses `UTCTimestamp` (epoch seconds) for all timeframes including intraday
+* Strategy overlay types are placeholders only — no rendering wired yet
+
+### Deferred
+
+* Manual end-to-end validation (backend + frontend running simultaneously)
+* Volume panel on chart
+* Strategy signal/forecast overlay rendering
+* Additional provider support (Polygon, IBKR, Binance)
+* Frontend component unit tests (no Vitest setup yet)
 
 ---
 
@@ -649,6 +698,45 @@ Minimal validation-oriented charting work may occur much earlier.
 ### Important Constraints
 
 Frontend must remain free from core business logic.
+
+---
+
+## Implementation Priority 5B — Strategy Tools Builder Layer (Permanent Evolving Capability)
+
+### Status
+
+PENDING — FOUNDATIONAL DIRECTION
+
+### Context
+
+The Strategy Tools Builder Layer is a permanent architectural direction formally established in Phase 2M documentation.
+
+It is not a one-time feature. It is the evolving ecosystem through which users compose strategies from reusable tools.
+
+### Objectives
+
+Establish the foundational infrastructure for the Strategy Tools Builder Layer:
+
+* reusable indicator and analytical tool modules (backend)
+* tool registry and discovery
+* parameterized tool contracts
+* frontend composition interface for tool selection, configuration, and strategy authoring
+* strategy definition schema that captures tool orchestration
+* backend validation of tool-assembled strategy definitions
+
+### Expected Tool Categories (Phase 1 foundation)
+
+* classical indicators: MA, EMA, RSI, MACD, ATR
+* volatility modules
+* harmonic formula modules (later)
+* planetary/astronomical cycle modules (later)
+
+### Important Constraints
+
+* All tools must be modular, reusable, and independently testable
+* Frontend must orchestrate — backend must validate and execute
+* No one-off tightly-coupled indicators
+* Tools must be portable across all runtime modes
 
 ---
 
@@ -923,8 +1011,9 @@ TASKS.md should not attempt to answer:
 # Current Immediate Next Recommended Actions
 
 Recommended next sequence:
-1. First real strategy consuming `NormalizedOHLCV` via `YahooFinanceAdapter` + `OHLCVService` + `StrategyRuntimeRunner`
-2. Update `dataset_service.py` to use `ohlcv_store` (provider-aware paths) when API layer changes are scoped
-3. Fix "Edgelab" → "QuantLab" in `ARCHITECTURE_GUARDRAILS.md` (cosmetic)
-4. Frontend end-to-end validation (dataset import UI → chart display)
-5. `backend/backtesting/` — simulation engine (deferred until first strategy stable)
+1. Browser-level chart render validation (start both servers, open http://localhost:3000, fetch AAPL/yahoo/1d)
+2. First real strategy consuming `NormalizedOHLCV` via `YahooFinanceAdapter` + `OHLCVService` + `StrategyRuntimeRunner`
+3. Strategy run API endpoint + signal/forecast overlay rendering on chart
+4. Update `dataset_service.py` to use `ohlcv_store` (provider-aware paths) when API layer changes are scoped
+5. Fix "Edgelab" → "QuantLab" in `ARCHITECTURE_GUARDRAILS.md` (cosmetic)
+6. `backend/backtesting/` — simulation engine (deferred until first strategy stable)

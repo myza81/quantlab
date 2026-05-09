@@ -109,7 +109,9 @@ Responsibilities must not leak across layers.
 
 ## 1. Frontend Layer
 
-### Responsibilities
+The frontend serves two distinct roles: visualization terminal and strategy composition interface.
+
+### Visualization Responsibilities
 
 * chart rendering
 * visualization
@@ -117,17 +119,31 @@ Responsibilities must not leak across layers.
 * annotation systems
 * strategy inspection
 * dashboards
-* interaction workflows
 * UI state management
+
+### Strategy Composition Responsibilities
+
+* tool selection and orchestration
+* rule composition
+* condition building
+* indicator parameter configuration
+* strategy definition authoring
+* filter and confirmation assembly
+* research workflow interaction
+
+The frontend is the primary interface through which users compose strategies from reusable tools.
+
+It is NOT merely a display layer.
 
 ### Forbidden Responsibilities
 
 * strategy calculations
-* execution logic
+* official signal generation
 * backtesting calculations
 * market normalization
 * compliance logic
 * broker logic
+* frontend-computed signals as official strategy outputs
 
 ### Preferred Stack
 
@@ -772,6 +788,84 @@ Violation of these boundaries is considered architectural drift.
 
 ---
 
+# Strategy Tools Builder Layer
+
+The Strategy Tools Builder Layer is a permanent architectural concept in QuantLab.
+
+It is not a single module. It is the ecosystem of reusable tools, indicators, formulas, and analytical modules from which strategies are composed.
+
+## Core Concept
+
+Users build strategies by orchestrating reusable tools.
+
+The frontend exposes this composition interface.
+
+The backend validates, executes, and enforces all official strategy logic.
+
+## Tool Philosophy
+
+Every tool, indicator, or analytical module in the ecosystem must be designed as:
+
+* reusable across multiple strategies
+* modular and independently testable
+* parameterized and configurable
+* versionable and auditable
+* backend-validatable
+* frontend-configurable
+* portable across all runtime modes
+
+Avoid one-off indicators tightly coupled to a single strategy.
+
+## Expected Tool Categories
+
+The tools ecosystem is expected to expand continuously. Current and future categories include:
+
+* classical technical indicators (MA, EMA, RSI, MACD, Bollinger, ATR)
+* volatility and momentum systems
+* harmonic and geometric formulas
+* planetary and astronomical cycle systems
+* seasonal and cyclical systems
+* sentiment and macro datasets
+* AI-generated feature modules
+* custom research modules
+* hybrid analytical engines
+
+## Runtime Portability Requirement
+
+The same tool definition must produce consistent output across:
+
+* research mode
+* backtesting mode
+* forward testing mode
+* paper trading mode
+* future live trading mode
+
+Tools must not contain mode-specific behavior.
+
+## Strategy Definition Flow
+
+The conceptual workflow for strategy construction:
+
+```text
+Human Idea
+→ Tool Selection
+→ Rule Composition
+→ Strategy Definition
+→ Backend Validation
+→ Strategy Runtime
+→ Backtest
+→ Forward Test
+→ Paper Trade
+→ Live Approval
+→ Manual or Automated Execution
+```
+
+The frontend orchestrates the upper portion of this flow.
+
+The backend controls the lower portion.
+
+---
+
 # Forbidden Architectural Patterns
 
 The following are prohibited:
@@ -786,6 +880,8 @@ The following are prohibited:
 * uncontrolled live execution
 * oversized shared utility modules
 * hardcoded environment assumptions
+* strategy-identity-aware rendering in the frontend (frontend must render generically based on artifact contracts, not by checking which strategy produced the data)
+* one-off hardcoded indicators embedded in individual strategies when reusable tool modules should exist
 
 ---
 

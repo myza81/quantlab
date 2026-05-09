@@ -4,7 +4,7 @@
 main
 
 ## Current Phase
-PHASE 2J — First Real Historical Provider + Provider Registry Foundation (complete)
+PHASE 2M — Strategy Visualization Artifact Foundation + UX Hardening (complete)
 
 ---
 
@@ -29,7 +29,8 @@ OPERATIONAL
   - `CallableSignatureError`, `validate_callable_signatures()`, `validate_return_annotations()`
   - Registry remains metadata-only — no runtime module loading in registry
   - Loader validation pipeline: presence → signature → return annotation
-- `backend/api/` — Dataset API layer complete ✓
+- `backend/api/` — Dataset API + Market Data API + Strategy Runs API complete ✓
+  - `GET /market-data/ohlcv` — provider-based OHLCV fetch via YahooFinanceAdapter + OHLCVService
   - `POST /datasets/import/csv` — CSV upload → normalize → Parquet
   - `GET /datasets` — list stored datasets
   - `GET /datasets/{dataset_id}/ohlcv` — read normalized candles
@@ -38,10 +39,16 @@ OPERATIONAL
 - `backend/core/config.py` — DEBUG parsing hardened ✓
   - boolean-like values accepted
   - non-boolean values such as `release` safely treated as `False`
+  - `strategies_base_path` — repo-root-relative, derived from `__file__` (launch-directory-independent)
+- `backend/strategy_runtime/visualization.py` — visualization artifact contracts complete ✓
+  - `IndicatorPoint` (frozen, UTC-enforced timestamp + value)
+  - `IndicatorSeries` (name, kind, pane, color, points — frozen, strategy-agnostic)
+  - `IndicatorSeriesKind` enum: `line` (future: histogram, area)
+  - `IndicatorPane` enum: `price` (future: oscillator, separate)
 - `backend/strategy_runtime/` — runtime orchestration foundation complete ✓
   - `StrategyExecutionContext` — frozen Pydantic v2; UTC-enforced; optional placeholders for portfolio/research context
   - `StrategyForecast`, `ForecastDirection` — structured forecast output; frontend-ready annotation model
-  - `RunStatus`, `StrategyRunResult` — structured run output; reusable across all execution modes
+  - `RunStatus`, `StrategyRunResult` — structured run output; includes `artifacts: list[IndicatorSeries]`
   - `StrategyRuntimeRunner.run()` — full-window pipeline; never raises to caller; exceptions → `RunStatus.failed` with failed-stage diagnostics
   - `StrategyRuntimeRunner.run_bar_by_bar()` — skeleton; raises `NotImplementedError`
 - `backend/services/` — OHLCVService orchestration layer complete ✓
@@ -59,10 +66,18 @@ OPERATIONAL
 
 ## Frontend Status
 
-SCAFFOLD ONLY — not validated end-to-end
+OPERATIONAL — build validated
 
-- Vite + React 18 + TypeScript skeleton present
-- `npm install` not yet confirmed in current environment
+- Vite + React 18 + TypeScript
+- `npm install` confirmed ✓
+- `npm run build` passes with zero errors ✓
+- `lightweight-charts` 5.2.0 installed (TradingView Lightweight Charts)
+- Candlestick chart component (`Chart.tsx`) — renders via lightweight-charts v5 `CandlestickSeries`
+- Controls component (`Controls.tsx`) — provider/symbol/asset_class/exchange/timeframe/start/end + Fetch button
+- `frontend/src/api/marketData.ts` — typed client for `GET /market-data/ohlcv`
+- `frontend/src/types/strategy.ts` — `StrategySignalOverlay`, `StrategyForecastOverlay`, `StrategyOverlay` types
+- `frontend/vite.config.ts` — proxy: `/health`, `/market-data`, `/datasets`, `/strategy-runs` → backend at :8000
+- End-to-end not yet manually validated in browser (API layer validated programmatically)
 
 ## Installed Packages (backend `.venv`)
 
@@ -79,6 +94,7 @@ duckdb              1.5.2
 pyyaml              6.0.3
 python-multipart    0.0.20   (required for UploadFile + Form)
 yfinance            1.3.0    (Yahoo Finance adapter)
+lightweight-charts  5.2.0    (frontend — TradingView candlestick chart)
 httpx               0.28.1   (dev)
 pytest              9.0.3    (dev)
 ```
@@ -124,7 +140,20 @@ Python: 3.13 | venv: `.venv/` at repo root
 - `backend/data_providers/yahoo/__init__.py` — Yahoo provider package
 - `backend/data_providers/yahoo/adapter.py` — `YahooFinanceAdapter`, `YahooAdapterError`, `SUPPORTED_TIMEFRAMES`
 - `backend/data_providers/yahoo/metadata.py` — `YahooInstrumentMetadata`, `resolve_yahoo_metadata`, `YahooMetadataError`
-- `tests/unit/` — full-suite snapshot after Phase 2J validation hardening: 526 passing
+- `backend/api/schemas/market_data.py` — `OHLCVCandleResponse`, `MarketDataOHLCVResponse`
+- `backend/api/services/market_data_service.py` — `fetch_ohlcv`, `MarketDataError`, `UnsupportedProviderError`
+- `backend/api/routes/market_data.py` — `GET /market-data/ohlcv`
+- `backend/strategy_runtime/visualization.py` — `IndicatorPoint`, `IndicatorSeries`, `IndicatorSeriesKind`, `IndicatorPane`
+- `backend/api/schemas/strategy_runs.py` — `StrategyRunRequest`, `SignalResponse`, `ForecastResponse`, `IndicatorPointResponse`, `IndicatorSeriesResponse`, `StrategyRunResponse`
+- `backend/api/services/strategy_run_service.py` — `run_strategy`, `StrategyRunError`, `StrategyNotFoundError`; serializes `artifacts → indicators`
+- `backend/api/routes/strategy_runs.py` — `POST /strategy-runs/run`
+- `frontend/src/api/marketData.ts` — typed `fetchOHLCV()` client
+- `frontend/src/api/strategyRuns.ts` — typed `runStrategy()` client; `IndicatorPoint`, `IndicatorSeries`, `StrategyRunResponse` with `indicators`
+- `frontend/src/types/strategy.ts` — `StrategySignalOverlay`, `StrategyForecastOverlay`, `StrategyOverlay` (includes `indicators`)
+- `frontend/src/components/Chart.tsx` — generic artifact renderer: candlestick + indicator line series (lifecycle-managed Map) + signal markers + forecast line
+- `frontend/src/components/Controls.tsx` — provider/symbol/timeframe/date-range controls
+- `tests/unit/` — full-suite snapshot at Phase 2M completion: 576 passing
+- `tests/unit/test_visualization_artifacts.py` — IndicatorPoint, IndicatorSeries, runner extraction
 - `tests/fixtures/strategies/` — 7 fixture strategy folders
 
 ## Pending Modules
@@ -134,7 +163,7 @@ Python: 3.13 | venv: `.venv/` at repo root
 - `backend/forward_testing/`, `backend/execution/` — deferred
 - `backend/services/` — additional service modules as needed
 - First real strategy (consuming `NormalizedOHLCV` via `YahooFinanceAdapter` + `OHLCVService`)
-- Frontend end-to-end validation
+- Frontend browser-level end-to-end validation (requires manual browser session; API layer validated programmatically)
 
 ## Validation Status
 
@@ -165,8 +194,21 @@ Python: 3.13 | venv: `.venv/` at repo root
 | ProviderSymbolMapping + SymbolMapService | PASS (24 tests) |
 | YahooFinanceAdapter — fetch, conversion, error handling (mocked) | PASS (26 tests) |
 | OHLCVService registry integration (get_ohlcv_by_provider_name) | PASS (9 tests) |
+| Market data API — GET /market-data/ohlcv | PASS (11 tests) |
+| Strategy runs API — POST /strategy-runs/run | PASS (19 tests) |
+| Visualization artifact models + runner extraction | PASS (21 tests) |
 | Architecture guardrails | PASS |
-| Frontend build | NOT YET VALIDATED |
+| Frontend npm install | PASS |
+| Frontend build (tsc + vite build) | PASS |
+
+Full suite rerun (2026-05-09, Phase 2M):
+576 passed (1.21s) — 24 new tests added, zero regressions from prior 552.
+
+Full suite rerun (2026-05-09, Phase 2L):
+552 passed (1.02s) — 15 new tests added, zero regressions from prior 537.
+
+Full suite rerun (2026-05-09, Phase 2K):
+537 passed (1.09s) — 11 new backend tests added, zero regressions from prior 526.
 
 Full suite rerun (2026-05-09, Phase 2J validation hardening):
 526 passed (1.05s) — 6 provider-validation tests added; zero regressions from prior 520.
@@ -191,6 +233,5 @@ Targeted post-validation rerun (2026-05-09, Phase 2G.5):
 - `docker-compose.yml` at root is empty
 - `directives/` undocumented in `docs/REPOSITORY_STRUCTURE.md`
 - `ARCHITECTURE_GUARDRAILS.md` references "Edgelab" on line 4 (old name)
-- Frontend `npm install` not yet run
 - DuckDB 1.5.2 requires `pytz` for Python-side TIMESTAMPTZ conversion via `fetchall()` — storage layer avoids this by using `arrow().read_all()` (pyarrow path)
 - Import-time side-effect detection is documentation-only — silent side effects (prints, env reads) cannot be statically enforced without running module code

@@ -199,9 +199,9 @@ Do not store large OHLCV/time-series datasets primarily in PostgreSQL unless the
 
 ## 9. Frontend Guardrails
 
-The frontend is a research terminal and visualization layer.
+The frontend serves two distinct and permanent roles:
 
-The frontend may handle:
+**Role 1 — Visualization Terminal**
 
 * chart rendering
 * drawing tools
@@ -210,13 +210,25 @@ The frontend may handle:
 * trade setup review
 * user interaction
 * dashboards
-* forms
-* filters
-* UI state
+* forms and filters
+* UI state management
 
-The frontend must not contain:
+**Role 2 — Strategy Composition Interface**
 
-* strategy logic
+The frontend is also the primary interface for composing strategies from reusable tools.
+
+The frontend may handle:
+
+* tool selection and orchestration
+* indicator and parameter configuration
+* rule and condition building
+* filter and confirmation assembly
+* strategy definition authoring
+* research workflow navigation
+
+The frontend must NOT contain:
+
+* official strategy calculation logic
 * signal generation logic
 * backtest calculation logic
 * broker execution logic
@@ -224,10 +236,13 @@ The frontend must not contain:
 * data normalization logic
 * compliance policy logic
 * business-critical decision logic
+* strategy-identity-aware rendering (the frontend must render visualization artifacts generically based on artifact contracts, not by checking strategy identity)
 
 Any calculation required for official strategy evaluation must be performed in the backend or strategy engine, not only in the browser.
 
-Frontend-derived visual annotations may be stored as user research artifacts, but they must not replace validated strategy rules.
+The frontend expresses user intent and renders backend-produced artifacts.
+
+The backend is the official authority for validation, execution, and signal generation.
 
 ---
 
@@ -561,12 +576,62 @@ This platform is expected to grow into a long-term institutional-grade research 
 
 ---
 
-## 27. Final Instruction to Agents
+## 27. Strategy Tools Builder Layer Rules
+
+The Strategy Tools Builder Layer is a permanent architectural direction in QuantLab.
+
+It is not a feature. It is not a phase. It is a foundational platform capability that must evolve continuously.
+
+**Definition:**
+
+The Strategy Tools Builder Layer is the growing ecosystem of reusable, parameterized, modular analytical tools and indicators from which users construct strategies.
+
+The frontend exposes this composition interface.
+
+The backend validates, executes, and enforces all strategy logic.
+
+**Rules:**
+
+All analytical tools, indicators, and modules must be designed as:
+
+* reusable across multiple strategies
+* modular and independently testable
+* parameterized — no hidden configuration
+* versionable — changes must be backward-compatible or explicitly versioned
+* composable — tools combine through clean interfaces
+* backend-validatable
+* frontend-configurable
+* portable across all runtime modes
+
+**Forbidden patterns:**
+
+* one-off indicator logic tightly coupled to a single strategy when a reusable tool module would be appropriate
+* strategy-specific indicator names checked in the frontend renderer
+* tool behavior that differs based on runtime mode (research vs. backtest vs. live)
+* indicator logic that leaks execution behavior
+
+**Tool evolution:**
+
+The tool ecosystem is expected to continuously expand into:
+
+* classical technical analysis modules
+* volatility and momentum systems
+* harmonic and geometric formulas
+* planetary, astronomical, and cycle systems
+* sentiment and macro feature modules
+* AI-generated feature engines
+* custom research modules
+
+The architecture must remain expandable without requiring core rewrites.
+
+---
+
+## 28. Final Instruction to Agents
 
 Do not treat this repository as a simple trading bot.
 
-This is a modular Strategy Research Lab.
+This is a modular Strategy Research Lab and strategy-building ecosystem.
 
-The primary objective is to build a rigorous environment for discovering, testing, validating, and managing strategies before any autonomous trading is allowed.
+The primary objective is to build a rigorous environment for discovering, composing, testing, validating, and managing strategies before any autonomous trading is allowed.
 
-All code must respect that lifecycle.
+All code must respect that lifecycle and the Strategy Tools Builder Layer as a permanent platform direction.

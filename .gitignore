@@ -93,8 +93,16 @@ out/
 
 # ─── Research / Datasets ───────────────────────────────────────────────────────
 datasets/raw/
+datasets/normalized/
+datasets/processed/
+datasets/features/
+datasets/alternative/
+datasets/astronomical/
 datasets/cache/
 .tmp/
+
+# ─── Claude Agent Memory ───────────────────────────────────────────────────────
+memory/
 
 # ─── Logs ──────────────────────────────────────────────────────────────────────
 *.log

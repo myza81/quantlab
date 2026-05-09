@@ -21,6 +21,7 @@ from backend.strategy_runtime.forecast import StrategyForecast
 from backend.strategy_runtime.loader import StrategyRuntimeReference
 from backend.strategy_runtime.models import StrategySignal
 from backend.strategy_runtime.run_result import RunStatus, StrategyRunResult
+from backend.strategy_runtime.visualization import IndicatorSeries
 
 logger = logging.getLogger(__name__)
 
@@ -141,8 +142,10 @@ class StrategyRuntimeRunner:
 
         signals, signal_warnings = _extract_signals(final_out)
         forecasts, forecast_warnings = _extract_forecasts(final_out)
+        artifacts, artifact_warnings = _extract_artifacts(final_out)
         warnings.extend(signal_warnings)
         warnings.extend(forecast_warnings)
+        warnings.extend(artifact_warnings)
 
         completed_at = datetime.now(timezone.utc)
 
@@ -151,6 +154,7 @@ class StrategyRuntimeRunner:
             "features_generated": features_generated,
             "signals_generated": len(signals),
             "forecasts_generated": len(forecasts),
+            "artifacts_generated": len(artifacts),
             "runtime_seconds": (completed_at - started_at).total_seconds(),
         }
 
@@ -172,6 +176,7 @@ class StrategyRuntimeRunner:
             features_generated=features_generated,
             signals=signals,
             forecasts=forecasts,
+            artifacts=artifacts,
             diagnostics=diagnostics,
             warnings=warnings,
             error=None,
@@ -210,6 +215,26 @@ def _extract_signals(output: Any) -> tuple[list[StrategySignal], list[str]]:
             f"ignored {ignored_count} non-StrategySignal item(s) from 'signals' payload"
         )
     return signals, warnings
+
+
+def _extract_artifacts(output: Any) -> tuple[list[IndicatorSeries], list[str]]:
+    if not isinstance(output, dict):
+        return [], []
+    warnings: list[str] = []
+    raw = output.get("artifacts", [])
+    if not isinstance(raw, list):
+        warnings.append(
+            "apply_risk_rules returned non-list 'artifacts'; ignoring malformed payload"
+        )
+        return [], warnings
+
+    artifacts = [a for a in raw if isinstance(a, IndicatorSeries)]
+    ignored_count = len(raw) - len(artifacts)
+    if ignored_count:
+        warnings.append(
+            f"ignored {ignored_count} non-IndicatorSeries item(s) from 'artifacts' payload"
+        )
+    return artifacts, warnings
 
 
 def _extract_forecasts(output: Any) -> tuple[list[StrategyForecast], list[str]]:

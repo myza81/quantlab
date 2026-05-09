@@ -53,6 +53,44 @@ A strategy is NOT responsible for:
 
 ---
 
+# Strategy Tools Philosophy
+
+Strategies in QuantLab are composed from reusable tools and analytical modules.
+
+A "tool" is any reusable, parameterized, independently-testable analytical component that can be used across multiple strategies.
+
+Examples include:
+
+* moving average modules (MA, EMA, WMA)
+* momentum indicators (RSI, MACD, Stochastic)
+* volatility modules (ATR, Bollinger Bands)
+* harmonic formula modules
+* astronomical and planetary cycle modules
+* sentiment feature modules
+* custom research modules
+
+## Tool Design Requirements
+
+All tools and analytical modules must be:
+
+* reusable across multiple strategies
+* modular and independently testable
+* parameterized — no hidden configuration
+* versionable — changes must not silently break existing strategies
+* composable — tools may depend on other normalized inputs but not on each other's internals
+* backend-validatable — all execution authority belongs to the backend
+* frontend-configurable — parameters must be exposable to the frontend composition interface
+* portable across all runtime modes
+
+## Forbidden Tool Patterns
+
+* hardcoded indicator logic embedded as one-off code inside a single strategy's features.py or signals.py when a reusable tool module is more appropriate
+* tools that embed execution behavior (orders, position sizing)
+* tools that access brokers, databases, or APIs directly
+* tools that produce different results in different runtime modes given identical inputs
+
+---
+
 # Strategy Portability Principle
 
 Every strategy must operate consistently across:
@@ -347,6 +385,7 @@ Strategies produce structured outputs only.
 * confidence scores
 * analytical tags
 * diagnostics
+* visualization artifacts (indicator series, reference lines, zones — computed by the strategy, serialized by the backend, rendered generically by the frontend)
 
 ---
 

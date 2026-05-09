@@ -251,6 +251,344 @@ Prioritize:
 
 ---
 
+# Last Session Summary (2026-05-09) — Phase 2M Strategy Visualization Artifact Foundation + UX Hardening
+
+## What Was Completed
+
+**`backend/strategy_runtime/visualization.py`** — new module
+* `IndicatorSeriesKind(str, Enum)` — `line`; future: histogram, area
+* `IndicatorPane(str, Enum)` — `price`; future: oscillator, separate
+* `IndicatorPoint` — frozen Pydantic v2; UTC-enforced timestamp; value float
+* `IndicatorSeries` — frozen; name, kind, pane, color (optional), points list; name must not be empty
+
+**`backend/strategy_runtime/run_result.py`** — updated
+* Added `artifacts: list[IndicatorSeries] = []` field — default empty for backward compatibility
+
+**`backend/strategy_runtime/runner.py`** — updated
+* Added `_extract_artifacts(output)` helper — same pattern as `_extract_signals`/`_extract_forecasts`
+* Wired into `run()` pipeline; added `artifacts_generated` to diagnostics dict
+* Success result now includes `artifacts=artifacts`
+
+**`strategies/example_strategy/signals.py`** — updated
+* Passes `timestamps`, `ma20_series`, `ma50_series` through to risk module for artifact construction
+
+**`strategies/example_strategy/risk.py`** — updated
+* Builds `IndicatorSeries` for MA20 (blue #2196f3) and MA50 (orange #ff9800)
+* Returns `{"signals": [...], "forecasts": [...], "artifacts": [...]}`
+
+**`backend/api/schemas/strategy_runs.py`** — updated
+* Added `IndicatorPointResponse`, `IndicatorSeriesResponse`
+* `StrategyRunResponse` now includes `indicators: list[IndicatorSeriesResponse] = []`
+
+**`backend/api/services/strategy_run_service.py`** — updated
+* Serializes `result.artifacts → indicators` in response
+* Log line includes `indicators=%d`
+
+**`tests/unit/test_visualization_artifacts.py`** — new module, 21 tests
+* `IndicatorPoint`: construction, naive rejected, UTC coercion, frozen
+* `IndicatorSeries`: construction, defaults, empty points, color, name validation, extra forbidden, enum values, frozen, multiple points
+* Runner extraction: valid artifacts, non-list warns, non-IndicatorSeries ignored, empty list, absent key, non-dict output
+
+**`tests/unit/test_strategy_runs_api.py`** — updated, +4 tests
+* `indicators` field in required fields check
+* `test_indicators_returned_with_sufficient_candles` — 60 bars → MA20 + MA50 both returned
+* `test_indicator_series_schema_fields` — name, kind, pane, points present
+* `test_indicator_point_schema_fields` — timestamp, value present
+
+**`frontend/src/api/strategyRuns.ts`** — updated
+* Added `IndicatorPoint`, `IndicatorSeries` interfaces
+* `StrategyRunResponse` includes `indicators: IndicatorSeries[]`
+
+**`frontend/src/types/strategy.ts`** — updated
+* `StrategyOverlay` includes `indicators: IndicatorSeries[]`
+
+**`frontend/src/components/Chart.tsx`** — refactored
+* `indicatorSeriesMapRef: Map<string, ISeriesApi<'Line'>>` — tracks active indicator series by name
+* Overlay effect removes all prior indicator series (`chart.removeSeries()`) before adding new ones
+* Generic renderer: iterates `overlay.indicators`, creates `LineSeries` per entry with strategy-supplied color (falls back to palette)
+* Lifecycle correct: fetch new symbol → overlay clears; rerun strategy → indicators replaced; chart unmount → map cleared before `chart.remove()`
+* Badge row shows indicator count + signal count + forecast direction
+
+**`frontend/src/App.tsx`** — updated
+* `strategyResult: StrategyRunResponse | null` state — preserved for inspection panel
+* `ResultInspector` component — inline, shows strategy_id, status, candles, signals, indicators, forecasts, warnings, error
+* `indicators: result.indicators` passed into `StrategyOverlay`
+* Overlay reset on new fetch — `setOverlay(null)` + `setStrategyResult(null)` together
+* Run Strategy button: `disabled` + `opacity: 0.5` + `cursor: not-allowed` while running
+
+## Validation
+
+* Full backend test suite: **576 passed in 1.21s** (24 new + 552 prior), zero regressions
+* Frontend build: `tsc && vite build` clean — 40 modules, 332 kB bundle
+
+## Architecture Notes
+
+* Frontend never computes indicators — backend strategy computes, serializes, frontend renders
+* Chart renderer is fully generic: `indicators` array drives rendering, strategy identity never checked
+* `IndicatorPane.price` is the only rendered pane in this phase; oscillator/separate pane rendering is deferred
+* Overlay lifecycle: Map-based series tracking ensures repeated runs replace (not duplicate) indicator series
+
+## To validate manually
+
+```bash
+# Terminal 1
+source .venv/bin/activate && uvicorn backend.api.main:app --reload --port 8000
+
+# Terminal 2
+cd frontend && npm run dev
+# Open http://localhost:3000
+# 1. Fetch AAPL/1d/2023 → chart renders
+# 2. Run Strategy → MA20 (blue) + MA50 (orange) lines appear, signal arrows, forecast line
+# 3. Fetch SPY → overlays clear
+# 4. Run Strategy again → fresh overlays render
+```
+
+## Remaining Limitations
+
+* Single-pane only — oscillator/separate pane rendering not implemented
+* `ReferenceLine` and `Zone` artifact types not yet defined
+* No per-indicator legend UI component
+* Browser validation not performed in this session (CLI only)
+
+## Phase 2M Status
+
+**CLOSED** — visualization artifact contract implemented end-to-end. 576 tests passing, frontend build clean. Browser validation pending.
+
+---
+
+# Last Session Summary (2026-05-09) — Phase 2L First Real Strategy Execution + Overlay Visualization
+
+## What Was Completed
+
+**`strategies/example_strategy/features.py`** — updated
+* `_rolling_mean(values, window)` — sliding window average helper; returns `None` for positions without enough history
+* `build_features(normalized_data, parameters)` — computes MA20, MA50, closes, timestamps, last values; returns feature dict
+
+**`strategies/example_strategy/signals.py`** — updated
+* `generate_signals(features, parameters)` — detects MA20/MA50 golden cross (→ long) and death cross (→ short); returns `raw_signals` list + last-MA-state fields for risk module
+
+**`strategies/example_strategy/risk.py`** — updated
+* `apply_risk_rules(signals, parameters)` — converts raw crossover events to `StrategySignal` objects (invalidation ±2%), generates 1 `StrategyForecast` from latest MA state (±4% target, 20-day horizon); returns `{"signals": [...], "forecasts": [...]}`
+* Reads `strategy_id`, `symbol`, `timeframe` from `parameters` dict (injected by service layer)
+
+**`backend/api/schemas/strategy_runs.py`** — new module
+* `StrategyRunRequest` — strategy_id, provider, symbol, timeframe, start, end, asset_class, exchange, parameters
+* `SignalResponse`, `ForecastResponse`, `StrategyRunResponse` — API output shapes
+
+**`backend/api/services/strategy_run_service.py`** — new module
+* `StrategyRunError`, `StrategyNotFoundError`, `UnsupportedProviderError`
+* `run_strategy(request, *, storage_path, strategies_path)` — wires OHLCVService → load_strategy_runtime → StrategyRuntimeRunner → StrategyRunResponse
+* `strategies_path` injectable via Depends for test isolation
+
+**`backend/api/routes/strategy_runs.py`** — new module
+* `APIRouter(prefix="/strategy-runs", tags=["strategy-runs"])`
+* `get_storage_path()`, `get_strategies_path()` — FastAPI Depends, overridable in tests
+* `POST /strategy-runs/run` — 404 strategy not found, 400 unsupported provider / load/fetch failure
+
+**`backend/api/main.py`** — updated
+* Added `from backend.api.routes import strategy_runs` and `app.include_router(strategy_runs.router)`
+
+**`tests/unit/test_strategy_runs_api.py`** — new module, 15 tests
+* Happy path: 200, required fields, strategy_id, status=success, candles_received, 1 forecast, forecast schema, forecast direction=long for uptrend
+* Signal schema fields validated when crossover pattern present
+* No signals in monotonic uptrend confirmed
+* Empty candles → status=empty
+* Validation: unsupported provider → 400, strategy not found → 404, missing fields → 422
+
+**`frontend/src/api/strategyRuns.ts`** — new module
+* `StrategyRunRequest`, `SignalResponse`, `ForecastResponse`, `StrategyRunResponse` types
+* `runStrategy(req)` — POST /strategy-runs/run; throws on non-OK
+
+**`frontend/src/types/strategy.ts`** — updated
+* Added `StrategyOverlay { signals, forecast }` composite type
+
+**`frontend/src/components/Chart.tsx`** — updated
+* Added `overlay?: StrategyOverlay | null` prop
+* Signal markers via `createSeriesMarkers()` — arrowUp (green) for long, arrowDown (red) for short
+* Forecast projection via separate `LineSeries` (orange dashed) from last close → target
+* Overlay badges in chart header (signal count, forecast direction)
+
+**`frontend/src/App.tsx`** — updated
+* Strategy run state: `overlay`, `strategyStatus`, `strategyError`
+* "Run Strategy" button bar — appears after successful OHLCV fetch; calls `runStrategy()`
+* Run result mapped to `StrategyOverlay` and passed to `Chart`
+
+**`frontend/vite.config.ts`** — updated
+* Added `/strategy-runs` proxy → `http://localhost:8000`
+
+## Validation
+
+* Full backend test suite: **552 passed in 1.02s** (15 new + 537 prior), zero regressions
+* Frontend build: `tsc && vite build` clean — 40 modules, 331 kB bundle
+
+## To validate manually
+
+```bash
+# Terminal 1 — backend
+source .venv/bin/activate
+uvicorn backend.api.main:app --reload --port 8000
+
+# Terminal 2 — frontend
+cd frontend && npm run dev
+# Open http://localhost:3000
+# 1. Fetch AAPL/1d/2023 → chart appears
+# 2. Click "Run Strategy" → signals/forecast overlay appears on chart
+```
+
+## Phase 2L Status
+
+**CLOSED** — backend API implemented and tested. Frontend wired and build-validated. Browser overlay render to be confirmed at next manual session.
+
+---
+
+# Last Session Summary (2026-05-09) — Phase 2K Manual End-to-End Validation
+
+## What Was Validated
+
+**Backend server** — started successfully: `uvicorn backend.api.main:app --port 8000`
+
+**GET /market-data/ohlcv — programmatic curl validation:**
+
+| Test Case | Result |
+|---|---|
+| AAPL / yahoo / 1d / 2023-01-01→2024-01-01 | ✓ 250 candles returned |
+| MSFT / yahoo / 1d / 2023-01-01→2024-01-01 | ✓ 250 candles returned |
+| SPY / yahoo / 1d / 2023-01-01→2024-01-01 | ✓ 250 candles returned |
+| AAPL / yahoo / 1h / 2025-04-28→2025-05-09 | ✓ 63 intraday candles at 13:30Z (9:30 AM ET) |
+| INVALID_SYMBOL_XYZ / yahoo / 1d | ✓ 200 + 0 candles (empty result, no crash) |
+| provider=polygon | ✓ HTTP 400, detail identifies unsupported provider |
+| timeframe=4h (unsupported) | ✓ HTTP 400, detail lists supported timeframes |
+| Second AAPL 1d fetch (coverage cache) | ✓ 250 candles in 0.18s (cache hit — no yfinance call) |
+
+**Coverage cache confirmed working** — second identical request returns from local Parquet in ~180ms vs seconds for real yfinance call.
+
+**Frontend build** — `tsc && vite build` passed: 39 modules, 314 kB bundle, zero errors.
+
+**Full backend test suite** — `537 passed in 0.99s`, zero regressions.
+
+**Candle timestamp format confirmed correct:**
+- Daily US equity bars: timestamp at `05:00:00Z` (midnight New York = UTC-5, correct for winter)
+- Hourly US equity bars: timestamp at `13:30:00Z` (9:30 AM ET market open = UTC-5)
+- Frontend converts ISO timestamps → `UTCTimestamp` (epoch seconds) — handles all timezone offsets correctly
+
+**Browser-level validation** — not performed in this session (no browser available in CLI environment). All API contracts and chart component logic validated programmatically. To complete browser validation manually:
+
+```bash
+# Terminal 1 — backend
+source .venv/bin/activate
+uvicorn backend.api.main:app --reload --port 8000
+
+# Terminal 2 — frontend
+cd frontend && npm run dev
+# Open http://localhost:3000
+# Test: yahoo / AAPL / equity / NASDAQ / 1d / 2023-01-01 → 2024-01-01 → Fetch
+```
+
+## Fixes Made
+
+None — Phase 2K implementation was correct. No bugs found during validation.
+
+## Latest Validation Snapshot
+
+* Backend API: all test cases pass (curl)
+* Backend tests: `537 passed in 0.99s`
+* Frontend build: `tsc && vite build` clean
+
+## Phase 2K Status
+
+**CLOSED** — backend and API fully validated. Browser chart render validation to be confirmed at next manual session. No blockers.
+
+---
+
+# Last Session Summary (2026-05-09) — Phase 2K Minimal OHLCV + Strategy Visualization Foundation
+
+## What Was Completed
+
+**`backend/api/schemas/market_data.py`** — new module
+* `OHLCVCandleResponse` — minimal candle schema (timestamp, open, high, low, close, volume)
+* `MarketDataOHLCVResponse` — envelope with provider, symbol, asset_class, exchange, timeframe, start, end, candle_count, candles
+
+**`backend/api/services/market_data_service.py`** — new module
+* `MarketDataError(Exception)` — recoverable service-boundary error (→ HTTP 400)
+* `UnsupportedProviderError(MarketDataError)` — unknown provider name
+* `fetch_ohlcv(...)` — builds `YahooFinanceAdapter` + `Instrument` + `DatasetIdentity` from request params; delegates to `OHLCVService.get_ohlcv()`; returns `MarketDataOHLCVResponse`
+* Currently supported providers: `{"yahoo"}`
+
+**`backend/api/routes/market_data.py`** — new module
+* `APIRouter(prefix="/market-data", tags=["market-data"])`
+* `get_storage_path()` — FastAPI Depends, overridable in tests
+* `GET /market-data/ohlcv` — accepts provider, symbol, timeframe, start, end (required) + asset_class, exchange, adjustment_mode, currency (optional with defaults)
+* Naive datetime query params treated as UTC at route boundary
+
+**`backend/api/main.py`** — updated
+* `market_data.router` registered
+
+**`tests/unit/test_market_data_api.py`** — 11 tests, all passing
+* `TestGetOHLCVHappyPath` (5): 200 success, candle field values, UTC timestamp, naive params accepted, empty DataFrame → empty candles list
+* `TestGetOHLCVValidation` (5): unsupported provider → 400, unsupported timeframe → 400, missing provider/symbol/start → 422
+* `TestGetOHLCVDefaults` (1): default asset_class=equity, exchange=NASDAQ applied correctly
+
+**Frontend — `frontend/` — fully built and TypeScript-validated**
+
+`frontend/package.json` — updated
+* Added `lightweight-charts@^5.2.0`
+
+`frontend/vite.config.ts` — updated
+* Proxy: `/market-data` and `/datasets` added alongside `/health` → backend at :8000
+
+`frontend/src/api/marketData.ts` — new
+* `OHLCVCandle`, `MarketDataOHLCVResponse`, `MarketDataParams` interfaces
+* `fetchOHLCV(params)` — builds query string, calls `GET /market-data/ohlcv`, throws on non-OK response with backend detail message
+
+`frontend/src/types/strategy.ts` — new (placeholder only)
+* `StrategySignalOverlay`, `StrategyForecastOverlay` interface placeholders for future chart overlay support
+* Mirrors backend `StrategySignal` / `StrategyForecast` shape
+
+`frontend/src/components/Controls.tsx` — new
+* Controls: provider select, symbol input, asset_class select, exchange input, timeframe select, start date, end date, Fetch button
+* Defaults: yahoo / AAPL / equity / NASDAQ / 1d / 1 year ago → today
+* Symbol auto-uppercased on input
+
+`frontend/src/components/Chart.tsx` — new
+* TradingView lightweight-charts v5 `CandlestickSeries` via `chart.addSeries(CandlestickSeries, ...)`
+* Dark theme: background `#0f0f1a`, grid `#1a1a2e`, text `#d1d4dc`, up `#26a69a`, down `#ef5350`
+* Candles mapped from ISO timestamp → `UTCTimestamp` (seconds since epoch)
+* `ResizeObserver`-style resize via `window.addEventListener('resize')`
+* `fitContent()` called on each data update
+* Displays symbol · timeframe · candle count header
+
+`frontend/src/App.tsx` — updated
+* State: `candles`, `status` (idle | loading | success | error), `error`, `params`
+* Renders Controls → main area (idle/loading/error/empty/chart states)
+* Minimal dark-themed layout; no extra dependencies
+
+## Latest Validation Snapshot
+
+* Full backend test suite: `537 passed` in 1.09s (2026-05-09)
+* Frontend: `npm install` confirmed, `tsc && vite build` passes with zero errors
+
+## Important Design Notes
+
+* Market data route creates a **fresh `YahooFinanceAdapter` per request** — no singleton adapter state; thread-safe by construction
+* Route boundary **treats naive datetime query params as UTC** — FastAPI parses date-only strings (e.g. `2023-01-01`) as naive datetimes; route adds UTC tz before passing to service
+* **`UnsupportedProviderError`** is a subclass of `MarketDataError` — route catches both; only `yahoo` supported in Phase 2K; extend by adding to `_SUPPORTED_PROVIDERS` and wiring the adapter in the service
+* **Frontend chart uses UTCTimestamp** (epoch seconds) not date strings — works uniformly across all timeframes including intraday
+* **Strategy overlay types are placeholders only** — `strategy.ts` declares the shape, no rendering wired; future phase wires `StrategyRunResult` API → overlay markers/lines on chart
+
+## Deferred
+
+* End-to-end manual validation (requires running both backend + frontend dev servers)
+* Volume panel on chart (optional per directive)
+* Strategy signal marker rendering on chart
+* Strategy forecast projection line on chart
+* Polygon, IBKR, Binance provider support in market data route
+* Frontend component unit tests (no Jest/Vitest setup yet)
+* Authentication / multi-user
+
+## No Blockers
+
+---
+
 # Last Session Summary (2026-05-09) — Phase 2J First Real Historical Provider + Provider Registry Foundation
 
 ## What Was Completed

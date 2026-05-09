@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from backend.strategy_runtime.forecast import StrategyForecast
 from backend.strategy_runtime.models import StrategySignal
+from backend.strategy_runtime.visualization import IndicatorSeries
 
 
 class RunStatus(str, Enum):
@@ -49,6 +50,7 @@ class StrategyRunResult(BaseModel):
 
     signals: list[StrategySignal]
     forecasts: list[StrategyForecast]
+    artifacts: list[IndicatorSeries] = []
     diagnostics: dict[str, Any]
     warnings: list[str]
 
