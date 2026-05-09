@@ -1,0 +1,1 @@
+"""Fixture strategy metadata stub."""

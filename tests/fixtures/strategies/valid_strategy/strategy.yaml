@@ -1,0 +1,25 @@
+strategy_id: valid_strategy
+name: Valid Test Strategy
+version: "1.0.0"
+lifecycle_stage: prototype
+
+description: Minimal valid strategy for unit testing.
+
+supported_assets:
+  - crypto
+  - equities
+
+supported_timeframes:
+  - 1h
+  - 4h
+  - 1d
+
+feature_dependencies:
+  - sma_20
+  - rsi_14
+
+runtime_compatibility:
+  - research
+  - backtesting
+
+warmup_bars: 20

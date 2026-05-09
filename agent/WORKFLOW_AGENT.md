@@ -23,6 +23,7 @@ Before starting any implementation work, read the following files in this exact 
 2. agent/TASKS.md
 3. agent/ARCHITECTURE_GUARDRAILS.md
 4. agent/WORKFLOW_AGENT.md
+5. agent/REPOSITORY_STATE.md
 ```
 
 Only after understanding the current project state may implementation proceed.
@@ -30,6 +31,49 @@ Only after understanding the current project state may implementation proceed.
 If module-specific documentation exists, retrieve only the documentation relevant to the active task.
 
 Do not load unnecessary documents into context.
+
+---
+
+# Repository State Synchronization Rules
+
+Before starting implementation, agents must inspect the actual repository state.
+
+Agents must not rely only on prior chat context, old prompts, or assumptions.
+
+At the start of each implementation session, the agent must review:
+
+- current file tree
+- relevant existing files
+- active branch/status if available
+- dependency files
+- existing agent handoff files
+
+If `agent/REPOSITORY_STATE.md` exists, the agent must read it before implementation.
+
+If it does not exist, the agent should create it during the session.
+
+After any implementation work, agents must update:
+
+- `agent/HANDOFF.md`
+- `agent/TASKS.md`
+- `agent/REPOSITORY_STATE.md`
+
+`REPOSITORY_STATE.md` must remain short and operational.
+
+It should record:
+
+- current phase
+- backend status
+- frontend status
+- installed packages
+- completed modules
+- pending modules
+- known issues
+- validation status
+
+Agents must not treat ChatGPT orchestration context as the source of truth for repository status.
+
+The source of truth for implementation state is the actual repository plus updated handoff files.
 
 ---
 
@@ -331,7 +375,55 @@ Handoff documentation must remain concise and operational.
 
 ---
 
-# 16. Context Management Rules
+# 16. Repository State Synchronization Rules
+
+QuantLab relies on repository-state synchronization between:
+
+- orchestration layer
+- implementation agents
+- future implementation sessions
+
+Implementation agents must continuously maintain operational awareness of the actual repository state.
+
+If `agent/REPOSITORY_STATE.md` exists, agents must read it before implementation.
+
+If it does not exist, agents should create it when beginning meaningful implementation work.
+
+`REPOSITORY_STATE.md` must remain:
+
+- short
+- operational
+- current
+- high-signal
+
+It is NOT:
+- a historical log
+- architecture documentation
+- implementation diary
+
+It SHOULD contain:
+
+- current repository phase
+- backend status
+- frontend status
+- installed packages
+- active modules
+- completed modules
+- pending work
+- validation status
+- known blockers/issues
+
+Implementation agents must update:
+
+```text
+agent/HANDOFF.md
+agent/TASKS.md
+agent/REPOSITORY_STATE.md
+```
+
+---
+
+# 17. Context Management Rules
 
 Avoid loading excessive repository context.
 
@@ -350,7 +442,7 @@ Efficient context management improves reasoning quality and reduces token waste.
 
 ---
 
-# 17. Forbidden Behaviors
+# 18. Forbidden Behaviors
 
 The following are prohibited:
 
@@ -393,3 +485,45 @@ reduce coupling
 → preserve portability
 → prefer deterministic behavior
 ```
+
+---
+
+# 19. Python Environment Rules
+
+QuantLab uses a repository-local virtual environment located at:
+
+.venv/
+
+All Python package installation and execution must use this environment.
+
+Agents must NEVER:
+
+- install packages globally
+- create additional virtual environments
+- use system Python packages
+- use pip outside `.venv`
+- use poetry/pipenv unless explicitly approved
+
+Before running Python commands, agents must activate:
+
+macOS/Linux:
+source .venv/bin/activate
+
+Windows:
+.venv\Scripts\activate
+
+All package installations must occur inside `.venv`.
+
+Preferred installation style:
+
+python -m pip install <package>
+
+not:
+
+pip install <package>
+
+This ensures:
+- reproducibility
+- dependency isolation
+- consistent runtime behavior
+- predictable development environments

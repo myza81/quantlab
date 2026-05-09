@@ -1,0 +1,6 @@
+strategy_id: missing_risk_strategy
+name: Missing Risk Strategy
+version: "1.0.0"
+lifecycle_stage: prototype
+runtime_compatibility:
+  - research

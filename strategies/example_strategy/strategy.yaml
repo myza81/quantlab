@@ -1,0 +1,17 @@
+strategy_id: example_strategy
+name: Example Strategy
+version: "0.1.0"
+lifecycle_stage: prototype
+
+description: >
+  Placeholder strategy demonstrating the QuantLab strategy module structure.
+  This strategy contains no real trading logic.
+
+supported_assets: []
+supported_timeframes: []
+feature_dependencies: []
+warmup_bars: 0
+
+runtime_compatibility:
+  - research
+  - backtesting

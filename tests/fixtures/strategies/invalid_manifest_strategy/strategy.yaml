@@ -1,0 +1,3 @@
+# Missing strategy_id and lifecycle_stage — should fail validation
+name: Invalid Manifest Strategy
+version: "1.0.0"

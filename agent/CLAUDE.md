@@ -457,3 +457,24 @@ Always optimize for:
 - operational safety
 
 Never optimize for short-term convenience at the expense of long-term architecture integrity.
+
+---
+
+## Python Environment Discipline
+
+QuantLab uses a root-level virtual environment:
+
+.venv/
+
+All Python execution and package installation must occur inside this environment.
+
+Do NOT:
+- install globally
+- create new environments
+- bypass `.venv`
+
+Always prefer:
+
+python -m pip install ...
+
+inside the activated `.venv`.

@@ -1,4 +1,4 @@
-# Python
+# ─── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
@@ -6,10 +6,13 @@ __pycache__/
 *.so
 .Python
 
-# Virtual environment
+# Virtual environments
 .venv/
 venv/
 env/
+.env
+.env.*
+!.env.example
 
 # Distribution / packaging
 dist/
@@ -17,41 +20,100 @@ build/
 *.egg-info/
 *.egg
 
-# PyInstaller / Nuitka build artefacts
-*.spec.bak
-*.onefile-build/
-*.dist/
-*.exe
-*.dll
-
-# Test & coverage
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Jupyter
-.ipynb_checkpoints/
-
 # pyenv
 .python-version
 
-# IDE
+# Tests & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# mypy / pyright
+.mypy_cache/
+.dmypy.json
+pyrightconfig.json
+
+# ─── FastAPI / Pydantic / SQLAlchemy ───────────────────────────────────────────
+# Alembic migration environment (keep versions/, ignore generated)
+alembic/versions/*.py
+!alembic/versions/.gitkeep
+
+# ─── DuckDB ────────────────────────────────────────────────────────────────────
+*.duckdb
+*.duckdb.wal
+*.db
+*.db-shm
+*.db-wal
+
+# ─── Parquet / Arrow / HDF5 ────────────────────────────────────────────────────
+*.parquet
+*.arrow
+*.feather
+*.h5
+*.hdf5
+
+# ─── PostgreSQL ────────────────────────────────────────────────────────────────
+*.dump
+*.sql.gz
+pg_data/
+
+# ─── Redis ─────────────────────────────────────────────────────────────────────
+dump.rdb
+*.rdb
+
+# ─── Celery / RQ ───────────────────────────────────────────────────────────────
+celerybeat-schedule
+celerybeat.pid
+
+# ─── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ─── Node / Frontend ───────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# Build outputs
+frontend/dist/
+frontend/build/
+.next/
+out/
+
+# TypeScript
+*.tsbuildinfo
+
+# Cache
+.eslintcache
+.stylelintcache
+.parcel-cache/
+
+# ─── Research / Datasets ───────────────────────────────────────────────────────
+datasets/raw/
+datasets/cache/
+.tmp/
+
+# ─── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.sublime-project
 *.sublime-workspace
 
-# OS
+# ─── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Logs
-*.log
-
-# Temporary files
+# ─── Temp / Build Artifacts ────────────────────────────────────────────────────
 *.tmp
 *.bak
-
-# PyQt6 compiled resources
-*.pyc
+*.spec.bak
+*.exe
+*.dll

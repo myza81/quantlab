@@ -1,0 +1,6 @@
+strategy_id: valid_strategy
+name: Duplicate ID Strategy
+version: "1.0.0"
+lifecycle_stage: prototype
+runtime_compatibility:
+  - research
