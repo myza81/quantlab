@@ -4,37 +4,97 @@ A modular, research-first strategy development ecosystem designed to support the
 
 ---
 
-## Purpose
+## Quick Start
 
-QuantLab is not a trading bot. It is a long-term strategy research laboratory built to support:
+### Prerequisites
 
-- strategy research and hypothesis testing
-- feature engineering and cycle analysis
-- historical backtesting
-- forward testing and paper trading
-- future controlled live trading
-
-The platform is intentionally market-agnostic and supports unconventional research methods including planetary, astronomical, and cycle-based analysis.
+- Python 3.11+
+- Node.js 18+
+- npm
 
 ---
 
-## Architecture Direction
+### 1. Clone and enter the repo
 
-QuantLab follows a strict modular architecture with enforced separation of concerns:
+```bash
+git clone https://github.com/myza81/quantlab.git
+cd quantlab
+```
+
+---
+
+### 2. Backend setup
+
+```bash
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate        # macOS / Linux
+# .venv\Scripts\activate         # Windows
+
+# Install dependencies
+pip install -e ".[dev]"
+
+# Copy environment config
+cp .env.example .env
+```
+
+Start the backend (runs on http://localhost:8000):
+
+```bash
+uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Health check: http://localhost:8000/health
+
+---
+
+### 3. Frontend setup
+
+```bash
+cd frontend
+npm install
+```
+
+Start the frontend dev server (runs on http://localhost:3000):
+
+```bash
+npm run dev
+```
+
+Open http://localhost:3000 in your browser.
+
+---
+
+### 4. Run tests
+
+```bash
+# From repo root with .venv active
+pytest
+```
+
+---
+
+### Using the app
+
+1. Open http://localhost:3000
+2. Select a **Provider** (Yahoo Finance), **Symbol** (e.g. `AAPL`), **Timeframe**, and date range
+3. Click **Fetch** to load the candlestick chart
+4. Click **Run Strategy** to execute the example MA crossover strategy — signal markers and MA20/MA50 indicator overlays will appear on the chart
+
+---
+
+## Architecture Overview
 
 ```
 Data Provider → Normalization → Data Layer → Strategy Runtime → Execution Layer
 ```
 
-Core principles:
-
 - **Strategy portability** — strategies run identically across research, backtest, paper, and live modes
-- **Execution isolation** — strategies produce signals; execution systems decide what to do with them
+- **Execution isolation** — strategies produce signals; execution systems interpret them
 - **Data abstraction** — strategies never know the data source or provider
 - **Research-first** — experimental logic stays isolated until formally validated
-- **Incremental evolution** — no premature infrastructure or speculative complexity
 
-Full architecture documentation: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+Full architecture docs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
 ---
 
@@ -42,41 +102,30 @@ Full architecture documentation: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
 ```
 quantlab/
-├── agent/          # AI governance, orchestration rules, workflow discipline, handoff continuity
+├── agent/          # AI governance, orchestration rules, handoff continuity
 ├── directives/     # Orchestration prompt templates for structured AI task execution
-├── docs/           # Durable architecture documentation and system contracts
-├── backend/        # FastAPI application — api, services, data, strategy runtime, execution (planned)
-├── frontend/       # React + TypeScript research terminal (planned)
-├── strategies/     # Individual portable strategy modules (planned)
-├── datasets/       # Raw, normalized, and processed market and research data (planned)
-├── research/       # Experimental research, hypotheses, and exploratory notebooks (planned)
-├── execution/      # Broker adapters, routing, risk, and compliance (planned)
-├── tests/          # Unit, integration, and runtime tests (planned)
-├── scripts/        # Setup, bootstrap, and maintenance utilities (planned)
-├── configs/        # Environment-aware configuration files (planned)
-└── docker/         # Container definitions per service (planned)
+├── docs/           # Architecture documentation and system contracts
+├── backend/        # FastAPI application — API, services, data, strategy runtime
+├── frontend/       # React + TypeScript research terminal
+├── strategies/     # Portable strategy modules
+├── datasets/       # Raw and processed market data (gitignored)
+├── research/       # Experimental research and exploratory notebooks
+├── tests/          # Unit and integration tests
+└── scripts/        # Setup and maintenance utilities
 ```
-
-Detailed structure specification: [`docs/REPOSITORY_STRUCTURE.md`](docs/REPOSITORY_STRUCTURE.md)
 
 ---
 
-## Current Development Stage
+## Current Phase
 
-**Phase 1 — Foundation & Governance**
+**Phase 2M — Strategy Visualization Artifact Foundation**
 
-The repository is currently establishing architectural guardrails, AI orchestration discipline, and modular system blueprints before core implementation begins.
+What works end-to-end today:
 
-What exists now:
-- governance and workflow documents (`agent/`)
-- system architecture contracts (`docs/`)
-- orchestration directive templates (`directives/`)
+- Yahoo Finance market data → normalized storage → REST API → candlestick chart
+- Strategy execution via `POST /strategy-runs/run`
+- MA crossover strategy with signal markers and MA20/MA50 indicator overlays
+- Generic visualization artifact contract (`IndicatorSeries`, `IndicatorPoint`)
+- 576 backend tests passing
 
-What is not yet started:
-- backend implementation
-- frontend implementation
-- strategy modules
-- data pipelines
-- execution systems
-
-See [`agent/TASKS.md`](agent/TASKS.md) for active priorities and sequencing.
+See [`agent/TASKS.md`](agent/TASKS.md) for active priorities and [`agent/HANDOFF.md`](agent/HANDOFF.md) for session continuity.
