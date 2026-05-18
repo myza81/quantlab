@@ -43,7 +43,7 @@ However, it must not become a full historical archive. Completed or obsolete det
 
 ## Active Phase
 
-PHASE 2K — MINIMAL OHLCV + STRATEGY VISUALIZATION FOUNDATION COMPLETE
+PHASE 2N.12 — BROWSER-LEVEL DRAFT WORKSPACE VALIDATION & RUNTIME STABILIZATION COMPLETE
 
 Current repository focus:
 * base scaffold established (backend, frontend, strategies, datasets)
@@ -61,13 +61,30 @@ Current repository focus:
 * Yahoo Finance provider adapter complete (`backend/data_providers/yahoo/` — adapter + metadata)
 * OHLCVService extended with registry integration method
 * market data API route added (`GET /market-data/ohlcv`)
+* tool registry foundation complete (`backend/tools/`)
+* tool discovery API complete (`GET /tools`)
+* frontend dynamic tool discovery complete (ToolPanel, tools.ts, vite proxy)
+* tool configuration contracts complete (ToolConfiguration, validate_tool_configuration, ConfiguredToolList)
+* strategy toolset contracts complete (StrategyToolSet, ToolSetPanel, duplicate protection, ordered collection)
+* registry-backed toolset validation complete (ToolSetValidationResult, validate_strategy_toolset_against_registry)
+* toolset validation API complete (`POST /tools/validate-toolset`, ToolSetValidationResponse, validate_toolset service)
+* strategy draft contracts complete (StrategyDraft model, validate_against_registry, StrategyDraftCard component, StrategyDraftData type)
+* strategy draft persistence complete (DraftRepository, draft service, /drafts REST API with CRUD + archive)
+* strategy draft composition complete (add/remove/reorder/patch tool, validate endpoint, typed errors, immutable updates)
+* frontend draft workspace complete (DraftWorkspace, DraftListPanel, DraftDetailView, ToolCompositionPanel, AddToolForm, drafts API client)
+* browser-level Draft Workspace validation complete (startup, create, add tool, edit, reorder, toggle, validate, delete, archive, refresh, restart persistence)
+* runtime stabilization complete for draft list synchronization and per-draft UI state reset
 * frontend npm install confirmed, `tsc && vite build` passes
 * candlestick chart component (lightweight-charts v5)
 * provider/symbol/timeframe/date-range controls
 * strategy overlay type placeholders
-* 537 tests passing
+* 999 tests passing
 
 Real historical data ingestion and frontend chart visualization now possible end-to-end via Yahoo Finance adapter through ProviderRegistry → OHLCVService → API → React chart pipeline.
+
+Tool discovery metadata is now available to the frontend via a read-only backend endpoint, without introducing tool execution behavior.
+
+Draft Workspace browser behavior is now validated end-to-end with backend authority preserved and no execution-layer expansion.
 
 ---
 

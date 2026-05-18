@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import Controls from './components/Controls'
 import Chart from './components/Chart'
+import ToolPanel from './components/ToolPanel'
+import { DraftWorkspace } from './components/DraftWorkspace'
 import { fetchOHLCV } from './api/marketData'
 import { runStrategy } from './api/strategyRuns'
 import type { OHLCVCandle, MarketDataParams } from './api/marketData'
@@ -9,12 +11,17 @@ import type { StrategyOverlay } from './types/strategy'
 
 type Status = 'idle' | 'loading' | 'success' | 'error'
 type StrategyStatus = 'idle' | 'running' | 'done' | 'error'
+type ActiveView = 'chart' | 'drafts'
 
 export default function App() {
+  const [activeView, setActiveView] = useState<ActiveView>('chart')
+
   const [candles, setCandles] = useState<OHLCVCandle[]>([])
   const [status, setStatus] = useState<Status>('idle')
   const [error, setError] = useState<string | null>(null)
   const [params, setParams] = useState<MarketDataParams | null>(null)
+
+  const [toolsOpen, setToolsOpen] = useState(false)
 
   const [overlay, setOverlay] = useState<StrategyOverlay | null>(null)
   const [strategyStatus, setStrategyStatus] = useState<StrategyStatus>('idle')
@@ -99,62 +106,121 @@ export default function App() {
       <header style={styles.header}>
         <span style={styles.title}>QuantLab</span>
         <span style={styles.subtitle}>Research-first strategy platform</span>
-      </header>
 
-      <Controls onFetch={handleFetch} loading={status === 'loading'} />
+        <NavTab
+          label="Chart"
+          active={activeView === 'chart'}
+          onClick={() => setActiveView('chart')}
+        />
+        <NavTab
+          label="Drafts"
+          active={activeView === 'drafts'}
+          onClick={() => setActiveView('drafts')}
+        />
 
-      {status === 'success' && candles.length > 0 && (
-        <div style={styles.strategyBar}>
+        {activeView === 'chart' && (
           <button
             style={{
-              ...styles.runBtn,
-              opacity: strategyStatus === 'running' ? 0.5 : 1,
-              cursor: strategyStatus === 'running' ? 'not-allowed' : 'pointer',
+              ...styles.toolsBtn,
+              background: toolsOpen ? '#1a3a3a' : 'transparent',
+              borderColor: toolsOpen ? '#26a69a' : '#2a2d3e',
+              color: toolsOpen ? '#26a69a' : '#4a5568',
             }}
-            onClick={handleRunStrategy}
-            disabled={strategyStatus === 'running'}
+            onClick={() => setToolsOpen(o => !o)}
           >
-            {strategyStatus === 'running' ? 'Running…' : 'Run Strategy'}
+            Tools
           </button>
+        )}
+      </header>
 
-          {strategyStatus === 'done' && strategyResult && (
-            <ResultInspector result={strategyResult} />
-          )}
-          {strategyStatus === 'error' && (
-            <span style={styles.strategyErr}>Error: {strategyError}</span>
-          )}
-        </div>
+      {activeView === 'drafts' && (
+        <main style={{ ...styles.main, overflow: 'hidden' }}>
+          <DraftWorkspace />
+        </main>
       )}
 
-      <main style={styles.main}>
-        {status === 'idle' && (
-          <div style={styles.placeholder}>
-            Select a symbol and click Fetch to load chart data.
-          </div>
-        )}
-        {status === 'loading' && (
-          <div style={styles.placeholder}>Loading…</div>
-        )}
-        {status === 'error' && (
-          <div style={{ ...styles.placeholder, color: '#ef5350' }}>
-            Error: {error}
-          </div>
-        )}
-        {status === 'success' && candles.length === 0 && (
-          <div style={styles.placeholder}>
-            No candles returned. The provider may have no data for this symbol, timeframe, or date range.
-          </div>
-        )}
-        {status === 'success' && candles.length > 0 && (
-          <Chart
-            candles={candles}
-            symbol={params?.symbol ?? ''}
-            timeframe={params?.timeframe ?? ''}
-            overlay={overlay}
-          />
-        )}
-      </main>
+      {activeView === 'chart' && (
+        <>
+          {toolsOpen && <ToolPanel />}
+
+          <Controls onFetch={handleFetch} loading={status === 'loading'} />
+
+          {status === 'success' && candles.length > 0 && (
+            <div style={styles.strategyBar}>
+              <button
+                style={{
+                  ...styles.runBtn,
+                  opacity: strategyStatus === 'running' ? 0.5 : 1,
+                  cursor: strategyStatus === 'running' ? 'not-allowed' : 'pointer',
+                }}
+                onClick={handleRunStrategy}
+                disabled={strategyStatus === 'running'}
+              >
+                {strategyStatus === 'running' ? 'Running…' : 'Run Strategy'}
+              </button>
+
+              {strategyStatus === 'done' && strategyResult && (
+                <ResultInspector result={strategyResult} />
+              )}
+              {strategyStatus === 'error' && (
+                <span style={styles.strategyErr}>Error: {strategyError}</span>
+              )}
+            </div>
+          )}
+
+          <main style={styles.main}>
+            {status === 'idle' && (
+              <div style={styles.placeholder}>
+                Select a symbol and click Fetch to load chart data.
+              </div>
+            )}
+            {status === 'loading' && (
+              <div style={styles.placeholder}>Loading…</div>
+            )}
+            {status === 'error' && (
+              <div style={{ ...styles.placeholder, color: '#ef5350' }}>
+                Error: {error}
+              </div>
+            )}
+            {status === 'success' && candles.length === 0 && (
+              <div style={styles.placeholder}>
+                No candles returned. The provider may have no data for this symbol, timeframe, or date range.
+              </div>
+            )}
+            {status === 'success' && candles.length > 0 && (
+              <Chart
+                candles={candles}
+                symbol={params?.symbol ?? ''}
+                timeframe={params?.timeframe ?? ''}
+                overlay={overlay}
+              />
+            )}
+          </main>
+        </>
+      )}
     </div>
+  )
+}
+
+function NavTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      style={{
+        background: active ? '#1a2a3a' : 'transparent',
+        border: '1px solid',
+        borderColor: active ? '#2a4a6a' : '#2a2d3e',
+        borderRadius: '4px',
+        color: active ? '#7eb8f7' : '#4a5568',
+        fontSize: '11px',
+        fontFamily: 'monospace',
+        letterSpacing: '0.05em',
+        padding: '4px 12px',
+        cursor: 'pointer',
+      }}
+      onClick={onClick}
+    >
+      {label}
+    </button>
   )
 }
 
@@ -212,6 +278,17 @@ const styles: Record<string, React.CSSProperties> = {
   subtitle: {
     fontSize: '12px',
     color: '#4a5568',
+    flex: 1,
+  },
+  toolsBtn: {
+    border: '1px solid #2a2d3e',
+    borderRadius: '4px',
+    padding: '4px 12px',
+    fontSize: '11px',
+    fontFamily: 'monospace',
+    letterSpacing: '0.05em',
+    cursor: 'pointer',
+    marginLeft: 'auto',
   },
   strategyBar: {
     display: 'flex',

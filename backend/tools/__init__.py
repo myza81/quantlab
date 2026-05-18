@@ -1,3 +1,4 @@
+from backend.tools.configuration import ToolConfiguration
 from backend.tools.models import (
     ParameterSpec,
     ToolCategory,
@@ -12,6 +13,13 @@ from backend.tools.registry import (
     ToolRegistryError,
 )
 from backend.tools.sma import SMA_METADATA, compute_sma
+from backend.tools.toolset import StrategyToolSet
+from backend.tools.validation import (
+    ConfigurationValidationError,
+    ToolSetValidationResult,
+    validate_strategy_toolset_against_registry,
+    validate_tool_configuration,
+)
 
 
 def create_default_registry() -> ToolRegistry:
@@ -36,6 +44,15 @@ __all__ = [
     # sma
     "SMA_METADATA",
     "compute_sma",
+    # configuration
+    "ToolConfiguration",
+    # toolset
+    "StrategyToolSet",
+    # validation
+    "ConfigurationValidationError",
+    "ToolSetValidationResult",
+    "validate_strategy_toolset_against_registry",
+    "validate_tool_configuration",
     # factory
     "create_default_registry",
 ]

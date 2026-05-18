@@ -39,7 +39,7 @@ Modular strategy research and execution ecosystem.
 
 ## Current Development Stage
 
-Foundation and architecture governance stage.
+Foundation implemented; backend/API expansion continues under architecture governance.
 
 The project is currently establishing:
 * architectural guardrails
@@ -49,7 +49,7 @@ The project is currently establishing:
 * implementation protocols
 * modular system boundaries
 
-Core implementation has not started yet.
+Core implementation is active with thin-route service-based backend APIs, tool registry foundations, and frontend chart visualization already in place.
 
 ---
 
@@ -71,6 +71,423 @@ Current priority is NOT:
 * production deployment
 
 The immediate objective is building a disciplined modular research ecosystem.
+
+---
+
+# Latest Completed Work
+
+## Phase 2N.12 — Browser-Level Draft Workspace Validation & Runtime Stabilization (COMPLETE)
+
+Completed:
+* Browser-level Draft Workspace validation executed against live frontend + backend using headless Chrome DevTools
+* Startup validated:
+  * backend clean on `:8000`
+  * frontend clean on `:3000`
+  * Vite `/drafts` + `/tools` proxy path confirmed
+* Browser workflow validated:
+  * create draft
+  * add two SMA tools
+  * patch SMA period (`20 → 21`)
+  * reorder tools
+  * toggle enabled state
+  * validate draft
+  * delete draft
+  * archive draft
+  * refresh persistence
+  * backend/frontend restart persistence
+* Invalid validation display verified with a deliberately seeded invalid draft:
+  * backend returned registry validation errors
+  * frontend rendered `✗ invalid` and backend error text without local duplication
+
+Runtime issues discovered/fixed:
+* `frontend/src/components/DraftWorkspace.tsx`
+  * patch/reorder/toggle responses updated `selectedDraft` but did not sync the list panel copy
+  * fixed by centralizing `syncDraftInList(updated)` and applying it after select/add/remove/reorder/patch
+* `frontend/src/components/DraftDetailView.tsx`
+  * local validation/action state could persist across draft switches
+  * fixed by resetting local state on `draft.draft_id` change
+  * added lightweight action disabling during archive/delete/validate requests
+* `frontend/src/components/DraftWorkspace.tsx`
+  * keyed `DraftDetailView` and `ToolCompositionPanel` by `draft_id` to prevent stale per-draft UI state carryover
+* `frontend/src/components/ToolCompositionPanel.tsx`
+  * removed unused prop after parent-driven sync cleanup
+
+Architecture preserved:
+* frontend remains passive orchestration only
+* backend remains source-of-truth for draft composition and validation
+* no validation logic moved into frontend
+* no runtime/execution/backtesting coupling introduced
+
+Validation:
+* Browser-level startup + draft workflow validation completed
+* `npm run build` → clean
+* `.venv/bin/pytest` → 999 passed
+
+Next recommended step:
+* Phase 2N.13: tighten draft metadata editing UX and targeted frontend test coverage around draft selection/synchronization, without expanding into execution systems
+
+---
+
+## Phase 2N.11 — Frontend Draft Workspace & Composition UI (COMPLETE)
+
+Completed:
+* `frontend/src/types/drafts.ts` (modified) — extended with `DraftListResponse`, `CompositionValidationResponse`
+* `frontend/src/api/drafts.ts` (new) — typed HTTP client for all draft + composition endpoints:
+  * CRUD: `fetchDrafts`, `fetchDraft`, `createDraft`, `updateDraft`, `deleteDraft`, `archiveDraft`
+  * Composition: `addToolToDraft`, `removeToolFromDraft`, `reorderDraftTools`, `patchDraftTool`, `validateDraft`
+  * Single `_req<T>()` helper — handles 204 No Content, JSON parse, error extraction; no business logic
+* `frontend/src/components/DraftWorkspace.tsx` (new) — top-level 2-column workspace:
+  * Left 280px: `DraftListPanel` (list + new draft form)
+  * Right flex-1: `DraftDetailView` + `ToolCompositionPanel` for selected draft
+  * State: `drafts[]` (list) + `selectedDraft` (current); each composition op replaces `selectedDraft` from API response
+  * Interaction model: UI → API call → backend response → `setSelectedDraft(result)` — no optimistic updates
+* `frontend/src/components/DraftListPanel.tsx` (new) — active draft list with inline create form:
+  * Displays `StrategyDraftCard` per draft; click to select; highlighted selection border
+  * New Draft form: `draft_id` + `display_name` inputs → `POST /drafts` → refreshes list
+* `frontend/src/components/DraftDetailView.tsx` (new) — draft metadata + lifecycle actions:
+  * Displays: draft_id, display_name, description, tags, enabled, notes, tool count, timestamps
+  * Actions: Validate (POST /validate → shows `CompositionValidationResponse` inline), Archive, Delete
+  * Validation result: green "✓ valid" or red "✗ invalid" + error list from backend
+* `frontend/src/components/ToolCompositionPanel.tsx` (new) — editable ordered toolset:
+  * ToolRow: position number, instance_id, tool_id, enable toggle (●/○), ▲▼ reorder, ✎ edit params, ✕ remove
+  * Params display: read-only chips when not editing; inline inputs when editing (Save / Discard)
+  * Add Tool button → shows `AddToolForm` inline above tool list
+  * Each operation calls API → parent receives updated draft via callback → `setSelectedDraft`
+* `frontend/src/components/AddToolForm.tsx` (new) — inline tool addition form:
+  * Fetches available tools from `GET /tools` on mount
+  * Dynamic parameter inputs based on `ToolMetadataResponse.parameters` (type_label → input type)
+  * Coerces string inputs to correct types (int/float/bool/str) before submission
+  * Error display: backend validation errors shown inline
+* `frontend/vite.config.ts` (modified) — added `/drafts` → `http://localhost:8000` proxy entry
+* `frontend/src/App.tsx` (modified) — added `NavTab` component + `Chart | Drafts` view toggle:
+  * "Chart" tab: existing market data + strategy run UI unchanged
+  * "Drafts" tab: renders `DraftWorkspace` replacing chart main area
+
+Architecture preserved:
+* Frontend is passive orchestration layer — no validation logic duplicated
+* Backend remains source-of-truth: every state change flows through API → refresh from response
+* No Redux/Zustand/MobX — only local `useState` hooks
+* Execution-independent: no compute_sma(), no strategy runner, no runtime calls
+* All types mirror backend contracts (StrategyDraftData, ToolConfigurationInstance, etc.)
+
+Validation:
+* `npm run build` → clean (49 modules, up from 42; 7 new components + 1 new API client)
+* `pytest` → 999 passed (zero regressions — no backend changes)
+* Frontend: no Vitest test runner configured yet; TypeScript compilation is the primary static check
+
+Next recommended step:
+* Phase 2N.12: Browser-level manual validation (start both servers, open http://localhost:3000, navigate to Drafts, create/compose/validate a draft end-to-end); fix any runtime issues discovered
+
+---
+
+## Phase 2N.10 — Draft Composition & Editing API (COMPLETE)
+
+Completed:
+* `backend/api/schemas/draft_composition.py` (new) — passive request/response schemas:
+  * `AddToolRequest` — `tool: ToolConfiguration` + optional `index: int | None` (None = append)
+  * `ReorderToolsRequest` — `ordered_instance_ids: list[str]` (must be exact permutation)
+  * `PatchToolRequest` — all optional: `parameters: dict | None`, `enabled`, `display_name`, `color`
+  * `CompositionValidationResponse` — `valid: bool`, `errors: list[str]`
+* `backend/api/services/draft_composition_service.py` (new) — composition orchestration:
+  * Typed errors: `DraftCompositionError` (409), `ToolInstanceNotFoundError` (404), `ToolOrderError` (422), `ToolPatchError` (422)
+  * `add_tool()` — validates against registry; rejects duplicate instance_id; inserts at index or appends
+  * `remove_tool()` — removes by instance_id; preserves remaining order
+  * `reorder_tools()` — strict permutation check (no missing, no extra, no duplicates); reorders tuple
+  * `patch_tool()` — merges parameters (not replace); validates patched config when params changed
+  * `validate_draft()` — delegates to `draft.validate_against_registry()`; never raises
+  * All operations: load → immutable transform → update repository; `updated_at` always refreshed
+  * Internal `_rebuild_draft()` and `_new_toolset()` helpers enforce frozen-model immutability pattern
+* `backend/api/routes/draft_composition.py` (new) — thin composition routes under `/drafts` prefix:
+  * `POST   /drafts/{draft_id}/tools` → 200, 404, 409 (dup), 422 (invalid tool/index)
+  * `DELETE /drafts/{draft_id}/tools/{instance_id}` → 200, 404
+  * `POST   /drafts/{draft_id}/tools/reorder` → 200, 404, 422
+  * `PATCH  /drafts/{draft_id}/tools/{instance_id}` → 200, 404, 422
+  * `POST   /drafts/{draft_id}/validate` → 200, 404
+  * Reuses `get_draft_repository` and `get_tool_registry` Depends from existing routes
+* `backend/api/main.py` — `draft_composition.router` registered
+
+Architecture preserved:
+* Immutability: all operations use `model_dump() + model_validate()` round-trip; no frozen model mutation
+* Execution-independence: `compute_sma()` never called; verified by monkeypatched tests
+* Validation delegation: `validate_tool_configuration()`, `validate_strategy_toolset_against_registry()`,
+  `draft.validate_against_registry()` — no duplicated validation logic
+* Repository-bound: every composition operation goes through `DraftRepository.load()` + `update()`
+* No runtime coupling: no `StrategyRuntimeRunner`, no strategy execution, no backtesting
+* Frozen model semantics: `_rebuild_draft(draft, new_toolset)` always creates a new `StrategyDraft` instance
+* Parameter patching is merge semantics: only keys in request are updated; existing keys preserved
+
+Validation:
+* `pytest tests/unit/test_draft_composition_service.py tests/unit/test_draft_composition_api.py` → 80 passed
+* `pytest` → 999 passed (zero regressions from prior 919)
+* `npm run build` → clean (42 modules)
+
+Next recommended step:
+* Phase 2N.11: Vite proxy update for `/drafts` + passive frontend draft listing component (reads existing `/drafts` API)
+
+---
+
+## Phase 2N.9 — Strategy Draft Persistence Layer (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/draft_repository.py` (new) — `DraftRepository` filesystem-backed persistence:
+  * Storage layout: `{base}/strategy_drafts/{draft_id}.json` (active), `{base}/strategy_drafts/archive/{draft_id}.json` (archived)
+  * Methods: `save()`, `load()`, `load_archived()`, `exists()`, `list_all()`, `update()`, `archive()`, `delete()`
+  * Typed errors: `DraftNotFoundError`, `DraftAlreadyExistsError`, `DraftPersistenceError`
+  * Serialization: `StrategyDraft.model_dump_json()` — deterministic UTF-8 JSON with trailing newline
+  * `list_all()` returns only active drafts sorted by draft_id; archived drafts excluded
+* `backend/api/schemas/drafts.py` (new) — `DraftCreateRequest`, `DraftUpdateRequest`, `DraftToolConfigResponse`, `DraftToolSetResponse`, `DraftResponse`, `DraftListResponse`
+  * `DraftCreateRequest.toolset: StrategyToolSet` — reuses existing Pydantic v2 model for 422 validation without duplicating logic
+  * `DraftUpdateRequest` — all fields optional; `model_dump(exclude_unset=True)` used in service for partial updates
+* `backend/api/services/draft_service.py` (new) — thin orchestration: `create_draft`, `get_draft`, `list_drafts`, `update_draft`, `archive_draft`, `delete_draft`
+  * `update_draft` uses `existing.model_dump() + exclude_unset updates + model_validate` round-trip for clean partial updates on frozen model
+  * `_to_response(draft)` uses `DraftResponse.model_validate(draft.model_dump())` — Pydantic coerces tuples→lists automatically
+* `backend/api/routes/drafts.py` (new) — thin REST routes; `get_draft_repository()` Depends injectable for test isolation:
+  * `GET /drafts` → 200 list
+  * `POST /drafts` → 201 created, 409 conflict, 422 validation
+  * `GET /drafts/{draft_id}` → 200, 404
+  * `PUT /drafts/{draft_id}` → 200, 404
+  * `POST /drafts/{draft_id}/archive` → 204, 404
+  * `DELETE /drafts/{draft_id}` → 204, 404
+* `backend/api/main.py` — `drafts.router` registered
+* `tests/unit/test_draft_repository.py` (new) — 42 tests; 8 groups: save, load, exists, list_all, update, archive, delete, serialization determinism
+* `tests/unit/test_drafts_api.py` (new) — 27 tests; 7 groups: list, create (happy path + 409 + 422), get, update (partial), archive, delete, execution independence
+
+Architecture preserved:
+* `StrategyDraft ≠ Runtime Execution` — no tool execution anywhere in repository, service, or routes
+* `compute_sma()` never called; verified by monkeypatched test
+* Routes stay thin: route → service → repository, no business logic in routes
+* Validation authority: `StrategyToolSet` Pydantic model in `DraftCreateRequest` enforces structural validity (invalid toolset → 422); no duplicate validation logic
+* No PostgreSQL, ORM, async DB layers, or cloud storage introduced
+* Vite proxy not updated — no frontend UI in this phase per directive
+
+Validation:
+* `pytest tests/unit/test_draft_repository.py tests/unit/test_drafts_api.py` → 69 passed
+* `pytest` → 919 passed (zero regressions from prior 850)
+* `npm run build` → clean (42 modules)
+
+Next recommended step:
+* Phase 2N.10: Strategy Draft Lifecycle — `POST /drafts/{draft_id}/validate` endpoint (validates against active registry); lifecycle stage field on StrategyDraft; update Vite proxy for `/drafts`; passive frontend draft listing component
+
+---
+
+## Phase 2N.8 — StrategyDraft Contracts (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/drafts.py` (new) — `StrategyDraft` frozen Pydantic v2 model:
+  * `draft_id: str` — normalized lowercase + stripped
+  * `display_name: str` — non-empty enforced
+  * `description: str | None = None`
+  * `toolset: StrategyToolSet` — nested composition
+  * `created_at / updated_at: datetime` — UTC-aware enforced; naive rejected; non-UTC normalized
+  * `enabled: bool = True`
+  * `tags: tuple[str, ...] = ()`
+  * `notes: str | None = None`
+  * `validate_against_registry(registry) → ToolSetValidationResult` — delegates to `validate_strategy_toolset_against_registry()`; never raises
+* `backend/strategy_registry/__init__.py` — `StrategyDraft` NOT re-exported here (see circular import note below); import from `backend.strategy_registry.drafts` directly
+* `frontend/src/types/drafts.ts` (new) — `StrategyDraftData` TypeScript interface; `created_at`/`updated_at` as ISO 8601 strings; imports `StrategyToolSetData`
+* `frontend/src/components/StrategyDraftCard.tsx` (new) — passive read-only display; shows draft_id, display_name, description, tool count, tags, notes, timestamps; no editing, saving, or execution
+* `tests/unit/test_strategy_draft.py` (new) — 45 tests; 6 groups:
+  * TestStrategyDraftConstruction (18): construction, draft_id lowercased/stripped, empty id/name raises, defaults, tags as tuple, toolset stored, direct import from drafts module
+  * TestStrategyDraftDatetimes (5): UTC stored, naive created_at raises, naive updated_at raises, non-UTC normalized to UTC
+  * TestStrategyDraftFrozen (3): immutable fields, extra fields rejected
+  * TestStrategyDraftValidation (8): valid passes, invalid fails, unknown tool_id error, never raises, returns ToolSetValidationResult, empty toolset valid, multi-error collection, registry not mutated
+  * TestStrategyDraftSerialization (7): model_dump dict, expected keys, JSON valid, identical inputs identical dump/json, tags in dump, toolset nested
+  * TestStrategyDraftLayerSeparation (4): no compute_sma on construction, no compute_sma on validation, no runtime runner reference, drafts independent
+
+Architecture preserved:
+* `ToolMetadata ≠ ToolConfiguration ≠ StrategyToolSet ≠ StrategyDraft ≠ Runtime Execution` — strict layer separation maintained
+* `StrategyDraft` is execution-independent: no `compute_sma()`, no `StrategyRuntimeRunner`, no runtime artifacts
+* Circular import resolved: `strategy_registry/__init__.py` does NOT import `drafts.py` because `drafts.py → tools.registry → tools.models → strategy_registry.models` would create a cycle through the package `__init__`. `StrategyDraft` must be imported from `backend.strategy_registry.drafts` directly.
+* Frontend remains passive: `StrategyDraftCard` is read-only display; no business logic; no save/load/execute UI
+
+Validation:
+* `pytest tests/unit/test_strategy_draft.py` → 45 passed
+* `pytest` → 850 passed (zero regressions from prior 805)
+* `npm run build` → clean (42 modules)
+
+Next recommended step:
+* Phase 2N.9: StrategyDraft API — `POST /strategy-drafts` to create a draft; `GET /strategy-drafts/{draft_id}` to retrieve; in-memory store for now; establishes frontend→backend draft submission boundary
+
+---
+
+## Phase 2N.7 — ToolSet Validation API (COMPLETE)
+
+Completed:
+* `backend/api/schemas/tools.py` — added `ToolSetValidationResponse(valid: bool, errors: list[str])`
+* `backend/api/services/tool_service.py` — added `validate_toolset(toolset, registry) → ToolSetValidationResponse`; thin wrapper around `validate_strategy_toolset_against_registry()`; never raises
+* `backend/api/routes/tools.py` — added `POST /tools/validate-toolset`; thin route; parses `StrategyToolSet` as request body; delegates to service; no business logic in route
+* `tests/unit/test_validate_toolset_api.py` (new) — 31 tests; 7 groups:
+  * TestHappyPath (6): 200 response, valid=true, multiple SMAs, empty toolset, disabled tool, response shape
+  * TestUnknownToolId (6): valid=false, one error, error has instance_id, error has tool_id, "not found" in error, empty registry flags all
+  * TestParameterErrors (6): missing required param, error mentions period+missing, error prefixed with instance_id, below-min, unknown param, wrong type
+  * TestMultiErrorCollection (4): two bad tools both reported, unknown+bad-param both reported, error count matches violations, valid/invalid mix
+  * TestMalformedRequest (6): missing toolset_id → 422, missing tools → 422, empty body → 422, non-JSON → 422, duplicate instance_id → 422, extra fields → 422
+  * TestExecutionIndependence (1): monkeypatches compute_sma() to raise — confirms it is never called
+  * TestGetToolsUnchanged (2): GET /tools still returns 200 and still contains SMA
+
+Architecture preserved:
+* Route remains thin — no validation logic embedded; route delegates to service which delegates to registry-backed validator
+* `POST /tools/validate-toolset` is execution-independent: no `compute_sma()` called
+* Registry state is read-only; no mutation during validation
+* Malformed `StrategyToolSet` JSON (including duplicate `instance_id`) fails at FastAPI parsing layer → 422 before reaching business logic
+* Vite proxy unchanged — `/tools` prefix already proxied in Phase 2N.3
+* `GET /tools` behavior is unaffected
+
+Validation:
+* `pytest tests/unit/test_validate_toolset_api.py` → 31 passed
+* `pytest` → 805 passed (zero regressions from prior 774)
+
+Next recommended step:
+* Phase 2N.8: Strategy Draft API — `POST /strategy-drafts` accepting a `StrategyToolSet` payload; persist draft identity; return draft_id and validation summary
+
+---
+
+## Phase 2N.6 — Registry-Backed StrategyToolSet Validation (COMPLETE)
+
+Completed:
+* `backend/tools/validation.py` — extended with two new additions:
+  * `ToolSetValidationResult` — frozen dataclass; `valid: bool`, `errors: tuple[str, ...]`; invariant enforced at construction (`valid=True` ↔ `errors==()`)
+  * `validate_strategy_toolset_against_registry(toolset, registry) → ToolSetValidationResult` — iterates all `toolset.tools` in insertion order; resolves each `tool_id` against registry; runs `validate_tool_configuration()` for resolved tools; collects all errors before returning; never raises
+* `backend/tools/__init__.py` — exports `ToolSetValidationResult`, `validate_strategy_toolset_against_registry`
+* `tests/unit/test_registry_validation.py` (new) — 31 tests; 7 groups:
+  * TestToolSetValidationResult (6): invariant enforcement (valid+errors consistency), frozen, errors type
+  * TestHappyPath (5): single SMA, multiple SMAs, empty toolset, optional params, disabled tool still validated
+  * TestUnknownToolId (5): fails, error names instance_id, error names tool_id, "not found" in message, empty registry flags all
+  * TestParameterErrors (5): missing required param, instance_id prefix on errors, below min, unknown param, wrong type
+  * TestMultiToolErrorCollection (4): two invalid both reported, mix valid/invalid, unknown+bad-param both reported, error count matches
+  * TestErrorOrdering (2): insertion-order determinism, identical inputs → identical results
+  * TestRegistryIntegrity (4): registry unchanged after valid, unchanged after invalid, never raises, disabled tool validated
+
+Architecture preserved:
+* Registry layer (ToolMetadata source) ≠ Validation layer ≠ Runtime Execution
+* `validate_strategy_toolset_against_registry` is execution-independent: no compute_sma(), no indicators computed
+* Registry state is read-only during validation; no mutation possible (ToolRegistry.get() is a pure lookup)
+* `ToolSetValidationResult` is a frozen dataclass (not Pydantic) — lightweight value type; no I/O concerns
+* `validate_strategy_toolset_against_registry` never raises — returns result, caller decides what to do
+
+Validation:
+* `pytest tests/unit/test_registry_validation.py` → 31 passed
+* `pytest` → 774 passed (zero regressions from prior 743)
+* `npm run build` → clean (42 modules)
+
+Next recommended step:
+* Phase 2N.7: Strategy Draft API — `POST /strategy-drafts/validate` accepting a `StrategyToolSet` JSON payload; backend resolves against active registry, returns `ToolSetValidationResult` as JSON; establishes the frontend→backend submission boundary
+
+---
+
+## Phase 2N.5 — StrategyToolSet Contracts (COMPLETE)
+
+Completed:
+* `backend/tools/toolset.py` (new) — `StrategyToolSet` frozen Pydantic v2 model
+  * `toolset_id` — normalized lowercase
+  * `display_name: str | None`
+  * `tools: tuple[ToolConfiguration, ...]` — ordered, immutable; list inputs coerced to tuple
+  * `enabled: bool = True`
+  * Duplicate `instance_id` rejected at construction via `field_validator` → `pydantic.ValidationError`
+  * Empty toolsets allowed (rationale: draft-creation and incremental build are valid; runtime enforces non-empty where needed)
+  * Query methods: `get_tool(instance_id)` (case-insensitive), `instance_ids()`, `enabled_tools()`, `__len__`, `__contains__`
+* `backend/tools/__init__.py` — exports `StrategyToolSet`
+* `frontend/src/types/tools.ts` — extended with `StrategyToolSetData` interface
+* `frontend/src/components/ToolSetPanel.tsx` (new) — passive ordered display of toolset; position numbers, color accents, param key/value chips, per-tool enabled state
+* `tests/unit/test_strategy_toolset.py` (new) — 43 tests; 7 groups:
+  * TestStrategyToolSet (12): construction, normalization, empty tools, frozen, extra fields rejected, list-to-tuple coercion
+  * TestDuplicateInstanceIdRejection (5): single duplicate, multi-tool duplicate, case-normalized duplicate, error names offender
+  * TestToolOrdering (4): insertion order preserved, instance_ids() returns tuple, reverse order stable
+  * TestContainmentAndLookup (8): contains, get_tool (case-insensitive), missing returns None, non-string returns False, len
+  * TestEnabledTools (4): all enabled, one disabled, all disabled, order preserved in filtered result
+  * TestStrategyToolSetSerialization (6): model_dump, model_dump_json, identical toolsets identical output, order in dump, empty toolset, stable across calls
+  * TestLayerSeparation (4): no compute_sma, tool_id reference only, coexists with registry, multiple toolsets independent
+
+Validation:
+* `pytest tests/unit/test_strategy_toolset.py` → 43 passed
+* `pytest` → 743 passed (zero regressions from prior 700)
+* `npm run build` → clean (42 modules)
+
+Next recommended step:
+* Phase 2N.6: Strategy composition API skeleton — `POST /strategy-drafts` accepting a `StrategyToolSet` payload, returning a validated draft identity
+* Or: Tool configuration validation API — `POST /tools/{tool_id}/validate-config` accepting parameters, returning validation result
+
+---
+
+## Phase 2N.4 — Tool Configuration Contracts (COMPLETE)
+
+Completed:
+* `backend/tools/configuration.py` (new) — `ToolConfiguration` frozen Pydantic v2 model
+  * `instance_id` — human-readable, normalized to lowercase, e.g. "sma_fast"
+  * `tool_id` — references tool definition in registry; normalized lowercase
+  * `parameters: dict[str, Any]` — actual runtime parameter values
+  * `enabled: bool = True`, `display_name: str | None`, `color: str | None`
+* `backend/tools/validation.py` (new) — `ConfigurationValidationError` + `validate_tool_configuration(config, metadata)`
+  * Validates: tool_id match, required params present, no unknown params, type compatibility (int/float/str/bool), min/max constraints
+  * All violations collected before raising — full error list in one pass
+  * `_check_type_compatibility()` — bool/int/float/str detection, correctly rejects bool for int/float
+* `backend/tools/__init__.py` — exports `ToolConfiguration`, `ConfigurationValidationError`, `validate_tool_configuration`
+* `frontend/src/types/tools.ts` (new) — `ToolConfigurationInstance` TypeScript interface mirroring backend model
+* `frontend/src/components/ConfiguredToolList.tsx` (new) — passive read-only display of configured instances; shows instance_id/tool_id/params/enabled state; supports color accent from instance.color
+* `tests/unit/test_tool_configuration.py` (new) — 48 tests; 4 groups:
+  * TestToolConfiguration (16): construction, normalization, frozen, empty/whitespace rejection, extra fields rejected
+  * TestValidateToolConfiguration (24): required param missing, optional omitted, unknown param, tool_id mismatch, all 4 type checks, bool-int distinction, min/max constraints, at-boundary acceptance, multiple errors, SMA integration
+  * TestMultipleInstancesSameToolId (4): SMA(20)/SMA(50)/SMA(200) from same definition, independence, enabled state
+  * TestConfigurationSerialization (4): model_dump, model_dump_json, identical configs identical output, stable across calls
+
+Architecture preserved:
+* Tool Definition Layer (`ToolMetadata`) remains separate from Tool Configuration Layer (`ToolConfiguration`)
+* Configuration Layer remains separate from Runtime Execution Layer (no compute_sma() called)
+* `ConfiguredToolList` is a passive rendering primitive — no state management, no editing, no business logic
+* Backend-authoritative validation: frontend type is declaration only, validation always via `validate_tool_configuration()`
+* `GET /tools` discovery endpoint unchanged
+
+Validation:
+* `pytest tests/unit/test_tool_configuration.py` → 48 passed
+* `pytest` → 700 passed (zero regressions from prior 652)
+* `npm run build` → clean (42 modules)
+
+Next recommended step:
+* Phase 2N.5: Tool configuration collection (e.g., StrategyToolSet — ordered list of ToolConfiguration instances with duplicate instance_id detection)
+* Or: strategy composition API skeleton (POST /strategy-drafts with tool configuration payload)
+
+---
+
+## Phase 2N.3 — Frontend Dynamic Tool Discovery (COMPLETE)
+
+Completed:
+* `frontend/vite.config.ts` — `/tools` proxy entry added (target: `http://localhost:8000`)
+* `frontend/src/api/tools.ts` — typed fetch client matching `ToolListResponse` / `ToolMetadataResponse` / `ToolParameterResponse` shapes
+* `frontend/src/components/ToolPanel.tsx` — collapsible tool cards; fetches on mount; loading/error/empty states; parameter list, status badges, capability/mode metadata
+* `frontend/src/App.tsx` — "Tools" toggle button in header; conditionally renders `<ToolPanel />` below header; `toolsOpen` state
+* `npm run build` → clean, 42 modules
+
+**Proxy error fix (Phase 2N.3-fix):**
+
+Root cause: `AggregateError [ECONNREFUSED] http proxy error: /tools` was caused by the backend uvicorn server NOT being running during the browser test. This is NOT a proxy misconfiguration. The Vite proxy entry, route prefix (`/tools`), and backend endpoint are all correct.
+
+Diagnosis confirmed by:
+* `curl http://localhost:8000/tools` → connection refused (backend not running)
+* All 76 tools + tools-API tests pass
+* Proxy target `http://localhost:8000` matches `uvicorn backend.api.main:app --port 8000`
+
+Fix: operational — backend must be started before opening the frontend. No code changes were required. `ToolPanel` already renders a user-visible error when the backend is unreachable.
+
+Correct local dev startup sequence:
+```bash
+# Terminal 1 — backend (must start FIRST)
+source .venv/bin/activate
+uvicorn backend.api.main:app --reload --port 8000
+
+# Terminal 2 — frontend
+cd frontend && npm run dev
+# Open http://localhost:3000
+# Click "Tools" → panel loads SMA tool metadata from GET /tools
+```
+
+Validation:
+* `.venv/bin/pytest tests/unit/test_tools.py tests/unit/test_tools_api.py` → 76 passed
+* `npm run build` → clean (42 modules)
+* ECONNREFUSED = backend not running; resolved by starting backend first
+
+Next recommended step:
+* Strategy composition UI (tools → conditions → rules → signal wiring)
+* Keep execution/orchestration deferred to a later phase
 
 ---
 

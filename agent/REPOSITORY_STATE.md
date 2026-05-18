@@ -4,7 +4,7 @@
 main
 
 ## Current Phase
-PHASE 2M — Strategy Visualization Artifact Foundation + UX Hardening (complete)
+PHASE 2N.12 — Browser-Level Draft Workspace Validation & Runtime Stabilization (complete)
 
 ---
 
@@ -29,13 +29,22 @@ OPERATIONAL
   - `CallableSignatureError`, `validate_callable_signatures()`, `validate_return_annotations()`
   - Registry remains metadata-only — no runtime module loading in registry
   - Loader validation pipeline: presence → signature → return annotation
-- `backend/api/` — Dataset API + Market Data API + Strategy Runs API complete ✓
+- `backend/api/` — Dataset API + Market Data API + Strategy Runs API + Tools Discovery API complete ✓
   - `GET /market-data/ohlcv` — provider-based OHLCV fetch via YahooFinanceAdapter + OHLCVService
+  - `GET /tools` — read-only tool metadata discovery via default tool registry
+  - `POST /tools/validate-toolset` — validates submitted `StrategyToolSet` against registry; returns `{valid, errors}`
   - `POST /datasets/import/csv` — CSV upload → normalize → Parquet
   - `GET /datasets` — list stored datasets
   - `GET /datasets/{dataset_id}/ohlcv` — read normalized candles
   - Routes thin; business logic in `backend/api/services/dataset_service.py`
   - `get_storage_path` Depends injectable for test isolation
+- `backend/tools/` — tool foundation + configuration contracts complete ✓
+  - `ToolMetadata`, `ParameterSpec`, enums for category/status/visualization
+  - `ToolRegistry` with default factory and SMA registration
+  - `ToolConfiguration` — frozen Pydantic v2 model; instance_id + tool_id + parameters + enabled + display hints
+  - `validate_tool_configuration()` — checks required params, type compatibility, min/max, unknown params; full error collection
+  - `ConfigurationValidationError` — carries `.errors: list[str]`
+  - discovery path remains execution-free; `compute_sma()` not used by API
 - `backend/core/config.py` — DEBUG parsing hardened ✓
   - boolean-like values accepted
   - non-boolean values such as `release` safely treated as `False`
@@ -63,10 +72,11 @@ OPERATIONAL
   - yfinance SDK isolated inside adapter; no SDK objects escape to services or strategies; intraday fetch bounds preserve time precision
 - All other modules: empty stubs (backtesting, forward_testing, execution, etc.)
 - No PostgreSQL integration yet
+- Browser validation pass confirmed draft workflow remains metadata/composition only; no execution coupling added
 
 ## Frontend Status
 
-OPERATIONAL — build validated
+OPERATIONAL — build + browser workflow validated
 
 - Vite + React 18 + TypeScript
 - `npm install` confirmed ✓
@@ -76,8 +86,14 @@ OPERATIONAL — build validated
 - Controls component (`Controls.tsx`) — provider/symbol/asset_class/exchange/timeframe/start/end + Fetch button
 - `frontend/src/api/marketData.ts` — typed client for `GET /market-data/ohlcv`
 - `frontend/src/types/strategy.ts` — `StrategySignalOverlay`, `StrategyForecastOverlay`, `StrategyOverlay` types
-- `frontend/vite.config.ts` — proxy: `/health`, `/market-data`, `/datasets`, `/strategy-runs` → backend at :8000
-- End-to-end not yet manually validated in browser (API layer validated programmatically)
+- `frontend/vite.config.ts` — proxy: `/health`, `/market-data`, `/datasets`, `/strategy-runs`, `/tools`, `/drafts` → backend at :8000
+- `frontend/src/types/tools.ts` — `ToolConfigurationInstance` interface (mirrors backend ToolConfiguration)
+- `frontend/src/api/tools.ts` — typed `fetchTools()` client; `ToolListResponse`, `ToolMetadataResponse`, `ToolParameterResponse`
+- `frontend/src/components/ToolPanel.tsx` — collapsible tool discovery cards; loads from `GET /tools`
+- `frontend/src/components/ConfiguredToolList.tsx` — passive read-only display of `ToolConfigurationInstance[]`
+- `frontend/src/components/DraftWorkspace.tsx` — list/detail synchronization hardened after patch/reorder/toggle responses
+- `frontend/src/components/DraftDetailView.tsx` — per-draft validation/action state reset + lightweight request disabling
+- Draft Workspace browser workflow validated end-to-end via live frontend/backend session
 
 ## Installed Packages (backend `.venv`)
 
@@ -147,6 +163,35 @@ Python: 3.13 | venv: `.venv/` at repo root
 - `backend/api/schemas/strategy_runs.py` — `StrategyRunRequest`, `SignalResponse`, `ForecastResponse`, `IndicatorPointResponse`, `IndicatorSeriesResponse`, `StrategyRunResponse`
 - `backend/api/services/strategy_run_service.py` — `run_strategy`, `StrategyRunError`, `StrategyNotFoundError`; serializes `artifacts → indicators`
 - `backend/api/routes/strategy_runs.py` — `POST /strategy-runs/run`
+- `backend/tools/configuration.py` — `ToolConfiguration` (frozen Pydantic v2; instance_id, tool_id, parameters, enabled, display_name, color)
+- `backend/tools/validation.py` — `ConfigurationValidationError`, `validate_tool_configuration()`, `ToolSetValidationResult`, `validate_strategy_toolset_against_registry()`, `_check_type_compatibility()`
+- `backend/tools/toolset.py` — `StrategyToolSet` (frozen Pydantic v2; ordered tuple, duplicate instance_id rejection, get_tool/instance_ids/enabled_tools/__len__/__contains__)
+- `frontend/src/types/tools.ts` — `ToolConfigurationInstance` + `StrategyToolSetData` interfaces
+- `frontend/src/components/ConfiguredToolList.tsx` — passive configured-instance display component
+- `frontend/src/components/ToolSetPanel.tsx` — passive ordered toolset display with position numbers, color accents, param chips
+- `backend/strategy_registry/drafts.py` — `StrategyDraft` (frozen Pydantic v2; draft_id, display_name, toolset, created_at/updated_at UTC-enforced, enabled, tags, notes; `validate_against_registry()`)
+- `backend/strategy_registry/draft_repository.py` — `DraftRepository` (filesystem JSON; save/load/update/archive/delete/list_all; `DraftNotFoundError`, `DraftAlreadyExistsError`, `DraftPersistenceError`)
+- `backend/api/schemas/draft_composition.py` — `AddToolRequest`, `ReorderToolsRequest`, `PatchToolRequest`, `CompositionValidationResponse`
+- `backend/api/services/draft_composition_service.py` — `add_tool`, `remove_tool`, `reorder_tools`, `patch_tool`, `validate_draft`; typed errors: `DraftCompositionError`, `ToolInstanceNotFoundError`, `ToolOrderError`, `ToolPatchError`
+- `backend/api/routes/draft_composition.py` — 5 composition endpoints under `/drafts` prefix
+- `backend/api/schemas/drafts.py` — `DraftCreateRequest`, `DraftUpdateRequest`, `DraftResponse`, `DraftListResponse`
+- `backend/api/services/draft_service.py` — `create_draft`, `get_draft`, `list_drafts`, `update_draft`, `archive_draft`, `delete_draft`
+- `backend/api/routes/drafts.py` — `GET/POST /drafts`, `GET/PUT/DELETE /drafts/{id}`, `POST /drafts/{id}/archive`
+  - `backend/api/routes/draft_composition.py` — `POST /drafts/{id}/tools`, `DELETE /drafts/{id}/tools/{iid}`, `POST /drafts/{id}/tools/reorder`, `PATCH /drafts/{id}/tools/{iid}`, `POST /drafts/{id}/validate`
+- `backend/api/schemas/tools.py` — `ToolParameterResponse`, `ToolMetadataResponse`, `ToolListResponse`, `ToolSetValidationResponse`
+- `backend/api/services/tool_service.py` — `list_tools()` serialization + `validate_toolset()` delegation wrapper
+- `backend/api/routes/tools.py` — `GET /tools`, `POST /tools/validate-toolset`
+- `tests/unit/test_tools_api.py` — tool discovery API coverage (7 tests)
+- `tests/unit/test_validate_toolset_api.py` — toolset validation API coverage (31 tests)
+- `tests/unit/test_strategy_draft.py` — StrategyDraft model + validation + serialization + layer separation (45 tests)
+- `frontend/src/types/drafts.ts` — `StrategyDraftData` interface
+- `frontend/src/components/StrategyDraftCard.tsx` — passive draft display component
+- `frontend/src/api/drafts.ts` — typed client: fetchDrafts/fetchDraft/createDraft/updateDraft/deleteDraft/archiveDraft + composition ops
+- `frontend/src/components/DraftWorkspace.tsx` — 2-column workspace: draft list + detail/composition panes
+- `frontend/src/components/DraftListPanel.tsx` — draft list with inline create form; clickable selection
+- `frontend/src/components/DraftDetailView.tsx` — draft metadata + validate/archive/delete actions; validation result display
+- `frontend/src/components/ToolCompositionPanel.tsx` — editable ordered toolset: reorder/enable/remove/patch params per tool
+- `frontend/src/components/AddToolForm.tsx` — inline add-tool form: tool picker, dynamic param inputs, coercion, backend error display
 - `frontend/src/api/marketData.ts` — typed `fetchOHLCV()` client
 - `frontend/src/api/strategyRuns.ts` — typed `runStrategy()` client; `IndicatorPoint`, `IndicatorSeries`, `StrategyRunResponse` with `indicators`
 - `frontend/src/types/strategy.ts` — `StrategySignalOverlay`, `StrategyForecastOverlay`, `StrategyOverlay` (includes `indicators`)
@@ -163,7 +208,7 @@ Python: 3.13 | venv: `.venv/` at repo root
 - `backend/forward_testing/`, `backend/execution/` — deferred
 - `backend/services/` — additional service modules as needed
 - First real strategy (consuming `NormalizedOHLCV` via `YahooFinanceAdapter` + `OHLCVService`)
-- Frontend browser-level end-to-end validation (requires manual browser session; API layer validated programmatically)
+- Optional targeted frontend tests for draft selection/synchronization
 
 ## Validation Status
 
@@ -196,10 +241,62 @@ Python: 3.13 | venv: `.venv/` at repo root
 | OHLCVService registry integration (get_ohlcv_by_provider_name) | PASS (9 tests) |
 | Market data API — GET /market-data/ohlcv | PASS (11 tests) |
 | Strategy runs API — POST /strategy-runs/run | PASS (19 tests) |
+| Tools discovery API — GET /tools | PASS (7 tests) |
+| Tool configuration model + validation | PASS (48 tests) |
+| StrategyToolSet model + ordering + duplicate protection | PASS (43 tests) |
+| Registry-backed toolset validation + ToolSetValidationResult | PASS (31 tests) |
+| Toolset validation API — POST /tools/validate-toolset | PASS (31 tests) |
+| StrategyDraft model + validation + serialization | PASS (45 tests) |
+| DraftRepository filesystem persistence + errors | PASS (42 tests) |
+| /drafts REST API — CRUD + archive + execution independence | PASS (27 tests) |
+| Draft composition service — add/remove/reorder/patch/validate + immutability | PASS (44 tests) |
+| Draft composition API — all 5 endpoints + regression + execution independence | PASS (36 tests) |
 | Visualization artifact models + runner extraction | PASS (21 tests) |
 | Architecture guardrails | PASS |
 | Frontend npm install | PASS |
 | Frontend build (tsc + vite build) | PASS |
+| Draft Workspace browser workflow | PASS (live create/add/edit/reorder/toggle/validate/delete/archive/reload/restart) |
+
+Browser validation rerun (2026-05-18, Phase 2N.12):
+live frontend/backend + headless Chrome DevTools → PASS
+* startup clean; `/drafts` + `/tools` reachable
+* create draft → persisted and selectable
+* add SMA tools → persisted and rendered
+* patch/reorder/toggle → UI and backend stayed synchronized
+* validate draft → `✓ valid` displayed
+* seeded invalid draft → `✗ invalid` with backend error text displayed
+* delete + archive → list/selection reset safely
+* refresh + frontend/backend restart → persistence confirmed
+
+Full suite rerun (2026-05-18, Phase 2N.11):
+999 passed (1.62s) — no backend changes; frontend build 49 modules (clean).
+
+Full suite rerun (2026-05-18, Phase 2N.10):
+999 passed (1.47s) — 80 new draft composition tests added; zero regressions.
+
+Full suite rerun (2026-05-18, Phase 2N.9):
+919 passed (1.31s) — 69 new draft persistence + API tests added; zero regressions.
+
+Full suite rerun (2026-05-18, Phase 2N.8):
+850 passed (1.19s) — 45 new StrategyDraft tests added; zero regressions.
+
+Full suite rerun (2026-05-18, Phase 2N.7):
+805 passed (1.18s) — 31 new toolset validation API tests added; zero regressions.
+
+Full suite rerun (2026-05-17, Phase 2N.6):
+774 passed (1.25s) — 31 new registry-backed validation tests added; zero regressions.
+
+Full suite rerun (2026-05-17, Phase 2N.5):
+743 passed (1.22s) — 43 new StrategyToolSet tests added; zero regressions.
+
+Full suite rerun (2026-05-17, Phase 2N.4):
+700 passed (1.26s) — 48 new tool configuration tests added; zero regressions.
+
+Full suite rerun (2026-05-17, Phase 2N.2):
+652 passed (1.21s) — 7 new tool discovery API tests added; zero regressions.
+
+Targeted tool rerun (2026-05-17, Phase 2N.2):
+`test_tools.py`, `test_tools_api.py` → 76 passed (0.68s)
 
 Full suite rerun (2026-05-09, Phase 2M):
 576 passed (1.21s) — 24 new tests added, zero regressions from prior 552.

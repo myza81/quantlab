@@ -10,6 +10,8 @@ export default defineConfig({
       '/market-data': 'http://localhost:8000',
       '/datasets': 'http://localhost:8000',
       '/strategy-runs': 'http://localhost:8000',
+      '/tools': 'http://localhost:8000',
+      '/drafts': 'http://localhost:8000',
     },
   },
 })

@@ -15,6 +15,14 @@ from backend.strategy_registry.validator import (
     validate_strategy_files,
 )
 
+# StrategyDraft is intentionally NOT re-exported from this package __init__
+# to avoid a circular import:
+#   strategy_registry.__init__
+#   → drafts.py → backend.tools.registry → backend.tools.models
+#   → backend.strategy_registry.models (needs the package) → CIRCULAR
+#
+# Import directly from backend.strategy_registry.drafts instead.
+
 __all__ = [
     # Models
     "StrategyLifecycleStage",
