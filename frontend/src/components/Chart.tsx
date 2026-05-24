@@ -43,8 +43,8 @@ export default function Chart({ candles, symbol, timeframe, overlay }: ChartProp
     if (!containerRef.current) return
 
     const chart = createChart(containerRef.current, {
-      width: containerRef.current.clientWidth,
-      height: 480,
+      width:  containerRef.current.clientWidth,
+      height: containerRef.current.clientHeight || 480,
       layout: {
         background: { color: '#0f0f1a' },
         textColor: '#d1d4dc',
@@ -83,15 +83,16 @@ export default function Chart({ candles, symbol, timeframe, overlay }: ChartProp
     candleSeriesRef.current = candleSeries
     forecastSeriesRef.current = forecastSeries
 
-    const handleResize = () => {
-      if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth })
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect
+        chart.applyOptions({ width, height })
       }
-    }
-    window.addEventListener('resize', handleResize)
+    })
+    ro.observe(containerRef.current)
 
     return () => {
-      window.removeEventListener('resize', handleResize)
+      ro.disconnect()
       indicatorSeriesMapRef.current.clear()
       chart.remove()
       chartRef.current = null
@@ -232,8 +233,9 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '12px',
   },
   chart: {
-    width: '100%',
-    flex: 1,
+    width:    '100%',
+    flex:     1,
+    minHeight: 0,
   },
   badge: {
     fontSize: '11px',

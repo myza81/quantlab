@@ -94,8 +94,7 @@ class YahooFinanceAdapter(RangeProviderAdapter):
             raise ValueError("symbol must not be empty")
         if not asset_class.strip():
             raise ValueError("asset_class must not be empty")
-        if not venue.strip():
-            raise ValueError("venue must not be empty")
+
         if timeframe not in SUPPORTED_TIMEFRAMES:
             raise ValueError(
                 f"timeframe '{timeframe}' is not supported by YahooFinanceAdapter. "

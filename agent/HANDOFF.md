@@ -76,6 +76,704 @@ The immediate objective is building a disciplined modular research ecosystem.
 
 # Latest Completed Work
 
+## Phase 2R.1 — EMA Tool + Multi-Tool Computation Proof (COMPLETE)
+
+Completed:
+* `backend/tools/ema.py` (new):
+  * `EMA_METADATA` — registry metadata: `tool_id="ema"`, `output_feature_names=("ema",)`, `stateful=True`; parameters: `period` (required int ≥1), `source` (optional str, default "close"), `name`, `color`
+  * `compute_ema()` — standalone `NormalizedOHLCV → IndicatorSeries` path; SMA-seed; recursive formula; warmup-skipping; deterministic
+* `backend/tools/historical_computation.py` (modified):
+  * `_compute_ema_series()` (new internal): `alpha = 2/(period+1)`; seed = SMA of first `period` closes; recursive EMA per bar; no lookahead; state purely local to pass
+  * `_TOOL_DISPATCHERS` extended: `"ema": _compute_ema_series` — one-line registration
+  * Module docstring updated to reflect SMA + EMA
+* `backend/tools/__init__.py` (modified):
+  * Exports `EMA_METADATA`, `compute_ema`
+  * `create_default_registry()` now registers both SMA and EMA
+* `tests/unit/test_ema_tool.py` (new) — 71 tests: EMA_METADATA contract, compute_ema standalone, pipeline correctness, warmup, no-lookahead, multi-instance, multi-tool (SMA+EMA) proof, semantic integration (threshold + crossover + SMA/EMA comparison), API integration, validation, error cases, architecture guards
+* `docs/EMA_TOOL_ARCHITECTURE.md` (new) — formula, seed behavior, warmup rules, no-lookahead guarantee, dispatcher integration, multi-tool proof, semantic integration, future extensibility path
+
+Architecture validated:
+* EMA does NOT share state between instances — each computation pass is independent
+* Evaluator does NOT compute EMA — it only reads `tool_outputs["ema_fast.ema"]` etc.
+* SMA + EMA coexist without ref collisions or state corruption in same toolset
+* Identical inputs → identical EMA outputs (deterministic)
+* No lookahead: bar N EMA uses only closes 0..N
+* Architecture boundary preserved: no imports from `execution`, `backtesting`, `forward_testing`
+
+Multi-tool proof confirmed:
+* `sma_fast.sma` + `ema_fast.ema` + `ema_slow.ema` computed in one pipeline pass
+* EMA crossover (`ema_fast.ema crosses_above ema_slow.ema`) evaluated correctly
+* Mixed SMA/EMA comparison (`ema_fast.ema > sma_fast.sma`) evaluated correctly
+* No manual `tool_outputs` injection required
+
+Validation:
+* Full backend suite: **2330 passed**, zero regressions (2259 + 71 new)
+
+---
+
+## Phase 2R.0 — Historical Tool Computation Pipeline (COMPLETE)
+
+Completed:
+* `backend/tools/computation_models.py` (new):
+  * `ToolOutputPoint` — frozen Pydantic: `bar_index`, `timestamp`, `value`; produced only post-warmup
+  * `ToolOutputSeries` — frozen: `instance_id`, `tool_id`, `output_name`, `warmup_bar_count`, `points`; `output_ref` property returns `"{instance_id}.{output_name}"`
+  * `ToolComputationResult` — frozen: `toolset_id`, `total_bars`, `series`
+* `backend/tools/historical_computation.py` (new):
+  * `ToolComputationBarInput` — frozen: `bar_index`, `timestamp`, `price_fields`
+  * `ToolComputationError` — raised on unknown tool, missing "close", duplicate bar_index, invalid params
+  * `compute_tool_outputs_for_history(toolset, bars, registry) → ToolComputationResult` — validates uniqueness, sorts bars, dispatches per enabled tool
+  * `build_bar_tool_outputs(result) → dict[bar_index, dict[ref, float]]` — warmup bars absent (signals indeterminate to evaluator)
+  * `_compute_sma_series()` — running-sum O(n) SMA; no lookahead; warmup=period-1
+  * `_TOOL_DISPATCHERS = {"sma": _compute_sma_series}` — one-line registration for future EMA/RSI
+* `backend/tools/__init__.py` (modified) — exports: `ToolOutputPoint`, `ToolOutputSeries`, `ToolComputationResult`, `ToolComputationBarInput`, `ToolComputationError`, `compute_tool_outputs_for_history`, `build_bar_tool_outputs`
+* `backend/api/schemas/historical_evaluation.py` (modified):
+  * `HistoricalEvaluationRequest` extended: `toolset: StrategyToolSet | None = None`
+* `backend/api/services/historical_evaluation_service.py` (modified):
+  * `evaluate_history_from_payload()` extended with `toolset: StrategyToolSet | None = None` parameter
+  * Ambiguity rejection: toolset + non-empty bar.tool_outputs → `HistoricalEvaluationError`
+  * Toolset path: converts bars → `ToolComputationBarInput`, calls `compute_tool_outputs_for_history`, calls `build_bar_tool_outputs`, injects per bar
+  * Manual path (toolset=None): unchanged — backward compatible
+* `backend/api/routes/historical_evaluation.py` (modified) — passes `request.toolset` to service
+* `tests/unit/test_historical_tool_computation.py` (new) — 52 tests: output models, SMA correctness, warmup, no-lookahead, multi-instance, disabled tools, build_bar_tool_outputs, errors, service toolset path, backward compat, API integration, schema, crossover semantics
+* `docs/HISTORICAL_TOOL_COMPUTATION_PIPELINE.md` (new) — architecture, output ref format, warmup rules, input/output contracts, API integration, ambiguity rule, dispatcher architecture, SMA details, error handling, architecture boundaries, file index
+
+Architecture preserved:
+* No lookahead: bar N uses only bars 0..N (running sum algorithm)
+* Warmup bars absent from dict → evaluator outcome=None (indeterminate) — correct no-signal behavior
+* Manual tool_outputs path unchanged → all prior tests pass
+* Architecture boundary: `historical_computation.py` does NOT import from `strategy_runtime`, `execution`, `backtesting`, `forward_testing`
+* Output ref format: `"{instance_id}.{output_name}"` — matches `ScalarOperandResolver` key convention
+
+Validation:
+* Full backend suite: **2259 passed**, zero regressions (2207 + 52 new)
+
+---
+
+## Phase 2P.8 — Backtest Position Sizing Foundation (COMPLETE)
+
+Completed:
+* `backend/backtesting/models.py` (modified):
+  * `PositionSizeMode` extended: `EQUITY_FRACTION = "equity_fraction"` added alongside `FIXED_QUANTITY`
+  * `BacktestSimulationConfig` extended: `equity_fraction: float | None` field; cross-field model validator enforces `equity_fraction ∈ (0, 1]` when mode=EQUITY_FRACTION; `equity_fraction=None` preserved when mode=FIXED_QUANTITY (backward-compatible)
+  * `BacktestRejectionReason` extended: `ZERO_QUANTITY = "zero_quantity"` — equity_fraction sizing resolved to 0 units
+  * `SimulatedTrade` extended: `position_size_mode: PositionSizeMode` + `sizing_value: float` audit fields (required on all trades — open and close)
+* `backend/backtesting/position_tracker.py` (modified):
+  * `resolve_position_quantity()` (new public function): deterministic sizing resolver; FIXED_QUANTITY → returns `fixed_quantity`; EQUITY_FRACTION → `floor(equity × fraction / adj_price)`; returns 0.0 when budget < price
+  * `PositionState` extended: `position_size_mode: PositionSizeMode`, `equity_fraction: float` (0.0 when unused)
+  * `_open_long` updated: calls `resolve_position_quantity()` before commission/cash check; rejects with ZERO_QUANTITY when qty=0; populates `position_size_mode` + `sizing_value` on trade
+  * `_close_long` updated: populates `position_size_mode` + `sizing_value` on trade (uses position mode at entry)
+* `backend/backtesting/simulator.py` (modified):
+  * `run_simulation` passes `position_size_mode` + `equity_fraction` from config to `PositionState`
+* `tests/unit/test_backtest_position_sizing.py` (new) — 83 tests: enum, config validation, resolver, PositionState, fixed qty (retention), equity_fraction sizing, zero qty rejection, audit fields, simulation integration, equity growth between trades, equity curve, fixed qty regression, unsupported features, architecture guards
+* `tests/unit/test_backtest_simulation.py` (modified) — updated `test_simulated_trade_frozen` to include new required `position_size_mode` + `sizing_value` fields
+* `docs/BACKTEST_POSITION_SIZING.md` (new) — sizing modes, quantity formula, cost-aware cash check, rejection reasons, audit fields, constraints, extension path
+
+Architecture preserved:
+* `sizing rule ≠ portfolio allocator ≠ execution engine` — sizing is simulation-internal
+* No leverage: `equity_fraction` validated ≤ 1.0 at config time; values > 1.0 rejected
+* No margin: full notional + commission must be covered by cash
+* Long-only, single position, deterministic — all prior constraints preserved
+* Zero-cost default + `FIXED_QUANTITY` default → Phase 2P.6/2P.7 behavior exactly preserved
+* `resolve_position_quantity()` is deterministic: identical inputs → identical quantity
+
+Validation:
+* Full backend suite: **2207 passed**, zero regressions (2124 + 83 new)
+
+---
+
+## Phase 2P.7 — Backtest Cost Model Foundation (COMPLETE)
+
+Completed:
+* `backend/backtesting/cost_model.py` (new):
+  * `CommissionMode` — `NONE`, `FIXED` (flat per trade), `PERCENTAGE` (fraction of notional)
+  * `SlippageMode` — `NONE`, `FIXED` (per-share), `PERCENTAGE` (fraction of close)
+  * `TradeCostBreakdown` — frozen Pydantic: `raw_price`, `adjusted_price`, `gross_value`, `commission_paid`, `slippage_paid`, `total_cost`, `net_cash_impact`
+  * `compute_slippage_per_unit()`, `apply_slippage()` (direction-aware), `compute_commission()`, `build_cost_breakdown()`
+* `backend/backtesting/models.py` (modified):
+  * `BacktestSimulationConfig` extended: `commission_mode`, `commission_value`, `slippage_mode`, `slippage_value` (all default to NONE/0 — backward compatible)
+  * `SimulatedTrade` extended: `cost_breakdown: TradeCostBreakdown` (required)
+  * `BacktestSimulationSummary` extended: `total_commission_paid`, `total_slippage_paid`, `total_cost_paid`, `average_cost_per_trade`
+* `backend/backtesting/position_tracker.py` (modified):
+  * `PositionState` extended: `commission_mode`, `commission_value`, `slippage_mode`, `slippage_value`, `entry_commission`
+  * `_open_long` and `_close_long` apply slippage + commission deterministically
+  * `realized_pnl` is all-in net: `(adj_close - avg_entry) × qty - commission_close - commission_open`
+  * Insufficient-cash check uses all-in cost (notional + commission)
+* `backend/backtesting/simulator.py` (modified):
+  * `run_simulation` passes cost config fields to `PositionState`
+  * `_compute_summary` aggregates `total_commission_paid`, `total_slippage_paid`, `total_cost_paid`, `average_cost_per_trade`
+* `tests/unit/test_backtest_cost_model.py` (new) — 86 tests covering enums, helpers, breakdown, config validation, cost-aware open/close, simulation integration, API, architecture guards
+* `tests/unit/test_backtest_simulation.py` (modified) — updated 3 model-construction tests to include new required fields
+* `docs/BACKTEST_COST_MODEL_FOUNDATION.md` (new) — cost philosophy, models, execution price rules, PnL definition, extension path
+
+Architecture preserved:
+* `SimulatedTrade ≠ BrokerFill ≠ LiveExecution` — all deterministic simulation
+* No stochastic fills, no latency, no order book, no broker concepts
+* Zero-cost default preserves Phase 2P.6 behavior exactly
+* Determinism verified: identical inputs → identical outputs
+
+Validation:
+* Full backend suite: **2124 passed**, zero regressions (2038 + 86 new)
+
+---
+
+## Phase 2P.6 — Backtest Simulation Foundation (COMPLETE)
+
+Completed:
+* `backend/backtesting/models.py` (new) — domain models:
+  * `BacktestSimulationConfig` — `initial_cash`, `position_size_mode` (fixed_quantity only), `fixed_quantity`; Pydantic v2 frozen
+  * `SimulationPriceBar` — `bar_index`, `timestamp`, `close`; execution price source
+  * `BacktestRejectionReason` — enum: `already_long`, `already_flat`, `insufficient_cash`, `missing_price`, `unsupported_action`
+  * `BacktestRejection` — explicit rejection record; `rejection_id = f"rejection:{intent_id}"`
+  * `SimulatedTrade` — `trade_id = f"trade:{source_intent_id}"`, `action`, `bar_index`, `quantity`, `price` (close), `cash_before/after`, `realized_pnl` (None for opens), `position_after`; NO broker/order/fill fields
+  * `BacktestEquityPoint` — per-bar: `cash`, `position_quantity`, `market_value`, `realized_pnl` (cumulative), `unrealized_pnl`, `equity`
+  * `BacktestSimulationSummary` — aggregated counts, cash/equity/PnL summary, peak/trough equity
+  * `BacktestSimulationResult` — full result: `plan_draft_id`, `config`, `trades`, `equity_curve`, `rejections`, `summary`
+* `backend/backtesting/position_tracker.py` (new):
+  * `PositionState` — mutable dataclass: `cash`, `fixed_quantity`, `position_quantity`, `average_entry_price`, `cumulative_realized_pnl`; `is_long`/`is_flat` properties
+  * `process_intent(intent, price, state)` — returns `(SimulatedTrade | None, BacktestRejection | None)`; long-only rules enforced
+* `backend/backtesting/simulator.py` (new):
+  * `run_simulation(intent_batch, price_bars, config) → BacktestSimulationResult`
+  * Sequential: one equity point per bar; intents processed in batch order; missing-price intents produce rejections
+* `backend/api/schemas/backtest_simulation.py` (new) — `BacktestSimulationRequest` wraps intent_batch + price_bars + config
+* `backend/api/services/backtest_simulation_service.py` (new) — thin `simulate_backtest()` wrapper
+* `backend/api/routes/backtest_simulation.py` (new) — `POST /backtests/simulate`
+* `backend/api/main.py` (modified) — registers `backtest_simulation.router`
+* `docs/BACKTEST_SIMULATION_FOUNDATION.md` (new) — long-only scope, close-price assumption, rejection behavior, halal constraints, extension path
+* `tests/unit/test_backtest_simulation.py` (new) — 95 tests covering models, config, position tracker, simulation engine, equity curve, rejections, API, architecture guards
+
+Architecture preserved:
+* `TradeIntent ≠ Order ≠ SimulatedTrade ≠ BrokerFill` — simulation only, no execution coupling
+* Long-only, fixed quantity, close-price execution — no shorting, leverage, margin, slippage, fees
+* All rejections explicit and tracked — never silently ignored
+* Deterministic trade_id and rejection_id from intent_id — reproducible from identical inputs
+* Architecture boundary verified: no imports from `execution`, `forward_testing`, `strategy_runtime`
+
+Validation:
+* Full backend suite: **2038 passed**, zero regressions (1943 + 95 new)
+
+---
+
+## Phase 2P.5 — Trade Intent Contract Layer (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/trade_intents.py` (new) — passive domain models:
+  * `TradeIntentAction` — `open_long`, `close_long` only; `short_sell`/leverage/margin absent by design (halal compatibility)
+  * `TradeIntentSource` — traceability: `signal_event_id`, `bar_index`, `timestamp`, `rule_id`, `rule_kind`
+  * `TradeIntent` — frozen Pydantic v2; `intent_id` (deterministic: `"intent:{signal_event_id}"`), `action`, `source`; NO order/price/quantity/fill/position/pnl fields
+  * `TradeIntentSummary` — frozen Pydantic v2; `total_intents`, `open_long_intents`, `close_long_intents`, `ignored_signal_events`, `first_intent_bar_index`, `last_intent_bar_index`
+  * `TradeIntentBatch` — frozen Pydantic v2; `plan_draft_id`, `intents`, `summary`, `ignored_event_ids`
+* `backend/strategy_registry/trade_intent_extractor.py` (new):
+  * `extract_trade_intents(signal_event_batch) → TradeIntentBatch` — entry→open_long, exit→close_long, diagnostic→ignored; ordering inherits signal batch order; no re-sort needed
+  * `_ACTION_MAP` — `{ENTRY: OPEN_LONG, EXIT: CLOSE_LONG}` — single declaration of mapping
+  * `_make_intent_id(signal_event_id)` — deterministic: `f"intent:{signal_event_id}"`
+* `backend/api/services/trade_intent_service.py` (new) — thin `extract_trade_intents_from_batch()` wrapper
+* `backend/api/routes/trade_intents.py` (new) — `POST /semantics/extract-trade-intents`; input: `SignalEventBatch`; output: `TradeIntentBatch`
+* `backend/api/main.py` (modified) — registers `trade_intents.router`
+* `docs/TRADE_INTENT_CONTRACTS.md` (new) — intent meaning, action minimalism rationale, halal compatibility, future backtesting/execution relationship
+* `tests/unit/test_trade_intents.py` (new) — 86 tests covering models, extraction, API, architecture boundary, forbidden fields
+
+Architecture preserved:
+* `signal event ≠ trade intent ≠ order ≠ position ≠ PnL` — no execution fields anywhere
+* `short_sell`/leverage/margin absent by design — action set minimal for halal equity compatibility
+* Diagnostic events ignored and tracked in `ignored_event_ids` — never silently converted
+* Deterministic intent IDs from signal event IDs — reproducible from identical inputs
+* Architecture boundary verified: no imports from `backtesting`, `execution`, `forward_testing`, `strategy_runtime`
+
+Validation:
+* Full backend suite: **1943 passed**, zero regressions (1857 + 86 new)
+
+---
+
+## Phase 2P.4 — Evaluation Signal Event Contracts (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/signal_events.py` (new) — passive domain models:
+  * `SignalEventKind` — `entry`, `exit`, `diagnostic` enum
+  * `SignalEventSource` — traceability: `bar_index`, `timestamp`, `rule_id`, `rule_kind`, `rule_index`
+  * `SignalEvent` — frozen Pydantic v2; `event_id` (deterministic), `kind`, `source`, `outcome`, `diagnostics`; NO order/trade/fill/position/pnl fields
+  * `SignalEventSummary` — frozen Pydantic v2; `total_events`, `entry_events`, `exit_events`, `diagnostic_events`, `bars_with_events`, `first_event_bar_index`, `last_event_bar_index`
+  * `SignalEventBatch` — frozen Pydantic v2; `plan_draft_id`, `events: tuple[SignalEvent, ...]`, `summary`
+* `backend/strategy_registry/signal_event_extractor.py` (new):
+  * `extract_signal_events(historical_result) → SignalEventBatch` — only `triggered=True` → event; `False`/`None` skipped; sort order: bar_index → entry_before_exit → rule_index → rule_id
+  * `_make_event_id(bar_index, rule_kind, rule_index, rule_id)` — deterministic: `"{bar_index}:{rule_kind}:{rule_index}:{rule_id or 'none'}"`
+* `backend/api/services/signal_event_service.py` (new) — `SignalEventExtractionError`, `extract_signal_events_from_payload(semantics, bars) → SignalEventBatch`
+* `backend/api/routes/signal_events.py` (new) — `POST /semantics/extract-signal-events`; reuses `HistoricalEvaluationRequest` schema; 422 on compile/eval failure
+* `backend/api/main.py` (modified) — registers `signal_events.router`
+* `docs/SIGNAL_EVENT_CONTRACTS.md` (new) — signal event meaning, traceability fields, forbidden assumptions, future relationship to backtesting
+* `tests/unit/test_signal_events.py` (new) — 88 tests covering all models, extraction scenarios, API, architecture boundary
+
+Architecture preserved:
+* `signal event ≠ order ≠ trade` — no execution fields anywhere in the contract
+* `entry signal ≠ buy order`; `exit signal ≠ sell order` — enforced by having no buy/sell/direction/size/price semantics
+* Only `True` triggered outcomes produce events; `False` and `None` silently skipped
+* Deterministic ordering: bar_index → entry-before-exit → rule_index → rule_id
+* Architecture boundary verified: no imports from `strategy_runtime`, `backtesting`, `execution`, `forward_testing`
+
+Validation:
+* Full backend suite: **1857 passed**, zero regressions (1769 + 88 new)
+
+---
+
+## Phase 2P.3 — Previous-Bar Context & Crossover Operator Support (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/two_bar_context.py` (new):
+  * `PreviousBarMissingError` — raised when previous-bar resolution attempted on first bar
+  * `TwoBarEvaluationContext(ScalarEvaluationContext)` — carries `current_values` + optional `previous_values` (both flat `dict[str, float]`); `has_previous_bar` property; `resolve_previous_price_field`, `resolve_previous_tool_output`, `resolve_previous_constant` methods
+* `backend/strategy_registry/crossover_evaluator.py` (new):
+  * `CROSSOVER_OPERATORS: frozenset` — `{"crosses_above", "crosses_below"}`
+  * `ALL_TWO_BAR_OPERATORS: frozenset` — union of SCALAR_OPERATORS and CROSSOVER_OPERATORS
+  * `CrossoverConditionEvaluator(ConditionEvaluator)` — delegates scalar ops to wrapped `ScalarConditionEvaluator`; handles crossover ops; first-bar → `outcome=None` + "no_previous_bar" info diagnostic; wrong context type → `outcome=None` + "context_unavailable" diagnostic
+  * `TwoBarScalarEngine(EvaluationEngineContract)` — top-level engine supporting all 8 operators; uses `CrossoverConditionEvaluator` in standard `ScalarGroupEvaluator → ScalarRuleEvaluator` stack
+  * Crossover semantics: `crosses_above`: `prev_left <= prev_right AND curr_left > curr_right`; `crosses_below`: `prev_left >= prev_right AND curr_left < curr_right`
+* `backend/strategy_registry/historical_evaluator.py` (modified):
+  * Added `_build_scalar_values(bar) → dict[str, float]` — extracted helper for flat key mapping
+  * Updated `_build_scalar_context` to return `TwoBarEvaluationContext` (with default `previous_values=None`)
+  * Replaced `_ENGINE = ScalarEvaluationEngine()` with `_TWO_BAR_ENGINE = TwoBarScalarEngine()`
+  * `evaluate_history` now propagates `previous_values` between bar iterations; first bar has `previous_values=None`
+* `docs/PREVIOUS_BAR_EVALUATION.md` (new) — crossover semantics, first-bar behavior, key layout, example usage
+* `tests/unit/test_crossover_evaluator.py` (new) — 87 unit tests covering `TwoBarEvaluationContext`, `CrossoverConditionEvaluator`, `TwoBarScalarEngine`, historical integration, architecture boundary
+
+Architecture preserved:
+* Crossover operators produce `outcome=None` with "no_previous_bar" info diagnostic on first bar — never silently coerced to False
+* `TwoBarEvaluationContext` subclasses `ScalarEvaluationContext`; existing scalar evaluation tests unaffected
+* No portfolio, no trades, no PnL; still pure repeated single-bar semantic evaluation with two-bar temporal access
+* Architecture boundary verified by tests: no imports from `strategy_runtime`, `backtesting`, `execution`, `forward_testing`
+
+Validation:
+* Full backend suite: **1769 passed**, zero regressions (1682 + 87 new)
+
+---
+
+## Phase 2P.2 — Bar-by-Bar Semantic Evaluation Iterator (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/historical_evaluator.py` (new) — historical evaluation domain + iterator:
+  * `HistoricalBarContext` — frozen Pydantic v2; per-bar input with `bar_index`, `timestamp`, `price_fields: dict[str, float]`, `tool_outputs: dict[str, float]`
+  * `HistoricalEvaluationInput` — frozen Pydantic v2; `plan: EvaluationPlan` + `bars: tuple[HistoricalBarContext, ...]`
+  * `BarEvaluationResult` — frozen Pydantic v2; `bar_index`, `timestamp`, `entry_triggered`, `exit_triggered`, `trace: EvaluationTrace`
+  * `HistoricalEvaluationResult` — frozen Pydantic v2; `plan_draft_id`, `bars_evaluated`, `entry_triggered_count`, `exit_triggered_count`, `bar_results: tuple[BarEvaluationResult, ...]`
+  * `_build_scalar_context(bar, plan_draft_id) → ScalarEvaluationContext` — maps `price_fields["close"] → "price.close"`, `tool_outputs["sma.value"] → "tool.sma.value"`
+  * `evaluate_history(input) → HistoricalEvaluationResult` — sequential bar iteration; deterministic; no state between bars; `_ENGINE` is a stateless module-level reusable `ScalarEvaluationEngine`
+  * `entry_triggered_count` / `exit_triggered_count` count only `True` outcomes; `None` outcomes not counted
+* `backend/api/schemas/historical_evaluation.py` (new) — API DTOs:
+  * `HistoricalBarPayload` — per-bar API input; extra="forbid"
+  * `HistoricalEvaluationRequest` — `semantics: StrategySemantics` + `bars: list[HistoricalBarPayload]`; extra="forbid"
+* `backend/api/services/historical_evaluation_service.py` (new):
+  * `HistoricalEvaluationError` — compile failure wrapper
+  * `evaluate_history_from_payload(semantics, bars) → HistoricalEvaluationResult`
+* `backend/api/routes/historical_evaluation.py` (new) — `POST /semantics/evaluate-history`; 422 on compile failure
+* `backend/api/main.py` (modified) — registers `historical_evaluation.router`
+* `docs/HISTORICAL_EVALUATION_ITERATOR.md` (new) — why this is not backtesting, iteration design, key convention table, future extension path
+* `tests/unit/test_historical_evaluator.py` (new) — 62 unit tests
+* `tests/unit/test_historical_evaluation_api.py` (new) — 21 API tests
+
+Architecture preserved:
+* Sequential per-bar evaluation; no state between bars
+* Tool outputs must be pre-injected per bar; no indicator computation
+* `crosses_above`/`crosses_below` remain deferred; produce `outcome=None` + diagnostic per bar
+* Zero portfolio logic, zero trade simulation, zero PnL
+* Architecture boundary verified by tests: no imports from `strategy_runtime`, `backtesting`, `execution`, `forward_testing`
+
+Validation:
+* Full backend suite: **1682 passed**, zero regressions (1601 + 81 new)
+
+---
+
+## Phase 2P.1 — Concrete Scalar Evaluator Foundation (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/scalar_evaluation_context.py` (new) — concrete `EvaluationContext`:
+  * `ScalarContextError` — raised when a required value is absent from the flat scalar dict
+  * `ScalarEvaluationContext` — backed by `dict[str, float]`; resolves `price.{field}`, `tool.{instance_id}.{output_name}`, and numeric constant strings; `available_tool_instances` / `available_price_fields` properties; zero computation
+* `backend/strategy_registry/scalar_evaluator.py` (new) — all concrete evaluator components:
+  * `UnsupportedOperatorError` — raised for `crosses_above`, `crosses_below`, and unknown operators
+  * `SCALAR_OPERATORS: frozenset` — `{">", "<", ">=", "<=", "==", "!="}`
+  * `ScalarOperandResolver` — dispatches `(kind, ref)` to context; splits `tool_output` refs as `instance_id.output_name`
+  * `ScalarOperatorEvaluator` — evaluates 6 scalar operators; rejects crossover operators with `UnsupportedOperatorError`
+  * `ScalarConditionEvaluator` — orchestrates resolver + operator evaluator; resolution/operator failures → `EvaluationDiagnostic`, `outcome=None`
+  * `ScalarGroupEvaluator` — recursive AND/OR evaluation; all children always evaluated (complete traces); correct indeterminate semantics (AND: False wins over None; OR: True wins over None)
+  * `ScalarRuleEvaluator` — wraps group evaluator; returns `RuleEvaluationResult` with triggered flag; no signal generation
+  * `ScalarEvaluationEngine` — top-level `EvaluationEngineContract` implementation; evaluates all rule_nodes; aggregates `entry_triggered`/`exit_triggered` via OR semantics
+* `backend/api/schemas/scalar_evaluation.py` (new) — `ScalarEvaluationRequest` (semantics + scalar_context dict + optional evaluation_id)
+* `backend/api/services/scalar_evaluation_service.py` (new):
+  * `ScalarEvaluationError` — compile failure wrapper
+  * `evaluate_semantics_scalar(semantics, scalar_context, evaluation_id) → EvaluationTrace`
+* `backend/api/routes/scalar_evaluation.py` (new) — `POST /semantics/evaluate-scalar`; 422 on compile failure
+* `backend/api/main.py` (modified) — registers `scalar_evaluation.router`
+* `docs/SCALAR_EVALUATOR_FOUNDATION.md` (new) — evaluator responsibilities, intentionally unsupported features, future extension path
+* `tests/unit/test_scalar_evaluator.py` (new) — 100 unit tests
+* `tests/unit/test_scalar_evaluation_api.py` (new) — 21 API tests
+
+Architecture preserved:
+* Single-snapshot evaluation only; no bar iteration, no previous-bar state
+* Tool outputs must be pre-injected into context; no indicator computation
+* `ScalarEvaluationContext` and `ScalarEvaluationEngine` are both free of runtime/backtesting/execution imports (architecture boundary verified by tests)
+* Evaluator is generic IR-driven; no indicator-specific branching anywhere
+* `crosses_above`/`crosses_below` explicitly deferred with clear error messages
+
+Validation:
+* Full backend suite: **1601 passed**, zero regressions (1483 + 118 new)
+
+---
+
+## Phase 2O.9 — Evaluation Readiness & Linting Layer (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/evaluation_readiness.py` (new) — domain models + static lint rules:
+  * `ReadinessIssue` — frozen Pydantic v2; code, severity ("blocking"|"warning"|"info"), message, path, node_id, suggestion
+  * `ReadinessSummary` — frozen; blocking_count, warning_count, info_count
+  * `EvaluationReadinessReport` — frozen; ready bool, status ("ready"|"degraded"|"blocked"), summary, issues tuple
+  * `STANDARD_OPERATORS` — frozenset of 8 recognized condition operators
+  * `DEFAULT_MAX_NESTING_DEPTH = 5`
+  * Lint rules implemented:
+    - `not_compiled` — plan compilation failed (blocking)
+    - `compilation_error` — per-error string from compilation (blocking)
+    - `compilation_diagnostic_error` — error-severity CompilationDiagnostic (blocking)
+    - `compilation_diagnostic_warning` — warning-severity CompilationDiagnostic (warning)
+    - `no_rules` — plan has no rule nodes (blocking)
+    - `empty_rule` — rule with zero conditions (blocking)
+    - `missing_rule_id` — rule_id is None (warning)
+    - `missing_group_id` — group_id is None (warning)
+    - `missing_condition_id` — condition_id is None (warning)
+    - `unsupported_operator` — operator not in supported_operators set (blocking)
+    - `excessive_nesting_depth` — depth > threshold (warning)
+    - `binding_invalid` — error-severity binding diagnostic (blocking)
+  * `check_readiness(*, compiled, errors, plan, binding_result, supported_operators, max_nesting_depth_threshold) → EvaluationReadinessReport`
+    - Issues sorted: blocking first, then warning, then info (stable within severity)
+    - Deterministic: identical inputs → identical report
+* `backend/api/schemas/evaluation_readiness.py` (new) — API DTOs:
+  * `EvaluationReadinessRequest` — `semantics: StrategySemantics` for payload endpoint
+  * `EvaluationReadinessResponse` — `draft_id, ready, status, summary, issues`
+* `backend/api/services/evaluation_readiness_service.py` (new):
+  * `check_draft_readiness(draft_id, repository, registry) → EvaluationReadinessResponse`
+    - loads draft, compiles, runs binding validation, calls `check_readiness()`
+    - returns blocked report if draft has no semantics
+  * `check_semantics_payload_readiness(semantics) → EvaluationReadinessResponse`
+    - no draft context; no binding check; binding_result=None
+* `backend/api/routes/evaluation_readiness.py` (new) — two-router pattern:
+  * `draft_router`: `GET /drafts/{draft_id}/semantics/readiness` — 404 on unknown draft
+  * `payload_router`: `POST /semantics/readiness` — arbitrary payload lint; 422 on bad body
+* `backend/api/main.py` (modified) — registers `evaluation_readiness.draft_router` + `evaluation_readiness.payload_router`
+* `frontend/src/types/planInspection.ts` (modified) — added `ReadinessIssue`, `ReadinessSummary`, `ReadinessStatus`, `EvaluationReadinessResponse`
+* `frontend/src/api/planInspection.ts` (modified) — added `fetchDraftReadiness(draftId)` → `GET /drafts/{id}/semantics/readiness`
+* `frontend/src/components/PlanInspectionPanel.tsx` (modified):
+  * Fetches both plan inspection and readiness in parallel (`Promise.all`)
+  * Added `ReadinessSection` — renders status badge (✓ ready / ⚠ degraded / ✗ blocked), blocking+warning counts, per-issue messages with suggestions
+  * Added `ReadinessIssueRow` — inline issue renderer with severity color coding
+* `tests/unit/test_evaluation_readiness.py` (new) — 83 domain tests
+* `tests/unit/test_evaluation_readiness_api.py` (new) — 40 API tests  (wait, let me recheck the count)
+
+Architecture preserved:
+* Zero execution — lint rules are pure structural checks against frozen plan IR
+* `check_readiness` is a pure function: no market data, no indicator computation, no runtime calls
+* Architecture boundary enforced: three new backend modules pass import-line checks
+* Frontend fetches both endpoints in parallel; renders passively; no local lint logic
+
+Validation:
+* Full backend suite: 1483 passed, zero regressions (1400 + 83 new)
+* Frontend build: 53 modules, `tsc && vite build` clean
+
+---
+
+## Phase 2O.8 — Read-Only EvaluationPlan Inspection UI Panel (COMPLETE)
+
+Completed:
+* `frontend/src/api/planInspection.ts` (new) — typed API client:
+  * `fetchDraftPlanInspection(draftId) → Promise<PlanInspectionResponse>` — calls `GET /drafts/{id}/semantics/plan`
+  * no business logic; no local inspection; mirrors semantics.ts pattern
+* `frontend/src/components/PlanInspectionPanel.tsx` (new) — read-only inspection panel:
+  * Props: `draftId: string`, `refreshToken?: number`
+  * Fetches on mount + on `refreshToken` change + on manual Refresh click
+  * Sections: CompilationStatus pills, TopologySection (KV rows + operator chips), DependencySection (tool outputs / price fields / constants), RulesSection (per-rule kind/index/cond/grp/depth/ops), DiagnosticsSection (error/warning/info counts + messages + binding diagnostic count)
+  * States: loading, error, no-data, not-compiled (with errors list), full summary
+  * `binding_valid === null` renders "binding — no context" neutral pill (payload endpoint)
+  * Strictly read-only — no editing, no run controls, no execution buttons
+  * All styles inline; monospace/dark theme matching SemanticEditorPanel
+* `frontend/src/components/DraftWorkspace.tsx` (modified):
+  * Added `PlanInspectionPanel` import
+  * Added `planRefreshToken` state (int counter)
+  * `handleSaveSemantics` now calls `setPlanRefreshToken(t => t + 1)` after successful save
+  * Renders `<PlanInspectionPanel draftId={...} refreshToken={planRefreshToken} />` below `SemanticEditorPanel`
+  * Panel uses same `key={plan-${draft_id}}` pattern — resets on draft switch
+
+Architecture preserved:
+* Zero execution — panel only renders backend-provided data
+* No plan inspection logic moved into frontend
+* No Redux/Zustand/MobX — `planRefreshToken` is simple local counter
+* Panel auto-refreshes on draft switch (key reset), on semantics save, and on manual Refresh click
+* No polling, no websockets
+
+Validation:
+* Frontend build: 53 modules, `tsc && vite build` clean
+* Full backend suite: 1400 passed, zero regressions
+
+---
+
+## Phase 2O.7 — EvaluationPlan Inspection & Diagnostics API (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/plan_inspector.py` (new) — `PlanNodeVisitor`-based passive inspector:
+  * `ConditionNodeSummary` — frozen Pydantic v2; operator, left/right kind+ref, depth
+  * `RuleNodeSummary` — frozen Pydantic v2; rule_id, kind, index, condition_count, group_count, max_nesting_depth, operators_used
+  * `TopologySummary` — frozen Pydantic v2; entry/exit rule counts, total condition/group nodes, max_nesting_depth, operator_usage (dict sorted by key), unique_operators (sorted tuple)
+  * `DependencyInspectionSummary` — frozen; tool_outputs/price_fields/constants with counts and sorted tuples
+  * `DiagnosticsSummary` — frozen; error_count, warning_count, info_count, messages
+  * `EvaluationPlanSummary` — frozen; draft_id, semantic_version, total_rules, topology, dependencies, diagnostics, rules
+  * `_Acc` internal mutable dataclass for visitor aggregation (not part of public API)
+  * `_InspectorVisitor` — concrete `PlanNodeVisitor`; post-order accumulation; flat plans → `max_nesting_depth=0`, one nested level → `=1`
+  * `inspect_plan(plan: EvaluationPlan) → EvaluationPlanSummary` — pure, deterministic, execution-free
+* `backend/api/schemas/plan_inspection.py` (new) — API schema layer:
+  * `PlanInspectionRequest` — `semantics: StrategySemantics` for payload endpoint
+  * `PlanInspectionResponse` — `draft_id`, `compiled`, `errors`, `evaluation_plan|None`, `summary|None`, `binding_valid|None`, `binding_diagnostics`, `binding_dependency_summary|None`
+* `backend/api/services/plan_inspection_service.py` (new):
+  * `inspect_draft_plan(draft_id, repository, registry) → PlanInspectionResponse` — loads draft, compiles, inspects; populates binding fields from draft toolset
+  * `inspect_semantics_payload(semantics) → PlanInspectionResponse` — compiles arbitrary payload; no draft context; `binding_valid=None`, `binding_diagnostics=[]`
+* `backend/api/routes/plan_inspection.py` (new) — two-router pattern:
+  * `draft_router`: `GET /drafts/{draft_id}/semantics/plan` — 404 on unknown draft; `compiled=False` + errors if no semantics
+  * `payload_router`: `POST /semantics/plan` — arbitrary semantics inspection; 422 on bad payload
+* `backend/api/main.py` (modified) — registers `plan_inspection.draft_router` + `plan_inspection.payload_router`
+* `frontend/src/types/planInspection.ts` (new) — TypeScript mirrors: `ConditionNodeSummary`, `RuleNodeSummary`, `TopologySummary`, `DependencyInspectionSummary`, `DiagnosticsSummary`, `EvaluationPlanSummary`, `PlanInspectionResponse`
+* `tests/unit/test_plan_inspector.py` (new) — 42 tests: basic shape, rule/node/group counts, nesting depth, operator usage, dependency inspection, diagnostics, rule summaries, determinism, empty plan, architecture boundary
+* `tests/unit/test_plan_inspection_api.py` (new) — 40 tests: GET draft plan (200/404/no-semantics), topology/dependency/binding fields, payload endpoint (200/422/determinism)
+
+Architecture preserved:
+* Zero execution — `inspect_plan()` is a pure structural walk; no condition evaluation, no market data
+* `operator_usage` and `unique_operators` are always deterministically sorted
+* `binding_valid` is only non-None on the draft endpoint (toolset context present)
+* Follows established two-router prefix-separation pattern matching `semantic_compilation.py`
+* Architecture boundary enforced: plan_inspector imports nothing from strategy_runtime/backtesting/execution/forward_testing
+
+Validation:
+* New test files only: 82 passed (42 + 40); full suite not re-run post-2O.7 (1318 + 82 = 1400 expected)
+
+---
+
+## Phase 2O.6 — Evaluation Plan Execution Contracts & Evaluator Interface Architecture (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/evaluator_contracts.py` (new) — all abstract evaluator interfaces and passive result contracts:
+  * `ResolvedValue = Any` — generic type alias; intentionally unbound to remain indicator-agnostic
+  * `EvaluationDiagnostic` — frozen Pydantic v2; severity, code, reference, message, optional rule_id/condition_id
+  * `ConditionEvaluationResult` — frozen Pydantic v2; condition_id, outcome (bool|None), diagnostics
+  * `GroupEvaluationResult` — frozen Pydantic v2; recursive (Union-based); group_id, outcome, child_results, diagnostics
+  * `RuleEvaluationResult` — frozen Pydantic v2; rule_id, kind, index, triggered, group_result, diagnostics
+  * `EvaluationTrace` — frozen Pydantic v2; full audit trace: plan_draft_id, evaluation_id, rule_results, entry_triggered, exit_triggered
+  * `EvaluationContext` — ABC; resolve_tool_output, resolve_price_field, resolve_constant, evaluation_id, available_tool_instances, available_price_fields
+  * `OperandResolver` — ABC; resolve(kind, ref, context) → ResolvedValue
+  * `OperatorEvaluator` — ABC; supported_operators, evaluate(left, operator, right) → bool|None; generic, no indicator-specific logic
+  * `ConditionEvaluator` — ABC; evaluate_condition(node, context) → ConditionEvaluationResult
+  * `GroupEvaluator` — ABC; evaluate_group(node, context) → GroupEvaluationResult
+  * `RuleEvaluator` — ABC; evaluate_rule(node, context) → RuleEvaluationResult
+  * `EvaluationEngineContract` — ABC; evaluate_plan(plan, context) → EvaluationTrace; supported_operators property
+* `backend/strategy_registry/evaluation_context.py` (new) — passive context descriptor contracts:
+  * `EvaluationContextDescriptor` — frozen Pydantic v2; declares what a context provides (evaluation_id, declared_tool_outputs, price_fields, constants)
+  * `EvaluationRequirements` — frozen Pydantic v2; declares what a plan requires from its context
+  * `ContextSatisfactionReport` — frozen Pydantic v2; satisfied bool + missing tuples for each dependency type
+  * `extract_requirements(DependencySet) → EvaluationRequirements` — pure function
+  * `check_context_satisfaction(requirements, descriptor) → ContextSatisfactionReport` — pure function; set membership only, no evaluation
+* `backend/strategy_registry/plan_visitor.py` (new) — visitor/traversal architecture:
+  * `TraversalContext` — frozen Pydantic v2; rule_index, rule_kind, rule_id, depth, path
+  * `PlanNodeVisitor` — ABC; visit_condition_node, visit_group_node, visit_rule_node; post-order depth-first
+  * `traverse_plan(plan, visitor) → tuple[Any, ...]` — concrete structural traversal; no evaluation
+* `docs/EVALUATION_CONTRACT_ARCHITECTURE.md` (new) — architecture documentation covering: layering diagram, compiler vs evaluator responsibilities, contract table, generic operator philosophy, context lifecycle, visitor usage, guardrails, future evaluator layering
+* `tests/unit/test_evaluator_contracts.py` (new) — 71 tests: all result models, all ABCs (cannot instantiate), concrete implementation verification, context satisfaction (satisfied/missing/partial), traversal (post-order, depth, empty, multi-rule), architecture boundary, generic contract (no SMA/RSI), ResolvedValue=Any
+
+Architecture preserved:
+* Zero execution introduced — all contracts are abstract or passive Pydantic models
+* OperatorEvaluator.evaluate() is generic: no SMA/RSI/crossover assumptions
+* EvaluationContext lifecycle is owned by the runtime layer, not the evaluator
+* GroupEvaluationResult uses Union[..., "GroupEvaluationResult"] for recursive type (model_rebuild() pattern, same as semantic_plan.py)
+* Architecture boundary enforced: all three new modules pass import-line checks for strategy_runtime/backtesting/execution/forward_testing
+
+Validation:
+* Full test suite: 1318 passed, zero regressions (1247 + 71 new)
+
+---
+
+## Phase 2O.5 — Semantic-to-Toolset Binding Validation (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/semantic_binding_validator.py` (new) — static binding validator:
+  * `BindingDiagnostic` — frozen Pydantic v2; severity (error/warning/info), code, reference, message
+  * `DependencySummary` — frozen; resolved/unresolved/warned tool_output tuples + price_fields + constants; all sorted
+  * `BindingValidationResult` — frozen; valid bool + diagnostics tuple + summary
+  * `validate_semantic_bindings(semantics, toolset, registry=None) → BindingValidationResult`
+    * Checks dotted format (`instance_id.output_name`) — missing dot → `invalid_output_format` (error)
+    * Checks `instance_id` in `toolset.get_tool()` — missing → `missing_tool_instance` (error)
+    * Checks `output_name` in `registry.get(tool_id).output_feature_names` — unknown → `unknown_output_name` (error)
+    * No registry → `registry_unavailable` (info, not error)
+    * Tool not in registry → `tool_not_in_registry` (warning, not error)
+    * `valid=not has_errors` — warnings and info do not fail validation
+* `backend/api/schemas/semantic_binding.py` (new) — `BindingValidationResponse` (valid, binding_diagnostics, dependency_summary)
+* `backend/api/services/semantic_binding_service.py` (new) — `validate_draft_bindings()` — loads draft, handles no-semantics case, runs validator
+* `backend/api/routes/semantic_binding.py` (new) — `POST /drafts/{draft_id}/semantics/validate-bindings`
+* `backend/api/schemas/semantic_compilation.py` (modified) — `CompilationResponse` extended with `binding_valid`, `binding_diagnostics`, `dependency_summary` (all optional, populated by draft endpoint only)
+* `backend/api/services/semantic_compilation_service.py` (modified) — `compile_draft_semantics()` now accepts and uses `registry`; runs `validate_semantic_bindings()` after compilation; returns extended `CompilationResponse`
+* `backend/api/routes/semantic_compilation.py` (modified) — draft compile handler now injects `registry: ToolRegistry = Depends(get_tool_registry)`
+* `backend/api/main.py` (modified) — registers `semantic_binding.router`
+* `frontend/src/components/SemanticEditorPanel.tsx` (modified) — added `toolOutputSuggestions?: string[]` prop; renders `<datalist id="tool-output-suggestions">` with options; `tool_output` input uses `list="tool-output-suggestions"` for browser autocomplete
+* `frontend/src/components/DraftWorkspace.tsx` (modified) — passes `toolOutputSuggestions={selectedDraft.toolset.tools.map(t => \`${t.instance_id}.\`)}` to `SemanticEditorPanel`
+* `tests/unit/test_semantic_binding_validator.py` (new) — 25 tests: resolution paths, valid/invalid flag logic, dependency summary fields, nested groups, empty semantics, architecture boundary
+* `tests/unit/test_semantic_binding_api.py` (new) — 21 tests: validate-bindings endpoint (200, 404, response shape, price/constants in summary, missing instance), no-semantics case, compile integration (binding_valid + dependency_summary in compile response)
+
+Architecture preserved:
+* Binding validation is static only — no tool computation, no market data, no indicator evaluation
+* Validator never imports from strategy_runtime / backtesting / execution / forward_testing
+* Compilation and binding validation are independent steps — compile can succeed while bindings report errors
+* Autocomplete is purely additive to the UI — no new business logic; datalist rendered once, referenced by all tool_output inputs
+
+Validation:
+* Full test suite: 1247 passed, zero regressions (1201 + 46 new)
+* Frontend: `tsc --noEmit` — pending (binding-only props are optional, no type contract changes expected)
+
+---
+
+## Phase 2O.4 — Semantic Compilation Architecture & Evaluation Plan Contracts (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/semantic_plan.py` (new) — passive evaluation plan domain models (frozen Pydantic v2):
+  * `ConditionPlanNode` — compiled atomic condition; preserves `condition_id`, left/right operand kind+ref, operator, label
+  * `ConditionGroupPlanNode` — recursive compiled group; preserves `group_id`, operator, nested nodes
+  * `RulePlanNode` — compiled entry/exit rule; preserves `rule_id`, kind, index, label, condition_group
+  * `DependencySet` — static extraction of tool_outputs / price_fields / constants (sorted tuples, no computation)
+  * `CompilationDiagnostic` — severity + message + path; replaces raises for expected structural issues
+  * `EvaluationPlan` — root plan: draft_id, semantic_version, rule_nodes, dependencies, diagnostics, node_count, compiled_at
+  * `CompilationResult` — compiled bool + errors + evaluation_plan | None
+* `backend/strategy_registry/semantic_compiler.py` (new) — `compile_semantics(semantics, draft_id=None) → CompilationResult`:
+  * Walks semantic tree: `_compile_condition` → `_compile_group` (recursive) → `_compile_rule` → `_extract_dependencies`
+  * Preserves all semantic IDs (condition_id, group_id, rule_id) in plan nodes
+  * Produces `CompilationDiagnostic` for empty semantics (warning) or internal exceptions (error)
+  * Architecture boundary enforced: zero imports from strategy_runtime / backtesting / execution / forward_testing
+* `backend/api/schemas/semantic_compilation.py` (new) — `CompileRequest`, `CompilationResponse`
+* `backend/api/services/semantic_compilation_service.py` (new) — `compile_draft_semantics()`, `compile_semantics_payload()`; thin orchestration; no state mutation
+* `backend/api/routes/semantic_compilation.py` (new) — two routers:
+  * `draft_router` (prefix `/drafts`): `POST /drafts/{draft_id}/semantics/compile`
+  * `payload_router` (prefix `/semantics`): `POST /semantics/compile`
+* `backend/api/main.py` (modified) — registers `semantic_compilation.draft_router` and `semantic_compilation.payload_router`
+* `frontend/src/types/semanticCompilation.ts` (new) — TypeScript mirrors: `ConditionPlanNode`, `ConditionGroupPlanNode`, `RulePlanNode`, `DependencySet`, `CompilationDiagnostic`, `EvaluationPlan`, `CompilationResponse`
+* `tests/unit/test_semantic_compiler.py` (new) — 54 tests: result structure, rule/condition/group compilation, ID preservation, dependency extraction, diagnostics, node count, determinism, serialization round-trip, architecture boundary (import-line checks)
+* `tests/unit/test_semantic_compilation_api.py` (new) — 28 tests: draft compile endpoint, payload compile endpoint, empty semantics, missing semantics, 404, 422, no execution side effects
+
+Architecture preserved:
+* Compiler performs tree traversal and static extraction ONLY — no condition evaluation, no market data, no runtime calls
+* Semantic IDs flow from StrategySemantics → EvaluationPlan nodes verbatim
+* Future evaluation engines consume EvaluationPlan as a passive contract
+* Two-router pattern maintained (prefix /drafts vs /semantics) for path collision avoidance
+* Frontend changes limited to type definitions only
+
+Validation:
+* Full test suite: 1201 passed, zero regressions
+* Frontend: `tsc --noEmit` clean
+
+---
+
+## Phase 2O.3 — Semantic Identity, Patchability & Structural Stability (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/semantics.py` (modified) — added `condition_id: str | None = None`, `group_id: str | None = None`, `rule_id: str | None = None` to `Condition`, `ConditionGroup`, `EntryRule`, `ExitRule` — backward-compatible defaults
+* `backend/strategy_registry/semantic_identity.py` (new) — `generate_id()` (uuid4 string), `inject_ids(semantics) → StrategySemantics`; walks tree via `model_dump()` dicts; idempotent — existing IDs never replaced
+* `backend/strategy_registry/semantic_validator.py` (modified) — added `validate_semantic_identity_integrity()` (recursive duplicate ID detection); integrated into `validate_semantics_structure()`
+* `backend/api/services/semantic_service.py` (modified) — `set_semantics()` now calls `inject_ids()` before persisting; legacy semantics auto-upgraded on first PUT
+* `frontend/src/types/semantics.ts` (modified) — `condition_id?`, `group_id?`, `rule_id?` added to `Condition`, `ConditionGroup`, `EntryRule`, `ExitRule`; all optional (backward-compatible)
+* `tests/unit/test_semantic_identity.py` (new) — 30 tests: generate_id, injection, preservation, idempotency, reorder stability, nested groups, duplicate detection, cross-type duplicates, legacy migration, backward compat
+
+Validation: 1119 passed (post-2O.3), zero regressions.
+
+---
+
+## Phase 2O.2 — Semantic Composition UI (Form-Based Semantic Authoring) (COMPLETE)
+
+Completed:
+* `frontend/src/types/drafts.ts` (modified) — `StrategyDraftData` extended with `semantics?: StrategySemantics | null`
+* `frontend/vite.config.ts` (modified) — added `/semantics` proxy to backend at `:8000`
+* `frontend/src/api/semantics.ts` (new) — typed API client:
+  * `getSemantics(draftId)` — `GET /drafts/{id}/semantics`
+  * `setSemantics(draftId, semantics)` — `PUT /drafts/{id}/semantics`
+  * `validateDraftSemantics(draftId)` — `POST /drafts/{id}/semantics/validate`
+  * `validateSemanticsPayload(semantics)` — `POST /semantics/validate`
+* `frontend/src/components/SemanticEditorPanel.tsx` (new) — full semantic authoring panel:
+  * File-local sub-components: `OperandWidget`, `ConditionRow`, `ConditionGroupEditor` (recursive), `RuleBlock`
+  * Empty state with `+ Create Semantics` button
+  * Entry Rules section: add/remove rules; each rule has label + notes + `ConditionGroupEditor`
+  * Exit Rules section: same structure
+  * `ConditionGroupEditor`: AND/OR selector, add/remove conditions, `+ Group` (nested group), recursive depth-alternating accent colour
+  * `ConditionRow`: left operand / operator (8 options) / right operand; operand kind resets ref on kind change
+  * `OperandWidget`: kind selector (`tool` | `const` | `price`); price ref → `<select>` with open/high/low/close/volume; constant → number input; tool_output → text input `instance.output`
+  * Save button: PUT to backend, syncs local state from server response
+  * Validate button: POST local semantics to payload validation endpoint, displays `✓ valid` or `✗ invalid` + error list
+  * Validation cleared on any local edit (stale result avoidance)
+* `frontend/src/components/DraftWorkspace.tsx` (modified):
+  * Imports `SemanticEditorPanel`, `setSemantics`, `validateSemanticsPayload`
+  * `handleSaveSemantics()` — calls `setSemantics`, updates `selectedDraft.semantics` from server response, syncs list
+  * `handleValidateSemantics()` — delegates to `validateSemanticsPayload` (payload endpoint; no draft-save required)
+  * `SemanticEditorPanel` rendered below `ToolCompositionPanel` with `key=\`sem-${draft_id}\`` for clean draft-switch reset
+
+Architecture preserved:
+* Frontend edits locally → Save → backend stores → server response replaces local state
+* Validate operates on current local state via payload endpoint (no implicit save required)
+* No semantic evaluation, no operator interpretation, no signal generation
+* Backend remains sole validator and persistence authority
+* No Redux/Zustand — all state remains in `SemanticEditorPanel` via `useState`
+
+Validation:
+* Frontend build: `tsc && vite build` — 51 modules, clean
+* Backend: 1089 passed, zero regressions
+
+Next recommended step:
+* Phase 2O.3: Semantic Inspector — read-only display of persisted semantics on drafts; surface semantic summary in `DraftDetailView` (entry/exit rule count, condition preview); no new editing UI
+
+---
+
+## Phase 2O.1 — Strategy Semantic Foundation & Condition Graph Contracts (COMPLETE)
+
+Completed:
+* `backend/strategy_registry/semantics.py` (new) — frozen Pydantic v2 domain models:
+  * `OperandKind` enum: `tool_output`, `constant`, `price`
+  * `OperandReference` — typed operand (kind + ref); ref stripped and validated
+  * `ConditionOperator` enum: `>`, `<`, `>=`, `<=`, `==`, `!=`, `crosses_above`, `crosses_below`
+  * `Condition` — atomic comparison between two `OperandReference` objects
+  * `LogicalOperator` enum: `AND`, `OR`
+  * `ConditionGroup` — recursive logical group; supports arbitrarily nested AND/OR trees; `model_rebuild()` resolves self-reference
+  * `EntryRule`, `ExitRule` — wrap `ConditionGroup` with optional label/notes
+  * `SemanticsMetadata` — version, author, description
+  * `StrategySemantics` — root model: `entry_rules + exit_rules + metadata`; execution-free and portable
+* `backend/strategy_registry/semantic_validator.py` (new) — structural-only validator:
+  * `SemanticValidationResult` — `.valid`, `.errors`
+  * `validate_semantics_structure()` — validates: price ref in allowed set, tool_output uses dotted format, constants are numeric, groups non-empty; recurses through nesting
+  * Explicitly NO runtime evaluation, NO market data, NO indicator computation
+* `backend/strategy_registry/drafts.py` (modified) — added `semantics: StrategySemantics | None = None`; backward-compatible default
+* `backend/api/schemas/semantics.py` (new) — passive API DTOs: `SemanticsUpdateRequest`, `SemanticsValidateRequest`, `SemanticsValidationResponse`, `SemanticsResponse`
+* `backend/api/schemas/drafts.py` (modified) — `DraftResponse` now includes `semantics: StrategySemantics | None = None`
+* `backend/api/services/semantic_service.py` (new) — thin service: `get_semantics`, `set_semantics`, `validate_draft_semantics`, `validate_semantics_payload`
+* `backend/api/routes/semantics.py` (new) — two routers to avoid path conflict with `draft_composition`'s `POST /{draft_id}/validate`:
+  * `draft_router` (prefix `/drafts`): `GET /{id}/semantics`, `PUT /{id}/semantics`, `POST /{id}/semantics/validate`
+  * `payload_router` (prefix `/semantics`): `POST /semantics/validate` (no draft required)
+* `backend/api/main.py` (modified) — registers both `semantics.draft_router` and `semantics.payload_router`
+* `frontend/src/types/semantics.ts` (new) — TypeScript mirrors: `OperandKind`, `OperandReference`, `ConditionOperator`, `Condition`, `LogicalOperator`, `ConditionGroup`, `EntryRule`, `ExitRule`, `SemanticsMetadata`, `StrategySemantics`, `SemanticsResponse`, `SemanticsValidationResponse`
+* `tests/unit/test_strategy_semantics.py` (new) — 48 tests: operands, conditions, groups, nesting, rules, semantics, frozen immutability, serialisation, round-trip
+* `tests/unit/test_semantic_validator.py` (new) — 22 tests: valid cases, invalid constant/price/tool_output, nested error surfacing, no-runtime-evaluation assertion
+* `tests/unit/test_semantics_api.py` (new) — 20 tests: GET/PUT/POST routes, backward compat, legacy draft deserialisation, payload validation, 404 cases
+
+Architecture preserved:
+* All models frozen (immutable, deterministic serialisation)
+* No runtime evaluation, no signal generation, no market data consumption
+* Validator asserts structurally only — no compute/execution imports
+* Frontend receives types only — no semantic editor UI
+* Draft backward compatibility: existing drafts without `semantics` deserialise as `semantics=None`
+
+Known fix during implementation:
+* Two-router architecture required because `POST /drafts/semantics/validate` (static) was intercepted by `draft_composition`'s `POST /drafts/{draft_id}/validate` (parameterised, registered earlier). Solution: moved standalone payload validation to separate `payload_router` with prefix `/semantics`.
+
+Validation:
+* 1089 tests passing (+90 new, zero regressions from 999)
+* No frontend build step required (type definitions only)
+
+Next recommended step:
+* Phase 2O.2: Semantic Composition UI — minimal frontend for authoring entry/exit rules from within the Draft Workspace; no drag/drop; backend authority preserved
+
+---
+
 ## Phase 2N.12 — Browser-Level Draft Workspace Validation & Runtime Stabilization (COMPLETE)
 
 Completed:

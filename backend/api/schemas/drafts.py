@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from backend.strategy_registry.semantics import StrategySemantics
 from backend.tools.toolset import StrategyToolSet
 
 
@@ -80,6 +81,7 @@ class DraftResponse(BaseModel):
     enabled: bool
     tags: list[str]
     notes: str | None
+    semantics: StrategySemantics | None = None
 
 
 class DraftListResponse(BaseModel):

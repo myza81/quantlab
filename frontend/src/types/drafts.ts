@@ -1,4 +1,5 @@
 import type { StrategyToolSetData } from './tools'
+import type { StrategySemantics } from './semantics'
 
 /**
  * Passive frontend representation of a StrategyDraft.
@@ -18,6 +19,7 @@ export interface StrategyDraftData {
   enabled: boolean
   tags: string[]
   notes: string | null
+  semantics?: StrategySemantics | null
 }
 
 /** Response from GET /drafts */

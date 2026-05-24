@@ -125,3 +125,6 @@ desktop.ini
 *.spec.bak
 *.exe
 *.dll
+
+# ─── Runtime Storage ───────────────────────────────────────────────────────────
+storage/

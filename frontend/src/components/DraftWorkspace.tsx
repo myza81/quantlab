@@ -17,8 +17,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { DraftListPanel } from './DraftListPanel'
 import { DraftDetailView } from './DraftDetailView'
+import { PlanInspectionPanel } from './PlanInspectionPanel'
 import { ToolCompositionPanel } from './ToolCompositionPanel'
+import { SemanticEditorPanel } from './SemanticEditorPanel'
 import type { CompositionValidationResponse, StrategyDraftData } from '../types/drafts'
+import type { SemanticsValidationResponse, StrategySemantics } from '../types/semantics'
 import {
   addToolToDraft,
   archiveDraft,
@@ -31,6 +34,7 @@ import {
   reorderDraftTools,
   validateDraft,
 } from '../api/drafts'
+import { setSemantics, validateSemanticsPayload } from '../api/semantics'
 
 export function DraftWorkspace() {
   const [drafts, setDrafts] = useState<StrategyDraftData[]>([])
@@ -40,6 +44,7 @@ export function DraftWorkspace() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedDraft, setSelectedDraft] = useState<StrategyDraftData | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [planRefreshToken, setPlanRefreshToken] = useState(0)
 
   const syncDraftInList = useCallback((updated: StrategyDraftData) => {
     setDrafts(prev =>
@@ -159,6 +164,28 @@ export function DraftWorkspace() {
     syncDraftInList(updated)
   }
 
+  // ---------------------------------------------------------------------------
+  // Semantic operations
+  // ---------------------------------------------------------------------------
+
+  async function handleSaveSemantics(
+    semantics: StrategySemantics,
+  ): Promise<StrategySemantics | null> {
+    if (!selectedDraft) throw new Error('No draft selected')
+    const result = await setSemantics(selectedDraft.draft_id, semantics)
+    const updated: StrategyDraftData = { ...selectedDraft, semantics: result.semantics }
+    setSelectedDraft(updated)
+    syncDraftInList(updated)
+    setPlanRefreshToken(t => t + 1)
+    return result.semantics
+  }
+
+  async function handleValidateSemantics(
+    semantics: StrategySemantics,
+  ): Promise<SemanticsValidationResponse> {
+    return validateSemanticsPayload(semantics)
+  }
+
   return (
     <div style={s.workspace}>
       {/* Left panel — draft list */}
@@ -188,19 +215,33 @@ export function DraftWorkspace() {
         {selectedId && !detailLoading && selectedDraft && (
           <div style={s.rightContent}>
             <DraftDetailView
-              key={selectedDraft.draft_id}
+              key={`detail-${selectedDraft.draft_id}`}
               draft={selectedDraft}
               onValidate={handleValidate}
               onDelete={handleDelete}
               onArchive={handleArchive}
             />
             <ToolCompositionPanel
-              key={selectedDraft.draft_id}
+              key={`tools-${selectedDraft.draft_id}`}
               draft={selectedDraft}
               onAddTool={handleAddTool}
               onRemoveTool={handleRemoveTool}
               onReorderTools={handleReorderTools}
               onPatchTool={handlePatchTool}
+            />
+            <SemanticEditorPanel
+              key={`sem-${selectedDraft.draft_id}`}
+              semantics={selectedDraft.semantics ?? null}
+              onSave={handleSaveSemantics}
+              onValidate={handleValidateSemantics}
+              toolOutputSuggestions={
+                selectedDraft.toolset.tools.map(t => `${t.instance_id}.${t.tool_id}`)
+              }
+            />
+            <PlanInspectionPanel
+              key={`plan-${selectedDraft.draft_id}`}
+              draftId={selectedDraft.draft_id}
+              refreshToken={planRefreshToken}
             />
           </div>
         )}

@@ -43,7 +43,7 @@ However, it must not become a full historical archive. Completed or obsolete det
 
 ## Active Phase
 
-PHASE 2N.12 — BROWSER-LEVEL DRAFT WORKSPACE VALIDATION & RUNTIME STABILIZATION COMPLETE
+PHASE 2R.1 — EMA TOOL + MULTI-TOOL COMPUTATION PROOF COMPLETE
 
 Current repository focus:
 * base scaffold established (backend, frontend, strategies, datasets)
@@ -75,10 +75,29 @@ Current repository focus:
 * browser-level Draft Workspace validation complete (startup, create, add tool, edit, reorder, toggle, validate, delete, archive, refresh, restart persistence)
 * runtime stabilization complete for draft list synchronization and per-draft UI state reset
 * frontend npm install confirmed, `tsc && vite build` passes
+* semantic foundation complete (StrategySemantics, ConditionGroup recursive, EntryRule, ExitRule, validator, 3 API endpoints, TypeScript types)
+* semantic authoring UI complete (SemanticEditorPanel — entry/exit rules, nested AND/OR groups, operand editor, validate/save workflow)
+* semantic identity stable (condition_id, group_id, rule_id; inject_ids; duplicate detection; backward compat)
+* semantic compilation architecture complete (EvaluationPlan, compiler, dependency extraction, compilation API endpoints)
+* semantic-to-toolset binding validation complete (BindingDiagnostic, DependencySummary, validate_semantic_bindings, validate-bindings endpoint, frontend autocomplete datalist)
+* evaluator contract architecture complete (EvaluationContext ABC, OperandResolver, OperatorEvaluator, ConditionEvaluator, GroupEvaluator, RuleEvaluator, EvaluationEngineContract, result models, plan visitor, context satisfaction, architecture docs)
+* evaluation plan inspection complete (PlanNodeVisitor inspector, topology/dependency/diagnostics summaries, GET /drafts/{id}/semantics/plan, POST /semantics/plan, TypeScript types)
+* plan inspection UI complete (PlanInspectionPanel — read-only topology/dependency/rule/diagnostics/binding display; wired into DraftWorkspace; auto-refresh on save/switch/manual)
+* evaluation readiness layer complete (check_readiness, 12 lint rules, GET /drafts/{id}/semantics/readiness, POST /semantics/readiness, readiness badge in PlanInspectionPanel)
+* concrete scalar evaluator complete (ScalarEvaluationContext, ScalarEvaluationEngine, 6 scalar operators, condition/group/rule evaluation, POST /semantics/evaluate-scalar, 118 new tests)
+* historical evaluation iterator complete (HistoricalBarContext, evaluate_history, BarEvaluationResult, HistoricalEvaluationResult, POST /semantics/evaluate-history, 81 new tests)
+* crossover operator support complete (TwoBarEvaluationContext, CrossoverConditionEvaluator, TwoBarScalarEngine, crosses_above/crosses_below, first-bar None determinism, 87 new tests)
+* signal event contracts complete (SignalEventKind, SignalEventSource, SignalEvent, SignalEventBatch, SignalEventSummary, extract_signal_events, POST /semantics/extract-signal-events, 88 new tests)
+* trade intent contracts complete (TradeIntentAction open_long/close_long only, TradeIntentSource, TradeIntent, TradeIntentBatch, extract_trade_intents, POST /semantics/extract-trade-intents, 86 new tests)
+* backtest simulation foundation complete (BacktestSimulationConfig, SimulationPriceBar, SimulatedTrade, BacktestEquityPoint, BacktestRejection, BacktestSimulationResult, long-only position tracker, run_simulation, POST /backtests/simulate, 95 new tests)
+* backtest cost model complete (CommissionMode, SlippageMode, TradeCostBreakdown, compute helpers, direction-aware slippage, all-in net realized PnL, cost-aware position tracker + simulator, aggregate summary, 86 new tests)
+* backtest position sizing complete (PositionSizeMode EQUITY_FRACTION, equity_fraction config field, resolve_position_quantity helper, ZERO_QUANTITY rejection, SimulatedTrade audit fields, 83 new tests)
+* historical tool computation pipeline complete (ToolOutputPoint/Series/Result contracts, ToolComputationBarInput, compute_tool_outputs_for_history, build_bar_tool_outputs, SMA dispatch with running-sum no-lookahead, HistoricalEvaluationRequest.toolset field, ambiguity rejection, backward-compatible manual path, 52 new tests)
+* EMA tool + multi-tool computation proof complete (EMA_METADATA, compute_ema, _compute_ema_series with SMA-seed + recursive formula, _TOOL_DISPATCHERS registration, SMA+EMA coexistence, crossover semantics, 71 new tests)
+* 2330 tests passing, frontend build clean (53 modules)
 * candlestick chart component (lightweight-charts v5)
 * provider/symbol/timeframe/date-range controls
 * strategy overlay type placeholders
-* 999 tests passing
 
 Real historical data ingestion and frontend chart visualization now possible end-to-end via Yahoo Finance adapter through ProviderRegistry → OHLCVService → API → React chart pipeline.
 
@@ -1028,9 +1047,8 @@ TASKS.md should not attempt to answer:
 # Current Immediate Next Recommended Actions
 
 Recommended next sequence:
-1. Browser-level chart render validation (start both servers, open http://localhost:3000, fetch AAPL/yahoo/1d)
-2. First real strategy consuming `NormalizedOHLCV` via `YahooFinanceAdapter` + `OHLCVService` + `StrategyRuntimeRunner`
-3. Strategy run API endpoint + signal/forecast overlay rendering on chart
-4. Update `dataset_service.py` to use `ohlcv_store` (provider-aware paths) when API layer changes are scoped
-5. Fix "Edgelab" → "QuantLab" in `ARCHITECTURE_GUARDRAILS.md` (cosmetic)
-6. `backend/backtesting/` — simulation engine (deferred until first strategy stable)
+1. Phase 2P.9 — Advanced Backtest Analytics: equity curve statistics, Sharpe, max drawdown, win/loss ratios
+2. Phase 2R.2 — Next indicator (RSI or ATR): one `_TOOL_DISPATCHERS` entry + metadata file; proves three-tool pipeline
+3. Phase 2R.3 — Tool Output Visualization: surface per-bar computed tool values from evaluate-history to frontend chart overlay
+4. Browser-level chart render validation (start both servers, fetch AAPL/yahoo/1d, inspect chart)
+5. Update `dataset_service.py` to use `ohlcv_store` (provider-aware paths) when API layer changes are scoped

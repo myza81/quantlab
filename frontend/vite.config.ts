@@ -12,6 +12,8 @@ export default defineConfig({
       '/strategy-runs': 'http://localhost:8000',
       '/tools': 'http://localhost:8000',
       '/drafts': 'http://localhost:8000',
+      '/semantics': 'http://localhost:8000',
+      '/backtests': 'http://localhost:8000',
     },
   },
 })

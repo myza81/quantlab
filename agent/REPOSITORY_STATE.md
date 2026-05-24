@@ -4,7 +4,7 @@
 main
 
 ## Current Phase
-PHASE 2N.12 — Browser-Level Draft Workspace Validation & Runtime Stabilization (complete)
+PHASE 2R.1 — EMA Tool + Multi-Tool Computation Proof (complete)
 
 ---
 
@@ -70,7 +70,12 @@ OPERATIONAL
   - `ProviderSymbolMapping`, `SymbolMapService` — symbol mapping foundation; identity fallback with normalized lookup/remove paths
   - `backend/data_providers/yahoo/` — `YahooFinanceAdapter(RangeProviderAdapter)`, `YahooInstrumentMetadata`, `resolve_yahoo_metadata()`
   - yfinance SDK isolated inside adapter; no SDK objects escape to services or strategies; intraday fetch bounds preserve time precision
-- All other modules: empty stubs (backtesting, forward_testing, execution, etc.)
+- `backend/backtesting/` — simulation layer complete ✓
+  - `models.py` — `PositionSizeMode` (FIXED_QUANTITY, EQUITY_FRACTION), `BacktestSimulationConfig`, `SimulationPriceBar`, `SimulatedTrade` (with sizing audit fields), `BacktestEquityPoint`, `BacktestRejection` (6 reasons incl. ZERO_QUANTITY), `BacktestSimulationResult`, `BacktestSimulationSummary`
+  - `cost_model.py` — `CommissionMode`, `SlippageMode`, `TradeCostBreakdown`, compute helpers
+  - `position_tracker.py` — `PositionState`, `resolve_position_quantity()`, `process_intent()`
+  - `simulator.py` — `run_simulation()` — sequential, deterministic, long-only, single position
+- All other modules: empty stubs (forward_testing, execution, etc.)
 - No PostgreSQL integration yet
 - Browser validation pass confirmed draft workflow remains metadata/composition only; no execution coupling added
 
@@ -200,11 +205,121 @@ Python: 3.13 | venv: `.venv/` at repo root
 - `tests/unit/` — full-suite snapshot at Phase 2M completion: 576 passing
 - `tests/unit/test_visualization_artifacts.py` — IndicatorPoint, IndicatorSeries, runner extraction
 - `tests/fixtures/strategies/` — 7 fixture strategy folders
+- `backend/strategy_registry/semantics.py` — all frozen Pydantic v2 semantic domain models; `condition_id`, `group_id`, `rule_id` stable IDs added (2O.3)
+- `backend/strategy_registry/semantic_validator.py` — `validate_semantics_structure()` + `validate_semantic_identity_integrity()` — structural + ID uniqueness
+- `backend/strategy_registry/semantic_identity.py` — `generate_id()`, `inject_ids()` — stable ID injection; idempotent; preserves existing IDs
+- `backend/strategy_registry/semantic_plan.py` — `ConditionPlanNode`, `ConditionGroupPlanNode`, `RulePlanNode`, `DependencySet`, `CompilationDiagnostic`, `EvaluationPlan`, `CompilationResult` — passive evaluation plan contracts (2O.4)
+- `backend/strategy_registry/semantic_compiler.py` — `compile_semantics()` — tree-walking structural compiler; no execution; preserves semantic IDs; extracts dependencies (2O.4)
+- `backend/strategy_registry/drafts.py` — extended: `semantics: StrategySemantics | None = None` (backward-compatible)
+- `backend/api/schemas/semantics.py` — `SemanticsUpdateRequest`, `SemanticsValidateRequest`, `SemanticsValidationResponse`, `SemanticsResponse`
+- `backend/api/schemas/drafts.py` — `DraftResponse` now includes `semantics` field
+- `backend/api/schemas/semantic_compilation.py` — `CompileRequest`, `CompilationResponse` (2O.4)
+- `backend/api/services/semantic_service.py` — `get_semantics`, `set_semantics` (injects IDs), `validate_draft_semantics`, `validate_semantics_payload`
+- `backend/api/services/semantic_compilation_service.py` — `compile_draft_semantics`, `compile_semantics_payload` (2O.4)
+- `backend/api/routes/semantics.py` — `draft_router` (GET/PUT/POST `/drafts/{id}/semantics`) + `payload_router` (POST `/semantics/validate`)
+- `backend/api/routes/semantic_compilation.py` — `draft_router` (POST `/drafts/{id}/semantics/compile`) + `payload_router` (POST `/semantics/compile`) (2O.4)
+- `frontend/src/types/semantics.ts` — TypeScript mirrors including `condition_id?`, `group_id?`, `rule_id?`
+- `frontend/src/types/semanticCompilation.ts` — TypeScript mirrors of compilation plan types (2O.4)
+- `tests/unit/test_strategy_semantics.py` — 48 tests
+- `tests/unit/test_semantic_validator.py` — 22 tests
+- `tests/unit/test_semantics_api.py` — 20 tests
+- `tests/unit/test_semantic_identity.py` — 30 tests (2O.3)
+- `backend/strategy_registry/semantic_binding_validator.py` — `BindingDiagnostic`, `DependencySummary`, `BindingValidationResult`, `validate_semantic_bindings()` (2O.5)
+- `backend/api/schemas/semantic_binding.py` — `BindingValidationResponse` (2O.5)
+- `backend/api/services/semantic_binding_service.py` — `validate_draft_bindings()` (2O.5)
+- `backend/api/routes/semantic_binding.py` — `POST /drafts/{id}/semantics/validate-bindings` (2O.5)
+- `backend/api/schemas/semantic_compilation.py` — extended with `binding_valid`, `binding_diagnostics`, `dependency_summary` (2O.5)
+- `tests/unit/test_semantic_compiler.py` — 54 tests (2O.4)
+- `tests/unit/test_semantic_compilation_api.py` — 28 tests (2O.4)
+- `tests/unit/test_semantic_binding_validator.py` — 25 tests (2O.5)
+- `tests/unit/test_semantic_binding_api.py` — 21 tests (2O.5)
+- `backend/strategy_registry/evaluator_contracts.py` — `EvaluationDiagnostic`, `ConditionEvaluationResult`, `GroupEvaluationResult`, `RuleEvaluationResult`, `EvaluationTrace`, `ResolvedValue`, `EvaluationContext`, `OperandResolver`, `OperatorEvaluator`, `ConditionEvaluator`, `GroupEvaluator`, `RuleEvaluator`, `EvaluationEngineContract` (2O.6)
+- `backend/strategy_registry/evaluation_context.py` — `EvaluationContextDescriptor`, `EvaluationRequirements`, `ContextSatisfactionReport`, `extract_requirements()`, `check_context_satisfaction()` (2O.6)
+- `backend/strategy_registry/plan_visitor.py` — `TraversalContext`, `PlanNodeVisitor`, `traverse_plan()` (2O.6)
+- `docs/EVALUATION_CONTRACT_ARCHITECTURE.md` — evaluator architecture documentation (2O.6)
+- `tests/unit/test_evaluator_contracts.py` — 71 tests (2O.6)
+- `backend/strategy_registry/plan_inspector.py` — `ConditionNodeSummary`, `RuleNodeSummary`, `TopologySummary`, `DependencyInspectionSummary`, `DiagnosticsSummary`, `EvaluationPlanSummary`, `inspect_plan()` (2O.7)
+- `backend/api/schemas/plan_inspection.py` — `PlanInspectionRequest`, `PlanInspectionResponse` (2O.7)
+- `backend/api/services/plan_inspection_service.py` — `inspect_draft_plan()`, `inspect_semantics_payload()` (2O.7)
+- `backend/api/routes/plan_inspection.py` — `GET /drafts/{id}/semantics/plan`, `POST /semantics/plan` (2O.7)
+- `frontend/src/types/planInspection.ts` — TypeScript mirrors of all plan inspection types (2O.7)
+- `tests/unit/test_plan_inspector.py` — 42 tests (2O.7)
+- `tests/unit/test_plan_inspection_api.py` — 40 tests (2O.7)
+- `frontend/src/api/planInspection.ts` — `fetchDraftPlanInspection()` + `fetchDraftReadiness()` (2O.8/2O.9)
+- `frontend/src/components/PlanInspectionPanel.tsx` — read-only inspection + readiness badge/issues panel (2O.8/2O.9)
+- `backend/strategy_registry/evaluation_readiness.py` — `ReadinessIssue`, `ReadinessSummary`, `EvaluationReadinessReport`, `check_readiness()`, 12 lint rules (2O.9)
+- `backend/api/schemas/evaluation_readiness.py` — `EvaluationReadinessRequest`, `EvaluationReadinessResponse` (2O.9)
+- `backend/api/services/evaluation_readiness_service.py` — `check_draft_readiness()`, `check_semantics_payload_readiness()` (2O.9)
+- `backend/api/routes/evaluation_readiness.py` — `GET /drafts/{id}/semantics/readiness`, `POST /semantics/readiness` (2O.9)
+- `tests/unit/test_evaluation_readiness.py` — 83 domain tests (2O.9)
+- `tests/unit/test_evaluation_readiness_api.py` — 40 API tests (2O.9)
+- `backend/strategy_registry/scalar_evaluation_context.py` — `ScalarContextError`, `ScalarEvaluationContext` (2P.1)
+- `backend/strategy_registry/scalar_evaluator.py` — `UnsupportedOperatorError`, `SCALAR_OPERATORS`, `ScalarOperandResolver`, `ScalarOperatorEvaluator`, `ScalarConditionEvaluator`, `ScalarGroupEvaluator`, `ScalarRuleEvaluator`, `ScalarEvaluationEngine` (2P.1)
+- `backend/api/schemas/scalar_evaluation.py` — `ScalarEvaluationRequest` (2P.1)
+- `backend/api/services/scalar_evaluation_service.py` — `ScalarEvaluationError`, `evaluate_semantics_scalar()` (2P.1)
+- `backend/api/routes/scalar_evaluation.py` — `POST /semantics/evaluate-scalar` (2P.1)
+- `docs/SCALAR_EVALUATOR_FOUNDATION.md` — evaluator design, constraints, extension path (2P.1)
+- `tests/unit/test_scalar_evaluator.py` — 97 unit tests (2P.1)
+- `tests/unit/test_scalar_evaluation_api.py` — 21 API tests (2P.1)
+- `backend/strategy_registry/historical_evaluator.py` — `HistoricalBarContext`, `HistoricalEvaluationInput`, `BarEvaluationResult`, `HistoricalEvaluationResult`, `_build_scalar_context()`, `evaluate_history()` (2P.2)
+- `backend/api/schemas/historical_evaluation.py` — `HistoricalBarPayload`, `HistoricalEvaluationRequest` (2P.2)
+- `backend/api/services/historical_evaluation_service.py` — `HistoricalEvaluationError`, `evaluate_history_from_payload()` (2P.2)
+- `backend/api/routes/historical_evaluation.py` — `POST /semantics/evaluate-history` (2P.2)
+- `docs/HISTORICAL_EVALUATION_ITERATOR.md` — iterator design, non-backtesting boundary documentation (2P.2)
+- `tests/unit/test_historical_evaluator.py` — 62 unit tests (2P.2)
+- `tests/unit/test_historical_evaluation_api.py` — 21 API tests (2P.2)
+- `backend/strategy_registry/two_bar_context.py` — `PreviousBarMissingError`, `TwoBarEvaluationContext` (2P.3)
+- `backend/strategy_registry/crossover_evaluator.py` — `CROSSOVER_OPERATORS`, `ALL_TWO_BAR_OPERATORS`, `CrossoverConditionEvaluator`, `TwoBarScalarEngine` (2P.3)
+- `backend/strategy_registry/historical_evaluator.py` — updated: `_build_scalar_values()`, `TwoBarEvaluationContext` context, `TwoBarScalarEngine`, previous-bar propagation (2P.3)
+- `docs/PREVIOUS_BAR_EVALUATION.md` — crossover semantics, first-bar behavior, example (2P.3)
+- `tests/unit/test_crossover_evaluator.py` — 87 unit tests (2P.3)
+- `backend/strategy_registry/signal_events.py` — `SignalEventKind`, `SignalEventSource`, `SignalEvent`, `SignalEventSummary`, `SignalEventBatch` (2P.4)
+- `backend/strategy_registry/signal_event_extractor.py` — `extract_signal_events()`, deterministic ordering, summary computation (2P.4)
+- `backend/api/services/signal_event_service.py` — `SignalEventExtractionError`, `extract_signal_events_from_payload()` (2P.4)
+- `backend/api/routes/signal_events.py` — `POST /semantics/extract-signal-events` (2P.4)
+- `docs/SIGNAL_EVENT_CONTRACTS.md` — signal event meaning, traceability, forbidden assumptions, future backtesting relationship (2P.4)
+- `tests/unit/test_signal_events.py` — 88 unit + API tests (2P.4)
+- `backend/strategy_registry/trade_intents.py` — `TradeIntentAction`, `TradeIntentSource`, `TradeIntent`, `TradeIntentSummary`, `TradeIntentBatch` (2P.5)
+- `backend/strategy_registry/trade_intent_extractor.py` — `extract_trade_intents()`, `_ACTION_MAP`, `_make_intent_id()` (2P.5)
+- `backend/api/services/trade_intent_service.py` — `extract_trade_intents_from_batch()` (2P.5)
+- `backend/api/routes/trade_intents.py` — `POST /semantics/extract-trade-intents` (2P.5)
+- `docs/TRADE_INTENT_CONTRACTS.md` — intent meaning, halal action minimalism, future execution relationship (2P.5)
+- `tests/unit/test_trade_intents.py` — 86 unit + API tests (2P.5)
+- `backend/backtesting/models.py` — `BacktestSimulationConfig`, `SimulationPriceBar`, `BacktestRejectionReason`, `BacktestRejection`, `SimulatedTrade`, `BacktestEquityPoint`, `BacktestSimulationSummary`, `BacktestSimulationResult` (2P.6)
+- `backend/backtesting/position_tracker.py` — `PositionState`, `process_intent()` (2P.6)
+- `backend/backtesting/simulator.py` — `run_simulation()` (2P.6)
+- `backend/api/schemas/backtest_simulation.py` — `BacktestSimulationRequest` (2P.6)
+- `backend/api/services/backtest_simulation_service.py` — `simulate_backtest()` (2P.6)
+- `backend/api/routes/backtest_simulation.py` — `POST /backtests/simulate` (2P.6)
+- `docs/BACKTEST_SIMULATION_FOUNDATION.md` — long-only scope, close-price assumption, halal constraints, extension path (2P.6)
+- `tests/unit/test_backtest_simulation.py` — 95 unit + API + architecture guard tests (2P.6; updated 2P.7)
+- `backend/backtesting/cost_model.py` — `CommissionMode`, `SlippageMode`, `TradeCostBreakdown`, compute helpers (2P.7)
+- `docs/BACKTEST_COST_MODEL_FOUNDATION.md` — cost philosophy, execution price rules, PnL definition (2P.7)
+- `tests/unit/test_backtest_cost_model.py` — 86 unit + API + architecture guard tests (2P.7)
+- `tests/unit/test_backtest_position_sizing.py` — 83 unit + integration + architecture guard tests (2P.8)
+- `docs/BACKTEST_POSITION_SIZING.md` — sizing modes, quantity formula, rejection reasons, audit fields, extension path (2P.8)
+- `backend/tools/computation_models.py` — `ToolOutputPoint`, `ToolOutputSeries` (with `output_ref` property), `ToolComputationResult`; frozen Pydantic v2 (2R.0)
+- `backend/tools/historical_computation.py` — `ToolComputationBarInput`, `ToolComputationError`, `compute_tool_outputs_for_history()`, `build_bar_tool_outputs()`, `_compute_sma_series()`, `_TOOL_DISPATCHERS` (2R.0)
+- `backend/api/schemas/historical_evaluation.py` — `HistoricalEvaluationRequest.toolset: StrategyToolSet | None` field added (2R.0)
+- `backend/api/services/historical_evaluation_service.py` — `evaluate_history_from_payload()` extended with toolset path + ambiguity rejection (2R.0)
+- `docs/HISTORICAL_TOOL_COMPUTATION_PIPELINE.md` — architecture, warmup rules, output ref format, ambiguity rule, dispatcher, SMA details (2R.0)
+- `tests/unit/test_historical_tool_computation.py` — 52 tests: output models, SMA correctness, warmup, no-lookahead, multi-instance, service integration, API integration, backward compat, crossover (2R.0)
+- `backend/tools/ema.py` — `EMA_METADATA` (`tool_id="ema"`, `output_feature_names=("ema",)`, `stateful=True`), `compute_ema()` standalone visualization path; SMA-seed + recursive formula (2R.1)
+- `backend/tools/historical_computation.py` — `_compute_ema_series()` + `_TOOL_DISPATCHERS["ema"]` registration (2R.1)
+- `docs/EMA_TOOL_ARCHITECTURE.md` — formula, seed, warmup, dispatcher, multi-tool proof, semantic integration, extensibility (2R.1)
+- `tests/unit/test_ema_tool.py` — 71 tests: metadata, standalone compute, pipeline correctness, warmup, no-lookahead, multi-instance, multi-tool (SMA+EMA), semantic integration, API, validation, error cases, architecture guards (2R.1)
+- `create_default_registry()` now registers both SMA and EMA (2R.1)
+- Total test suite: 2330 passing
+- `frontend/src/api/semantics.ts` — `getSemantics`, `setSemantics`, `validateDraftSemantics`, `validateSemanticsPayload`
+- `frontend/src/components/SemanticEditorPanel.tsx` — recursive condition group editor; operand widget; validate + save; ID-preserving spreads
+- `frontend/src/types/drafts.ts` — `StrategyDraftData.semantics` field added
+- `frontend/vite.config.ts` — `/semantics` proxy added
+- Frontend build: 51 modules, `tsc && vite build` clean
 
 ## Pending Modules
 
 - `backend/strategy_runtime/` — bar-by-bar execution beyond current full-window foundation (skeleton present; backtesting integration deferred)
-- `backend/backtesting/` — simulation engine
+- `backend/backtesting/` — simulation engine (foundation complete; slippage/fees/multi-asset deferred)
 - `backend/forward_testing/`, `backend/execution/` — deferred
 - `backend/services/` — additional service modules as needed
 - First real strategy (consuming `NormalizedOHLCV` via `YahooFinanceAdapter` + `OHLCVService`)
@@ -252,6 +367,18 @@ Python: 3.13 | venv: `.venv/` at repo root
 | Draft composition service — add/remove/reorder/patch/validate + immutability | PASS (44 tests) |
 | Draft composition API — all 5 endpoints + regression + execution independence | PASS (36 tests) |
 | Visualization artifact models + runner extraction | PASS (21 tests) |
+| Semantic compilation (EvaluationPlan IR) | PASS (54 tests) |
+| Semantic binding validation | PASS (25 tests) |
+| Evaluator contracts + plan visitor | PASS (71 tests) |
+| Plan inspector + inspection API | PASS (82 tests) |
+| Evaluation readiness + linting (12 rules) | PASS (123 tests) |
+| Scalar evaluator (context, resolver, operator, condition, group, rule, engine) | PASS (97 tests) |
+| Scalar evaluation API — POST /semantics/evaluate-scalar | PASS (21 tests) |
+| Historical evaluation iterator (bar iteration, context build, traces, counts) | PASS (62 tests) |
+| Historical evaluation API — POST /semantics/evaluate-history | PASS (21 tests) |
+| Backtest position sizing — PositionSizeMode, resolve_position_quantity, ZERO_QUANTITY | PASS (83 tests) |
+| Historical tool computation — ToolOutputPoint/Series/Result, SMA, warmup, no-lookahead | PASS (52 tests) |
+| EMA tool — metadata, compute_ema, pipeline dispatch, warmup, no-lookahead, multi-tool proof | PASS (71 tests) |
 | Architecture guardrails | PASS |
 | Frontend npm install | PASS |
 | Frontend build (tsc + vite build) | PASS |
@@ -267,6 +394,36 @@ live frontend/backend + headless Chrome DevTools → PASS
 * seeded invalid draft → `✗ invalid` with backend error text displayed
 * delete + archive → list/selection reset safely
 * refresh + frontend/backend restart → persistence confirmed
+
+Full suite rerun (2026-05-21, Phase 2O.9):
+1483 passed — 83 new tests (readiness domain + API); zero regressions; frontend build clean (53 modules).
+
+Full suite rerun (2026-05-21, Phase 2O.8):
+1400 passed — zero regressions; frontend build clean (53 modules).
+
+Targeted rerun (2026-05-19, Phase 2O.7):
+82 passed — 42 (plan_inspector) + 40 (plan_inspection_api); new files only.
+
+Full suite rerun (2026-05-23, Phase 2R.1):
+2330 passed — 71 new tests (EMA metadata, computation, multi-tool proof, semantic integration); zero regressions.
+
+Full suite rerun (2026-05-23, Phase 2R.0):
+2259 passed — 52 new tests (historical tool computation pipeline, SMA dispatch, warmup, service/API integration); zero regressions; frontend build clean (53 modules).
+
+Full suite rerun (2026-05-22, Phase 2P.8):
+2207 passed — 83 new tests (position sizing, equity fraction, ZERO_QUANTITY, audit fields); zero regressions.
+
+Full suite rerun (2026-05-21, Phase 2O.6):
+1318 passed — 71 new tests (evaluator contracts, context satisfaction, plan visitor); zero regressions.
+
+Full suite rerun (2026-05-19, Phase 2O.5):
+1247 passed — 46 new tests (semantic binding validator + binding API); zero regressions.
+
+Full suite rerun (2026-05-19, Phase 2O.4):
+1201 passed (1.88s) — 82 new tests (semantic compiler + compilation API); zero regressions.
+
+Full suite rerun (2026-05-19, Phase 2O.3):
+1119 passed (1.64s) — 30 new semantic identity tests; zero regressions.
 
 Full suite rerun (2026-05-18, Phase 2N.11):
 999 passed (1.62s) — no backend changes; frontend build 49 modules (clean).

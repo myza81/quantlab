@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from backend.strategy_registry.semantics import StrategySemantics
 from backend.tools.registry import ToolRegistry
 from backend.tools.toolset import StrategyToolSet
 from backend.tools.validation import (
@@ -42,6 +43,7 @@ class StrategyDraft(BaseModel):
     enabled: bool = True
     tags: tuple[str, ...] = ()
     notes: str | None = None
+    semantics: StrategySemantics | None = None
 
     @field_validator("draft_id")
     @classmethod
