@@ -30,6 +30,8 @@ from backend.api.services.semantic_service import (
     validate_draft_semantics,
     validate_semantics_payload,
 )
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.strategy_registry.draft_repository import DraftNotFoundError, DraftRepository
 
 logger = logging.getLogger(__name__)
@@ -42,9 +44,10 @@ payload_router = APIRouter(prefix="/semantics", tags=["semantics"])
 def get_draft_semantics(
     draft_id: str,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> SemanticsResponse:
     try:
-        return get_semantics(draft_id, repository)
+        return get_semantics(draft_id, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -54,9 +57,10 @@ def put_draft_semantics(
     draft_id: str,
     request: SemanticsUpdateRequest,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> SemanticsResponse:
     try:
-        return set_semantics(draft_id, request.semantics, repository)
+        return set_semantics(draft_id, request.semantics, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -65,10 +69,11 @@ def put_draft_semantics(
 def post_validate_draft_semantics(
     draft_id: str,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> SemanticsValidationResponse:
     """Validate the semantics currently stored on the draft. Does not persist."""
     try:
-        return validate_draft_semantics(draft_id, repository)
+        return validate_draft_semantics(draft_id, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -44,6 +44,7 @@ from backend.tools.configuration import ToolConfiguration
 from backend.tools.historical_computation import (
     ToolComputationBarInput,
     ToolComputationError,
+    derive_warmup_bars_required,
 )
 from backend.tools.toolset import StrategyToolSet
 
@@ -264,6 +265,12 @@ class TestSmaWarmup:
             _toolset(_sma_config("s", 3)), bars, _REGISTRY
         )
         assert result.series[0].warmup_bar_count == 2
+        assert result.series[0].warmup_bars_required == 2
+
+    def test_warmup_requirement_derived_from_configured_period(self):
+        cfg = _sma_config("s", 8)
+        metadata = _REGISTRY.get("sma")
+        assert derive_warmup_bars_required(cfg, metadata) == 7
 
     def test_warmup_bars_absent_from_build_output(self):
         bars = [_bar_input(i, 100.0) for i in range(5)]
@@ -328,6 +335,17 @@ class TestNoLookahead:
         v1 = [p.value for p in r1.series[0].points]
         v2 = [p.value for p in r2.series[0].points]
         assert v1 == pytest.approx(v2)
+
+    def test_output_points_are_in_canonical_bar_order(self):
+        bars = [
+            _bar_input(2, 30.0),
+            _bar_input(0, 10.0),
+            _bar_input(1, 20.0),
+        ]
+        result = compute_tool_outputs_for_history(
+            _toolset(_sma_config("s", 2)), bars, _REGISTRY
+        )
+        assert [p.bar_index for p in result.series[0].points] == [1, 2]
 
 
 # ===========================================================================
@@ -616,6 +634,16 @@ class TestApiToolsetIntegration:
         payload = self._req(bars, toolset=self._sma_toolset_payload("sma_fast", 2))
         resp = _CLIENT.post("/semantics/evaluate-history", json=payload)
         assert resp.status_code == 422
+
+    def test_duplicate_bar_index_rejected_422(self):
+        bars = [
+            {"bar_index": 0, "price_fields": {"close": 110.0}, "tool_outputs": {}},
+            {"bar_index": 0, "price_fields": {"close": 120.0}, "tool_outputs": {}},
+        ]
+        payload = self._req(bars, toolset=self._sma_toolset_payload("sma_fast", 2))
+        resp = _CLIENT.post("/semantics/evaluate-history", json=payload)
+        assert resp.status_code == 422
+        assert "duplicate bar_index" in resp.json()["detail"]
 
     def test_no_toolset_backward_compat_200(self):
         bars = [

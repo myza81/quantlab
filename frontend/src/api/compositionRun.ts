@@ -5,6 +5,7 @@
  * Backend computes tool outputs, evaluates semantics, returns signals + indicators.
  */
 import type { OHLCVCandle } from './marketData'
+import { authedFetch } from './client'
 
 export interface CompositionSignal {
   timestamp: string | null
@@ -55,7 +56,7 @@ export async function runComposition(
     volume:    c.volume,
   }))
 
-  const resp = await fetch('/strategy-runs/run-composition', {
+  const resp = await authedFetch('/strategy-runs/run-composition', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ draft_id: draftId, symbol, timeframe, bars }),

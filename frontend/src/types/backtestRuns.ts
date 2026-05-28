@@ -60,6 +60,11 @@ export interface TradeRecord {
   return_pct:       number | null
   holding_bars:     number | null
   equity_after:     number | null
+  // Audit traceability
+  entry_rule_id:         string | null
+  exit_rule_id:          string | null
+  entry_signal_event_id: string | null
+  exit_signal_event_id:  string | null
 }
 
 export interface BacktestRejectionRecord {
@@ -108,6 +113,10 @@ export interface BacktestRunSummary {
   run_timestamp: string
   status:        string
   config:        BacktestRunConfig
+  // Reproducibility metadata
+  dataset_start:  string | null
+  dataset_end:    string | null
+  engine_version: string
 }
 
 export interface BacktestReport {

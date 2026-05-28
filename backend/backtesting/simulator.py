@@ -84,8 +84,11 @@ def run_simulation(
     Returns:
         BacktestSimulationResult with full trade log, equity curve, rejections, summary.
     """
+    sorted_bars = _sort_and_validate_price_bars(price_bars)
+
     # Build bar_index → price map
-    price_map: dict[int, SimulationPriceBar] = {bar.bar_index: bar for bar in price_bars}
+    price_map: dict[int, SimulationPriceBar] = {bar.bar_index: bar for bar in sorted_bars}
+    _validate_intent_timestamps(intent_batch, price_map)
 
     # Build bar_index → list[TradeIntent] (preserves input order per bar)
     intent_map: dict[int, list[TradeIntent]] = defaultdict(list)
@@ -108,7 +111,6 @@ def run_simulation(
     rejections: list[BacktestRejection] = []
 
     # Process bars in sorted order (one equity point per bar)
-    sorted_bars = sorted(price_bars, key=lambda b: b.bar_index)
     equity_curve: list[BacktestEquityPoint] = []
 
     for bar in sorted_bars:
@@ -172,6 +174,46 @@ def run_simulation(
         rejections=tuple(rejections),
         summary=summary,
     )
+
+
+def _sort_and_validate_price_bars(
+    price_bars: list[SimulationPriceBar],
+) -> list[SimulationPriceBar]:
+    sorted_bars = sorted(price_bars, key=lambda b: b.bar_index)
+    seen: set[int] = set()
+    previous_timestamp = None
+
+    for bar in sorted_bars:
+        if bar.bar_index in seen:
+            raise ValueError(f"duplicate bar_index={bar.bar_index} in simulation price bars")
+        seen.add(bar.bar_index)
+
+        if bar.timestamp is not None and previous_timestamp is not None:
+            if bar.timestamp < previous_timestamp:
+                raise ValueError(
+                    "price bar timestamps must be non-decreasing when ordered by bar_index"
+                )
+        if bar.timestamp is not None:
+            previous_timestamp = bar.timestamp
+
+    return sorted_bars
+
+
+def _validate_intent_timestamps(
+    intent_batch: TradeIntentBatch,
+    price_map: dict[int, SimulationPriceBar],
+) -> None:
+    for intent in intent_batch.intents:
+        price_bar = price_map.get(intent.source.bar_index)
+        if price_bar is None:
+            continue
+        if intent.source.timestamp is None or price_bar.timestamp is None:
+            continue
+        if intent.source.timestamp != price_bar.timestamp:
+            raise ValueError(
+                f"intent '{intent.intent_id}' timestamp does not match "
+                f"price bar timestamp at bar_index={intent.source.bar_index}"
+            )
 
 
 # ---------------------------------------------------------------------------

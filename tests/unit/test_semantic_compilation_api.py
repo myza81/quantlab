@@ -17,7 +17,18 @@ from fastapi.testclient import TestClient
 
 from backend.api.main import app
 from backend.api.routes.drafts import get_draft_repository
+from backend.auth.dependencies import get_current_user
+from backend.auth.models import User
 from backend.strategy_registry.draft_repository import DraftRepository
+
+_TEST_USER = User(
+    user_id="test-user-id",
+    username="testuser",
+    email="test@example.com",
+    password_hash="hash",
+    created_at="2026-01-01T00:00:00+00:00",
+    subscription_status="active",
+)
 
 # ---------------------------------------------------------------------------
 # Test client + repository fixture
@@ -30,6 +41,7 @@ def repo(tmp_path):
 @pytest.fixture
 def client(repo):
     app.dependency_overrides[get_draft_repository] = lambda: repo
+    app.dependency_overrides[get_current_user] = lambda: _TEST_USER
     yield TestClient(app)
     app.dependency_overrides.clear()
 

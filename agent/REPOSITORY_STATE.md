@@ -4,7 +4,10 @@
 main
 
 ## Current Phase
-PHASE 2R.1 — EMA Tool + Multi-Tool Computation Proof (complete)
+PHASE 3O — Credential-Aware Market Data Workflow UX (complete)
+
+All Phases 2T, 3A–3O complete. Backend: 3382 tests. Frontend: 60 tests. tsc clean.
+Last committed phase: 2P.9 + 2N. Phases 2T, 3A–3O are implemented but uncommitted.
 
 ---
 
@@ -13,6 +16,7 @@ PHASE 2R.1 — EMA Tool + Multi-Tool Computation Proof (complete)
 OPERATIONAL
 
 - FastAPI app + `GET /health` — validated ✓
+- Warmup/lookahead enforcement — canonical ascending bar replay, duplicate/timestamp validation, configured warmup exposure, simulator intent timestamp matching ✓
 - `backend/data/` — normalization layer complete and contract-hardened ✓
 - `backend/data_providers/` — CSV adapter + RangeProviderAdapter ABC complete ✓
 - `backend/storage/` — Parquet write/read + DuckDB query helper complete and UTC/consistency-hardened ✓
@@ -88,6 +92,8 @@ OPERATIONAL — build + browser workflow validated
 - `npm run build` passes with zero errors ✓
 - `lightweight-charts` 5.2.0 installed (TradingView Lightweight Charts)
 - Candlestick chart component (`Chart.tsx`) — renders via lightweight-charts v5 `CandlestickSeries`
+- Oscillator visualization (`Chart.tsx`) — RSI 70/50/30 reference guides render only when RSI oscillator series exists; frontend-only, no indicator computation ✓
+- Chart run reset (`App.tsx` + `Chart.tsx`) — App-owned overlay reset, Clear Strategy Results button, retained marker plugin lifecycle, stale overlays/markers/histograms/guides cleaned on rerender ✓
 - Controls component (`Controls.tsx`) — provider/symbol/asset_class/exchange/timeframe/start/end + Fetch button
 - `frontend/src/api/marketData.ts` — typed client for `GET /market-data/ohlcv`
 - `frontend/src/types/strategy.ts` — `StrategySignalOverlay`, `StrategyForecastOverlay`, `StrategyOverlay` types

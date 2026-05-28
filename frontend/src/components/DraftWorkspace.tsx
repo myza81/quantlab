@@ -15,6 +15,8 @@
  * No optimistic updates. No local validation logic.
  */
 import { useCallback, useEffect, useState } from 'react'
+import { isAuthError } from '../api/client'
+import { useAuth } from '../auth/AuthContext'
 import { DraftListPanel } from './DraftListPanel'
 import { DraftDetailView } from './DraftDetailView'
 import { PlanInspectionPanel } from './PlanInspectionPanel'
@@ -22,6 +24,7 @@ import { ToolCompositionPanel } from './ToolCompositionPanel'
 import { SemanticEditorPanel } from './SemanticEditorPanel'
 import type { CompositionValidationResponse, StrategyDraftData } from '../types/drafts'
 import type { SemanticsValidationResponse, StrategySemantics } from '../types/semantics'
+import type { ToolMetadataResponse } from '../api/tools'
 import {
   addToolToDraft,
   archiveDraft,
@@ -34,9 +37,11 @@ import {
   reorderDraftTools,
   validateDraft,
 } from '../api/drafts'
+import { fetchTools } from '../api/tools'
 import { setSemantics, validateSemanticsPayload } from '../api/semantics'
 
 export function DraftWorkspace() {
+  const { logout } = useAuth()
   const [drafts, setDrafts] = useState<StrategyDraftData[]>([])
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
@@ -45,6 +50,17 @@ export function DraftWorkspace() {
   const [selectedDraft, setSelectedDraft] = useState<StrategyDraftData | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [planRefreshToken, setPlanRefreshToken] = useState(0)
+
+  // Tool registry: keyed by tool_id so we can look up output_feature_names per tool
+  const [toolRegistry, setToolRegistry] = useState<Record<string, ToolMetadataResponse>>({})
+
+  useEffect(() => {
+    fetchTools().then(resp => {
+      const map: Record<string, ToolMetadataResponse> = {}
+      for (const t of resp.tools) map[t.tool_id] = t
+      setToolRegistry(map)
+    }).catch(() => { /* non-fatal: suggestions degrade gracefully */ })
+  }, [])
 
   const syncDraftInList = useCallback((updated: StrategyDraftData) => {
     setDrafts(prev =>
@@ -60,11 +76,12 @@ export function DraftWorkspace() {
       const data = await fetchDrafts()
       setDrafts(data.drafts)
     } catch (err) {
+      if (isAuthError(err)) { logout(); return }
       setListError(err instanceof Error ? err.message : 'Failed to load drafts')
     } finally {
       setListLoading(false)
     }
-  }, [])
+  }, [logout])
 
   useEffect(() => {
     loadList()
@@ -78,7 +95,8 @@ export function DraftWorkspace() {
       const draft = await fetchDraft(id)
       setSelectedDraft(draft)
       syncDraftInList(draft)
-    } catch {
+    } catch (err) {
+      if (isAuthError(err)) { logout(); return }
       setSelectedDraft(null)
     } finally {
       setDetailLoading(false)
@@ -235,7 +253,11 @@ export function DraftWorkspace() {
               onSave={handleSaveSemantics}
               onValidate={handleValidateSemantics}
               toolOutputSuggestions={
-                selectedDraft.toolset.tools.map(t => `${t.instance_id}.${t.tool_id}`)
+                selectedDraft.toolset.tools.flatMap(t => {
+                  const meta = toolRegistry[t.tool_id]
+                  const outputs = meta?.output_feature_names ?? [t.tool_id]
+                  return outputs.map(o => `${t.instance_id}.${o}`)
+                })
               }
             />
             <PlanInspectionPanel

@@ -11,6 +11,8 @@ import { useEffect, useState } from 'react'
 import { fetchDrafts, validateDraft } from '../api/drafts'
 import { runComposition } from '../api/compositionRun'
 import { runBacktest } from '../api/backtestRuns'
+import { isAuthError } from '../api/client'
+import { useAuth } from '../auth/AuthContext'
 import type { CompositionRunResponse } from '../api/compositionRun'
 import type { BacktestReport, BacktestRunConfig } from '../types/backtestRuns'
 import { DEFAULT_BACKTEST_CONFIG } from '../types/backtestRuns'
@@ -26,6 +28,7 @@ interface Props {
 }
 
 export function StrategyTestPanel({ candles, symbol, timeframe, onResult, onBacktestResult }: Props) {
+  const { logout } = useAuth()
   const [drafts,       setDrafts]       = useState<StrategyDraftData[]>([])
   const [listLoading,  setListLoading]  = useState(true)
   const [listError,    setListError]    = useState<string | null>(null)
@@ -47,9 +50,12 @@ export function StrategyTestPanel({ candles, symbol, timeframe, onResult, onBack
     setListLoading(true)
     fetchDrafts()
       .then(r => setDrafts(r.drafts.filter(d => d.enabled)))
-      .catch(e => setListError(e instanceof Error ? e.message : 'Failed to load strategies'))
+      .catch(e => {
+        if (isAuthError(e)) { logout(); return }
+        setListError(e instanceof Error ? e.message : 'Failed to load strategies')
+      })
       .finally(() => setListLoading(false))
-  }, [])
+  }, [logout])
 
   useEffect(() => {
     setSelected(drafts.find(d => d.draft_id === selectedId) ?? null)
@@ -67,6 +73,7 @@ export function StrategyTestPanel({ candles, symbol, timeframe, onResult, onBack
     try {
       setValidation(await validateDraft(selectedId))
     } catch (e) {
+      if (isAuthError(e)) { logout(); return }
       setValidation({ valid: false, errors: [e instanceof Error ? e.message : 'Validation failed'] })
     } finally {
       setValidating(false)
@@ -84,6 +91,7 @@ export function StrategyTestPanel({ candles, symbol, timeframe, onResult, onBack
       setLastResult(result)
       onResult(result)
     } catch (e) {
+      if (isAuthError(e)) { logout(); return }
       setRunError(e instanceof Error ? e.message : 'Run failed')
     } finally {
       setRunning(false)
@@ -98,6 +106,7 @@ export function StrategyTestPanel({ candles, symbol, timeframe, onResult, onBack
       const response = await runBacktest(selectedId, symbol, timeframe, candles, btConfig)
       onBacktestResult(response.report)
     } catch (e) {
+      if (isAuthError(e)) { logout(); return }
       setBtError(e instanceof Error ? e.message : 'Backtest failed')
     } finally {
       setBtRunning(false)

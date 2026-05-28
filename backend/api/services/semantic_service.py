@@ -34,13 +34,17 @@ def _rebuild_with_semantics(
     return StrategyDraft.model_validate(data)
 
 
-def get_semantics(draft_id: str, repository: DraftRepository) -> SemanticsResponse:
+def get_semantics(
+    draft_id: str,
+    repository: DraftRepository,
+    owner_id: str | None = None,
+) -> SemanticsResponse:
     """
     Return the semantics currently stored on a draft.
 
     Raises DraftNotFoundError if the draft does not exist.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
     return SemanticsResponse(draft_id=draft.draft_id, semantics=draft.semantics)
 
 
@@ -48,6 +52,7 @@ def set_semantics(
     draft_id: str,
     semantics: StrategySemantics,
     repository: DraftRepository,
+    owner_id: str | None = None,
 ) -> SemanticsResponse:
     """
     Replace the semantics on a draft with the provided StrategySemantics.
@@ -57,15 +62,16 @@ def set_semantics(
 
     Raises DraftNotFoundError if the draft does not exist.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
     updated = _rebuild_with_semantics(draft, inject_ids(semantics))
-    repository.update(updated)
+    repository.update(updated, owner_id=owner_id)
     return SemanticsResponse(draft_id=updated.draft_id, semantics=updated.semantics)
 
 
 def validate_draft_semantics(
     draft_id: str,
     repository: DraftRepository,
+    owner_id: str | None = None,
 ) -> SemanticsValidationResponse:
     """
     Structurally validate the semantics currently stored on a draft.
@@ -74,7 +80,7 @@ def validate_draft_semantics(
     Never raises for structural issues — errors are returned in the response.
     Raises DraftNotFoundError if the draft does not exist.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
     if draft.semantics is None:
         return SemanticsValidationResponse(
             valid=False,

@@ -143,7 +143,9 @@ class TestEmaMetadata:
         registry = create_default_registry()
         assert "ema" in registry
         assert "sma" in registry
-        assert len(registry) == 2
+        assert "rsi" in registry
+        assert "macd" in registry
+        assert len(registry) == 6   # sma, ema, rsi, macd, atr, bollinger_bands
 
     def test_registry_get_returns_ema_metadata(self):
         registry = create_default_registry()
@@ -828,7 +830,7 @@ class TestEmaErrorCases:
         bars = [_bar_input(i, 100.0) for i in range(5)]
         cfg = ToolConfiguration(
             instance_id="bad",
-            tool_id="rsi",
+            tool_id="unknown_indicator_xyz",
             parameters={"period": 14},
         )
         with pytest.raises(ToolComputationError, match="not found in registry"):

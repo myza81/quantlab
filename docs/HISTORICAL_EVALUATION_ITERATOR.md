@@ -20,7 +20,9 @@ HistoricalEvaluationResult
     exit_triggered_count
 ```
 
-Each bar is evaluated independently via the same `ScalarEvaluationEngine` used in Phase 2P.1. No state transfers between bars.
+Each bar is evaluated by the two-bar scalar engine. Current-bar values are
+evaluated with the previous historical bar's values available for crossover
+operators.
 
 ---
 
@@ -71,16 +73,15 @@ If tool computation were embedded in the iterator, the evaluator would become co
 
 ---
 
-## Why Crossover Operators Are Deferred
+## Crossover Operators
 
 `crosses_above` and `crosses_below` require:
 - The **current bar's** resolved value
 - The **previous bar's** resolved value
 - Comparison of the two to detect sign change
 
-The scalar evaluator operates on a single snapshot. Even within the historical iterator, each bar's `ScalarEvaluationContext` contains only that bar's values — there is no mechanism to pass the previous bar's context.
-
-A future multi-bar evaluator (Phase 2P.3 or similar) will maintain a rolling previous-bar state and implement crossover semantics.
+The historical evaluator maintains rolling previous-bar scalar values. The first
+bar has no previous state, so crossover outcomes are `None` on that bar.
 
 ---
 
@@ -88,16 +89,20 @@ A future multi-bar evaluator (Phase 2P.3 or similar) will maintain a rolling pre
 
 ### Sequential, Deterministic
 
-Bars are evaluated in the order they appear in `HistoricalEvaluationInput.bars`. Equivalent inputs always produce identical outputs.
+Bars are evaluated in canonical ascending `bar_index` order, regardless of
+payload order. Duplicate `bar_index` values are rejected because they make
+historical replay ambiguous. If timestamps are present, they must be
+non-decreasing when ordered by `bar_index`.
 
-### Per-Bar Independence
+### Per-Bar Context
 
 Each bar is fully independent:
-1. Build `ScalarEvaluationContext` from `HistoricalBarContext`
-2. Call `ScalarEvaluationEngine.evaluate_plan(plan, context)`
+1. Build current scalar values from `HistoricalBarContext`
+2. Pair them with the previous historical bar's scalar values
+3. Call the two-bar scalar engine
 3. Collect `EvaluationTrace` into `BarEvaluationResult`
 
-No rollover state. No accumulation between bars.
+No portfolio, position, PnL, or execution state is carried.
 
 ### Context Key Convention
 

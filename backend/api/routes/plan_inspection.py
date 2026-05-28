@@ -31,6 +31,8 @@ from backend.api.services.plan_inspection_service import (
     inspect_draft_plan,
     inspect_semantics_payload,
 )
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.strategy_registry.draft_repository import (
     DraftNotFoundError,
     DraftRepository,
@@ -51,6 +53,7 @@ def get_draft_plan_inspection(
     draft_id:   str,
     repository: DraftRepository = Depends(get_draft_repository),
     registry:   ToolRegistry    = Depends(get_tool_registry),
+    current_user: User = Depends(require_active_subscription),
 ) -> PlanInspectionResponse:
     """
     Compile the stored semantics and return a passive EvaluationPlan inspection.
@@ -60,7 +63,7 @@ def get_draft_plan_inspection(
     Returns compiled=False with an error if the draft has no semantics.
     """
     try:
-        return inspect_draft_plan(draft_id, repository, registry)
+        return inspect_draft_plan(draft_id, repository, registry, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

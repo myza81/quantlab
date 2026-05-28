@@ -750,6 +750,17 @@ class TestHistoricalCrossoverIntegration:
         assert result.bar_results[0].entry_triggered is None   # first bar
         assert result.bar_results[1].entry_triggered is True   # 70<=80 AND 90>80
 
+    def test_unsorted_bars_replayed_by_bar_index_not_payload_order(self):
+        plan = self._crossover_plan("crosses_above")
+        result = evaluate_history(_hist_input(plan, _bar(1, 60.0), _bar(0, 40.0)))
+        assert [r.bar_index for r in result.bar_results] == [0, 1]
+        assert [r.entry_triggered for r in result.bar_results] == [None, True]
+
+    def test_duplicate_bar_index_rejected(self):
+        plan = self._crossover_plan("crosses_above")
+        with pytest.raises(ValueError, match="duplicate bar_index"):
+            evaluate_history(_hist_input(plan, _bar(0, 40.0), _bar(0, 60.0)))
+
 
 # ---------------------------------------------------------------------------
 # Architecture boundary

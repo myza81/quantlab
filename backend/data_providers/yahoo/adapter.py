@@ -33,6 +33,7 @@ from typing import Any
 import yfinance as yf  # type: ignore[import-untyped]
 
 from backend.data.schemas import NormalizedOHLCV
+from backend.data_providers.base import ProviderCapabilities, ProviderFetchError
 from backend.data_providers.range_provider import RangeProviderAdapter
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ SUPPORTED_TIMEFRAMES: dict[str, str] = {
 _DAILY_PLUS_INTERVALS: frozenset[str] = frozenset({"1d", "1wk", "1mo"})
 
 
-class YahooAdapterError(Exception):
+class YahooAdapterError(ProviderFetchError):
     """Raised when yfinance returns an unexpected transport or schema error."""
 
 
@@ -94,6 +95,8 @@ class YahooFinanceAdapter(RangeProviderAdapter):
             raise ValueError("symbol must not be empty")
         if not asset_class.strip():
             raise ValueError("asset_class must not be empty")
+        if not venue.strip():
+            raise ValueError("venue must not be empty")
 
         if timeframe not in SUPPORTED_TIMEFRAMES:
             raise ValueError(
@@ -112,6 +115,20 @@ class YahooFinanceAdapter(RangeProviderAdapter):
     @property
     def provider_name(self) -> str:
         return "yahoo"
+
+    def supported_timeframes(self) -> tuple[str, ...]:
+        return tuple(sorted(SUPPORTED_TIMEFRAMES.keys()))
+
+    def supported_asset_classes(self) -> tuple[str, ...]:
+        return ("crypto", "equity", "etf", "fx", "fund", "future", "index")
+
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            provider_id="yahoo",
+            display_name="Yahoo Finance",
+            supported_timeframes=self.supported_timeframes(),
+            supported_asset_classes=self.supported_asset_classes(),
+        )
 
     def load(self, **kwargs: object) -> list[NormalizedOHLCV]:
         """Not implemented — use fetch(start, end) for range-based retrieval."""

@@ -9,7 +9,7 @@ No live execution. No broker integration. No strategy runtime coupling.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from backend.api.schemas.backtest_simulation import BacktestSimulationRequest
 from backend.api.services.backtest_simulation_service import simulate_backtest
@@ -31,8 +31,11 @@ def simulate(request: BacktestSimulationRequest) -> BacktestSimulationResult:
     - long-only, fixed quantity sizing
     - no slippage, no fees
     """
-    return simulate_backtest(
-        intent_batch=request.intent_batch,
-        price_bars=request.price_bars,
-        config=request.config,
-    )
+    try:
+        return simulate_backtest(
+            intent_batch=request.intent_batch,
+            price_bars=request.price_bars,
+            config=request.config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

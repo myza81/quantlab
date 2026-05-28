@@ -19,6 +19,7 @@ def validate_draft_bindings(
     draft_id: str,
     repository: DraftRepository,
     registry: ToolRegistry,
+    owner_id: str | None = None,
 ) -> BindingValidationResponse:
     """
     Load the draft and validate semantic-to-toolset bindings.
@@ -28,7 +29,7 @@ def validate_draft_bindings(
     """
     from backend.strategy_registry.semantic_binding_validator import BindingDiagnostic
 
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
 
     if draft.semantics is None:
         empty_summary = DependencySummary(

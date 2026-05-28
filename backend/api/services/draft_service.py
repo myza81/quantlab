@@ -15,6 +15,7 @@ from backend.api.schemas.drafts import (
     DraftResponse,
     DraftUpdateRequest,
 )
+from backend.core.audit import AuditEvent, AuditEventKind, emit_audit_event
 from backend.strategy_registry.draft_repository import DraftRepository
 from backend.strategy_registry.drafts import StrategyDraft
 
@@ -26,7 +27,11 @@ def _to_response(draft: StrategyDraft) -> DraftResponse:
     return DraftResponse.model_validate(draft.model_dump())
 
 
-def create_draft(request: DraftCreateRequest, repository: DraftRepository) -> DraftResponse:
+def create_draft(
+    request: DraftCreateRequest,
+    repository: DraftRepository,
+    user_id: str | None = None,
+) -> DraftResponse:
     """Build and persist a new StrategyDraft from the create request."""
     now = datetime.now(_UTC)
     draft = StrategyDraft(
@@ -39,20 +44,32 @@ def create_draft(request: DraftCreateRequest, repository: DraftRepository) -> Dr
         enabled=request.enabled,
         tags=tuple(request.tags),
         notes=request.notes,
+        user_id=user_id,
     )
     repository.save(draft)
+    emit_audit_event(AuditEvent(
+        event_kind=AuditEventKind.DRAFT_CREATED,
+        details={"draft_id": draft.draft_id, "user_id": user_id},
+    ))
     return _to_response(draft)
 
 
-def get_draft(draft_id: str, repository: DraftRepository) -> DraftResponse:
+def get_draft(
+    draft_id: str,
+    repository: DraftRepository,
+    owner_id: str | None = None,
+) -> DraftResponse:
     """Load and return a single active draft."""
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
     return _to_response(draft)
 
 
-def list_drafts(repository: DraftRepository) -> DraftListResponse:
+def list_drafts(
+    repository: DraftRepository,
+    user_id: str | None = None,
+) -> DraftListResponse:
     """Return all active drafts sorted by draft_id."""
-    drafts = repository.list_all()
+    drafts = repository.list_all(user_id=user_id)
     return DraftListResponse(
         drafts=[_to_response(d) for d in drafts],
         count=len(drafts),
@@ -63,6 +80,7 @@ def update_draft(
     draft_id: str,
     request: DraftUpdateRequest,
     repository: DraftRepository,
+    owner_id: str | None = None,
 ) -> DraftResponse:
     """
     Apply partial updates to an existing draft and persist.
@@ -71,7 +89,7 @@ def update_draft(
     Omitted fields retain their existing values.
     updated_at is always refreshed.
     """
-    existing = repository.load(draft_id)
+    existing = repository.load(draft_id, owner_id=owner_id)
     existing_data = existing.model_dump()
 
     updates = request.model_dump(exclude_unset=True)
@@ -81,15 +99,35 @@ def update_draft(
     existing_data["updated_at"] = datetime.now(_UTC)
 
     updated = StrategyDraft.model_validate(existing_data)
-    repository.update(updated)
+    repository.update(updated, owner_id=owner_id)
+    emit_audit_event(AuditEvent(
+        event_kind=AuditEventKind.DRAFT_UPDATED,
+        details={"draft_id": draft_id, "user_id": owner_id},
+    ))
     return _to_response(updated)
 
 
-def archive_draft(draft_id: str, repository: DraftRepository) -> None:
+def archive_draft(
+    draft_id: str,
+    repository: DraftRepository,
+    owner_id: str | None = None,
+) -> None:
     """Move a draft to the archive. It is removed from active listing."""
-    repository.archive(draft_id)
+    repository.archive(draft_id, owner_id=owner_id)
+    emit_audit_event(AuditEvent(
+        event_kind=AuditEventKind.DRAFT_ARCHIVED,
+        details={"draft_id": draft_id, "user_id": owner_id},
+    ))
 
 
-def delete_draft(draft_id: str, repository: DraftRepository) -> None:
+def delete_draft(
+    draft_id: str,
+    repository: DraftRepository,
+    owner_id: str | None = None,
+) -> None:
     """Hard-delete a draft."""
-    repository.delete(draft_id)
+    repository.delete(draft_id, owner_id=owner_id)
+    emit_audit_event(AuditEvent(
+        event_kind=AuditEventKind.DRAFT_DELETED,
+        details={"draft_id": draft_id, "user_id": owner_id},
+    ))

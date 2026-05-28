@@ -563,6 +563,33 @@ class TestRunSimulationBasic:
         result = run_simulation(batch, [_price_bar(0, 100.0)], _default_config())
         assert result.plan_draft_id is None
 
+    def test_duplicate_price_bar_index_rejected(self):
+        with pytest.raises(ValueError, match="duplicate bar_index"):
+            run_simulation(
+                _make_batch(),
+                [_price_bar(0, 100.0), _price_bar(0, 101.0)],
+                _default_config(),
+            )
+
+    def test_intent_timestamp_must_match_price_bar_timestamp(self):
+        intent = _open_intent(1).model_copy(
+            update={
+                "source": TradeIntentSource(
+                    signal_event_id="1:entry:0:r1",
+                    bar_index=1,
+                    timestamp=_ts(2),
+                    rule_id="r1",
+                    rule_kind="entry",
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="timestamp does not match"):
+            run_simulation(
+                _make_batch(intent),
+                [_price_bar(1, 100.0)],
+                _default_config(),
+            )
+
 
 # ---------------------------------------------------------------------------
 # 12. run_simulation — equity curve correctness

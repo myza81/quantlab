@@ -1,4 +1,4 @@
-# Historical Tool Computation Pipeline — Phase 2R.0
+# Historical Tool Computation Pipeline — Phase 2R.0 / 2R.2
 
 ## Purpose
 
@@ -53,7 +53,12 @@ Warmup bars produce **no entry** in the output dict. This is deliberate:
 - No false signals are generated during warmup
 - No lookahead bias: bar N's SMA uses only bars 0..N
 
-Warmup count per tool: `period - 1`
+Warmup count per SMA/EMA instance is derived from its configured `period`:
+`warmup_bars_required = period - 1`.
+
+`ToolOutputSeries.warmup_bars_required` exposes the exact configured value for
+the computed series. `derive_warmup_bars_required(tool_config, metadata)` is the
+public derivation helper used by the computation pipeline.
 
 ---
 
@@ -70,6 +75,7 @@ class ToolComputationBarInput(BaseModel):
 
 - `bar_index` must be unique across all bars
 - Bars may be provided in any order; the pipeline sorts by `bar_index` internally
+- Output points are emitted in canonical ascending `bar_index` order
 
 ---
 
@@ -99,6 +105,10 @@ class ToolOutputSeries(BaseModel):
     @property
     def output_ref(self) -> str:
         return f"{self.instance_id}.{self.output_name}"
+
+    @property
+    def warmup_bars_required(self) -> int:
+        return self.warmup_bar_count
 ```
 
 One series per `(instance_id, output_name)` pair.
@@ -206,8 +216,8 @@ Adding a new tool requires:
 | File | Purpose |
 |------|---------|
 | `backend/tools/computation_models.py` | Output contracts: Point, Series, Result |
-| `backend/tools/historical_computation.py` | Computation service + SMA dispatcher |
+| `backend/tools/historical_computation.py` | Computation service + warmup derivation + SMA/EMA dispatcher |
 | `backend/tools/__init__.py` | Public exports |
 | `backend/api/schemas/historical_evaluation.py` | `toolset` field on request DTO |
 | `backend/api/services/historical_evaluation_service.py` | Toolset path orchestration |
-| `tests/unit/test_historical_tool_computation.py` | 52 tests covering all paths |
+| `tests/unit/test_historical_tool_computation.py` | Warmup, no-lookahead, ordering, API, and service tests |

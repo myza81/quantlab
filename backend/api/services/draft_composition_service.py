@@ -108,6 +108,7 @@ def add_tool(
     request: AddToolRequest,
     registry: ToolRegistry,
     repository: DraftRepository,
+    owner_id: str | None = None,
 ) -> DraftResponse:
     """
     Add a ToolConfiguration to the draft's toolset.
@@ -118,7 +119,7 @@ def add_tool(
     Raises ToolOrderError if index is out of range.
     Raises ToolPatchError if registry validation fails.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
     tool = request.tool
 
     if tool.instance_id in draft.toolset:
@@ -139,7 +140,7 @@ def add_tool(
         tools.insert(request.index, tool)
 
     updated = _rebuild_draft(draft, _new_toolset(draft.toolset, tools))
-    repository.update(updated)
+    repository.update(updated, owner_id=owner_id)
     return _to_response(updated)
 
 
@@ -147,13 +148,14 @@ def remove_tool(
     draft_id: str,
     instance_id: str,
     repository: DraftRepository,
+    owner_id: str | None = None,
 ) -> DraftResponse:
     """
     Remove a tool by instance_id from the draft's toolset.
 
     Raises ToolInstanceNotFoundError if instance_id is absent.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
     key = instance_id.strip().lower()
 
     if key not in draft.toolset:
@@ -163,7 +165,7 @@ def remove_tool(
 
     tools = [t for t in draft.toolset.tools if t.instance_id != key]
     updated = _rebuild_draft(draft, _new_toolset(draft.toolset, tools))
-    repository.update(updated)
+    repository.update(updated, owner_id=owner_id)
     return _to_response(updated)
 
 
@@ -171,6 +173,7 @@ def reorder_tools(
     draft_id: str,
     ordered_instance_ids: list[str],
     repository: DraftRepository,
+    owner_id: str | None = None,
 ) -> DraftResponse:
     """
     Reorder the draft's toolset tools.
@@ -180,7 +183,7 @@ def reorder_tools(
 
     Raises ToolOrderError if the request is inconsistent.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
     current_ids = set(draft.toolset.instance_ids())
     normalized = [iid.strip().lower() for iid in ordered_instance_ids]
 
@@ -205,7 +208,7 @@ def reorder_tools(
     reordered = [tool_index[iid] for iid in normalized]
 
     updated = _rebuild_draft(draft, _new_toolset(draft.toolset, reordered))
-    repository.update(updated)
+    repository.update(updated, owner_id=owner_id)
     return _to_response(updated)
 
 
@@ -215,6 +218,7 @@ def patch_tool(
     request: PatchToolRequest,
     registry: ToolRegistry,
     repository: DraftRepository,
+    owner_id: str | None = None,
 ) -> DraftResponse:
     """
     Patch a single tool's parameters, enabled state, display_name, or color.
@@ -227,7 +231,7 @@ def patch_tool(
 
     Raises ToolInstanceNotFoundError if instance_id is absent.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
     key = instance_id.strip().lower()
 
     existing = draft.toolset.get_tool(key)
@@ -254,7 +258,7 @@ def patch_tool(
 
     tools = [patched if t.instance_id == key else t for t in draft.toolset.tools]
     updated = _rebuild_draft(draft, _new_toolset(draft.toolset, tools))
-    repository.update(updated)
+    repository.update(updated, owner_id=owner_id)
     return _to_response(updated)
 
 
@@ -262,13 +266,14 @@ def validate_draft(
     draft_id: str,
     registry: ToolRegistry,
     repository: DraftRepository,
+    owner_id: str | None = None,
 ) -> CompositionValidationResponse:
     """
     Validate the draft's toolset against the registry.
 
     Never raises — validation errors are surfaced in the response body.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
     result = draft.validate_against_registry(registry)
     return CompositionValidationResponse(
         valid=result.valid,

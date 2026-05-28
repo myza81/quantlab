@@ -37,6 +37,7 @@ def compile_draft_semantics(
     draft_id: str,
     repository: DraftRepository,
     registry: ToolRegistry | None = None,
+    owner_id: str | None = None,
 ) -> CompilationResponse:
     """
     Load the draft, compile its semantics, return a passive CompilationResponse.
@@ -48,7 +49,7 @@ def compile_draft_semantics(
     Returns compiled=False with an error if the draft has no semantics.
     Raises DraftNotFoundError if the draft does not exist.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
 
     if draft.semantics is None:
         return CompilationResponse(

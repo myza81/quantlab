@@ -1,6 +1,33 @@
 from abc import ABC, abstractmethod
 
+from pydantic import BaseModel, ConfigDict
+
 from backend.data.schemas import NormalizedOHLCV
+
+
+class ProviderFetchError(Exception):
+    """
+    Base exception for provider-level fetch failures.
+
+    Concrete adapters should subclass this so callers can catch a single
+    provider-agnostic error type without importing adapter-specific exceptions.
+    """
+
+
+class ProviderCapabilities(BaseModel):
+    """
+    Static capability descriptor for a data provider.
+
+    Describes what a provider supports so API layers and tooling can expose
+    provider metadata without importing concrete adapter classes.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    provider_id: str
+    display_name: str
+    supported_timeframes: tuple[str, ...]
+    supported_asset_classes: tuple[str, ...]
 
 
 class BaseDataAdapter(ABC):
@@ -33,3 +60,20 @@ class BaseDataAdapter(ABC):
         Callers should pass result through DataNormalizer for full validation.
         """
         ...
+
+    def supported_timeframes(self) -> tuple[str, ...]:
+        """Return canonical timeframe strings supported by this provider."""
+        return ()
+
+    def supported_asset_classes(self) -> tuple[str, ...]:
+        """Return asset class strings supported by this provider."""
+        return ()
+
+    def capabilities(self) -> ProviderCapabilities:
+        """Return a ProviderCapabilities descriptor for this adapter."""
+        return ProviderCapabilities(
+            provider_id=self.provider_name,
+            display_name=self.provider_name.title(),
+            supported_timeframes=self.supported_timeframes(),
+            supported_asset_classes=self.supported_asset_classes(),
+        )

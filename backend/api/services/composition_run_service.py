@@ -22,7 +22,7 @@ from backend.api.schemas.composition_run import (
     CompositionRunResponse,
     CompositionSignal,
 )
-from backend.strategy_registry.draft_repository import DraftNotFoundError, DraftRepository
+from backend.strategy_registry.draft_repository import DraftRepository
 from backend.strategy_registry.historical_evaluator import (
     HistoricalBarContext,
     HistoricalEvaluationInput,
@@ -36,6 +36,7 @@ from backend.tools.historical_computation import (
     build_bar_tool_outputs,
     compute_tool_outputs_for_history,
 )
+from backend.tools.models import VisualizationCapability
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ def run_composition(
     timeframe: str,
     bars: list[CompositionRunBar],
     repository: DraftRepository,
+    owner_id: str | None = None,
 ) -> CompositionRunResponse:
     """
     Run a saved strategy composition against a set of OHLCV bars.
@@ -71,11 +73,8 @@ def run_composition(
     """
     warnings: list[str] = []
 
-    # Step 1 — fetch draft
-    try:
-        draft = repository.load(draft_id)
-    except DraftNotFoundError as exc:
-        raise CompositionRunError(f"Draft '{draft_id}' not found.") from exc
+    # Step 1 — fetch draft (DraftNotFoundError propagates to route — maps to 404)
+    draft = repository.load(draft_id, owner_id=owner_id)
 
     draft_name = draft.display_name
 
@@ -98,6 +97,8 @@ def run_composition(
             indicators=[],
             warnings=["No bars supplied."],
         )
+
+    bars = _sort_and_validate_bars(bars)
 
     # Step 3 — compile semantics
     compile_result = compile_semantics(semantics, draft_id=draft_id)
@@ -148,10 +149,20 @@ def run_composition(
             )
             color = tool_cfg.color if tool_cfg else None
 
+            # Derive pane from tool metadata: oscillator tools go to oscillator pane
+            metadata = registry.get(series.tool_id)
+            is_oscillator = (
+                VisualizationCapability.produces_oscillator_series
+                in metadata.visualization_capabilities
+            )
+            pane = "oscillator" if is_oscillator else "price"
+            # Histogram output_name → histogram rendering kind; all others → line
+            kind = "histogram" if series.output_name == "histogram" else "line"
+
             indicators.append(CompositionIndicatorSeries(
                 name=display,
-                kind="line",
-                pane="price",
+                kind=kind,
+                pane=pane,
                 color=color,
                 points=[
                     CompositionIndicatorPoint(timestamp=p.timestamp, value=p.value)
@@ -212,3 +223,28 @@ def run_composition(
         indicators=indicators,
         warnings=warnings,
     )
+
+
+def _sort_and_validate_bars(
+    bars: list[CompositionRunBar],
+) -> list[CompositionRunBar]:
+    sorted_bars = sorted(bars, key=lambda b: b.bar_index)
+    seen: set[int] = set()
+    previous_timestamp = None
+
+    for bar in sorted_bars:
+        if bar.bar_index in seen:
+            raise CompositionRunError(
+                f"duplicate bar_index={bar.bar_index} in composition run input"
+            )
+        seen.add(bar.bar_index)
+
+        if bar.timestamp is not None and previous_timestamp is not None:
+            if bar.timestamp < previous_timestamp:
+                raise CompositionRunError(
+                    "bar timestamps must be non-decreasing when ordered by bar_index"
+                )
+        if bar.timestamp is not None:
+            previous_timestamp = bar.timestamp
+
+    return sorted_bars

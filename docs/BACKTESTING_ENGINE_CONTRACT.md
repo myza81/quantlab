@@ -346,7 +346,7 @@ Feature computation is the process of executing resolved tools against normalize
 
 **Deterministic**: Given identical inputs (data, parameters, tool version), a tool must always produce identical feature outputs.
 
-**Warmup-aware**: Each tool declares a warmup period. The engine must not evaluate conditions or rules using feature values from within the warmup period. The warmup period must be consumed before the strategy's evaluation window begins.
+**Warmup-aware**: Each tool declares or derives a `warmup_bars_required` value. The engine must not evaluate conditions or rules using feature values from within the warmup period. Warmup bars produce absent feature values, which must resolve to indeterminate outcomes rather than signals.
 
 **Batch-oriented**: Backtesting operates over full historical windows, not bar-by-bar streams. Feature computation may be applied to the full dataset window at once where the tool supports it, provided no lookahead bias is introduced.
 
@@ -380,11 +380,13 @@ Conditions and rules are evaluated historically over the feature-computed datase
 
 ## Evaluation Philosophy
 
-**Bar-by-bar**: Conditions and rules are evaluated at each bar in the historical window, in time order, from oldest to newest.
+**Bar-by-bar**: Conditions and rules are evaluated at each bar in the historical window, in canonical ascending `bar_index` order, from oldest to newest. Duplicate bar indexes are invalid.
 
 **No lookahead**: At bar N, the evaluator may only access feature values computed from data up to and including bar N. It may never access data from bars N+1, N+2, or any future bar.
 
 **Deterministic**: Given identical feature values, condition evaluation must produce identical results.
+
+**Timestamp integrity**: If timestamps are present, they must be non-decreasing when ordered by `bar_index`. Signal, intent, trade, equity, and report timestamps must be copied from the same historical bar that supplied the evaluated values.
 
 **Complete evaluation**: All conditions in the strategy definition must be evaluated at every bar, not just at bars where a signal was generated. This ensures that signal absence (no signal generated) is also a meaningful and traceable outcome.
 
@@ -757,6 +759,8 @@ At evaluation time T:
 * Only data with timestamp ≤ T may be used
 * Feature computation must use data slices bounded by T
 * No mechanism for accessing future data may be exposed to strategy logic
+* Replay order must be derived from canonical bar order, not caller payload order
+* Execution intents with timestamps that do not match their referenced price bar must be rejected
 
 ## Multi-Timeframe Lookahead Rules
 

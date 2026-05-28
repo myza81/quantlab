@@ -9,6 +9,7 @@
  *   5. Rejections / audit
  */
 import type { BacktestReport } from '../types/backtestRuns'
+import { downloadEquityCSV, downloadReportJSON, downloadTradesCSV } from '../api/backtestRuns'
 import { EquityCurveChart } from './EquityCurveChart'
 import { TradeLedgerTable } from './TradeLedgerTable'
 
@@ -80,10 +81,16 @@ export function BacktestReportPage({ report, onBack }: Props) {
           <span style={s.headerTs}>{fmtDateTime(run.run_timestamp)}</span>
           <span style={s.headerBars}>{run.bars_count} bars · {cfgLabel}</span>
         </div>
+        <div style={s.exportGroup}>
+          <button style={s.exportBtn} onClick={() => downloadTradesCSV(run.run_id)} title="Download trade ledger CSV">↓ Trades</button>
+          <button style={s.exportBtn} onClick={() => downloadEquityCSV(run.run_id)}  title="Download equity curve CSV">↓ Equity</button>
+          <button style={s.exportBtn} onClick={() => downloadReportJSON(run.run_id)} title="Download full report JSON">↓ JSON</button>
+        </div>
         <div style={s.headerRunId}>run {run.run_id.slice(0, 8)}</div>
       </div>
 
       <div style={s.body}>
+      <div style={s.bodyInner}>
 
         {/* ── Metrics grid ── */}
         <div style={s.section}>
@@ -150,7 +157,7 @@ export function BacktestReportPage({ report, onBack }: Props) {
           />
         </div>
 
-        {/* ── Rejections ── */}
+        {/* ── Rejections / Rule Audit ── */}
         <div style={s.section}>
           <div style={s.sectionTitle}>
             Signal / Rule Audit
@@ -160,6 +167,22 @@ export function BacktestReportPage({ report, onBack }: Props) {
               </span>
             )}
           </div>
+
+          {/* Rule IDs that triggered trades — populated when semantics are linked */}
+          {report.trades.length > 0 && report.trades.some(t => t.entry_rule_id) && (
+            <div style={s.ruleAuditList}>
+              {report.trades.map(t => (
+                <div key={t.trade_num} style={s.ruleAuditRow}>
+                  <span style={s.ruleAuditNum}>#{t.trade_num}</span>
+                  <span style={s.ruleAuditLabel}>entry:</span>
+                  <span style={s.ruleAuditId}>{t.entry_rule_id ?? '—'}</span>
+                  <span style={s.ruleAuditLabel}>exit:</span>
+                  <span style={s.ruleAuditId}>{t.exit_rule_id ?? '—'}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {report.rejections.length === 0 ? (
             <div style={s.auditNote}>No rejected intents — all signals were executed.</div>
           ) : (
@@ -174,10 +197,11 @@ export function BacktestReportPage({ report, onBack }: Props) {
             </div>
           )}
           <div style={{ ...s.auditNote, marginTop: 8 }}>
-            Per-bar rule diagnostics and indicator values at signal time are not yet included in this report.
+            Per-bar indicator values at signal time are not yet included in this report.
           </div>
         </div>
 
+      </div>
       </div>
     </div>
   )
@@ -187,7 +211,7 @@ const s: Record<string, React.CSSProperties> = {
   page: {
     display:       'flex',
     flexDirection: 'column',
-    height:        '100%',
+    flex:          1,
     overflow:      'hidden',
     background:    '#0f0f1a',
     fontFamily:    'monospace',
@@ -243,13 +267,33 @@ const s: Record<string, React.CSSProperties> = {
     color:     '#2a2d3e',
     flexShrink: 0,
   },
+  exportGroup: {
+    display:    'flex',
+    gap:        4,
+    flexShrink: 0,
+  },
+  exportBtn: {
+    background:   'transparent',
+    border:       '1px solid #2a2d3e',
+    borderRadius: 3,
+    color:        '#4a6080',
+    cursor:       'pointer',
+    fontFamily:   'monospace',
+    fontSize:     10,
+    padding:      '3px 8px',
+    letterSpacing: '0.03em',
+  },
   body: {
     flex:      1,
     overflowY: 'auto',
-    padding:   '16px',
-    display:   'flex',
+    padding:   '24px 16px',
+  },
+  bodyInner: {
+    maxWidth:      1100,
+    margin:        '0 auto',
+    display:       'flex',
     flexDirection: 'column',
-    gap:       24,
+    gap:           24,
   },
   section: {
     display:       'flex',
@@ -332,5 +376,31 @@ const s: Record<string, React.CSSProperties> = {
     color:    '#4a5568',
     fontSize: 10,
     flexShrink: 0,
+  },
+  ruleAuditList: {
+    display:       'flex',
+    flexDirection: 'column',
+    gap:           3,
+    marginBottom:  6,
+  },
+  ruleAuditRow: {
+    display:    'flex',
+    gap:        8,
+    alignItems: 'center',
+    fontSize:   10,
+    fontFamily: 'monospace',
+  },
+  ruleAuditNum: {
+    color:     '#4a5568',
+    width:     24,
+    flexShrink: 0,
+  },
+  ruleAuditLabel: {
+    color:     '#2a3040',
+    flexShrink: 0,
+  },
+  ruleAuditId: {
+    color:     '#7eb8f7',
+    letterSpacing: '0.02em',
   },
 }

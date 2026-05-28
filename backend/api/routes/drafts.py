@@ -25,6 +25,8 @@ from backend.api.schemas.drafts import (
     DraftUpdateRequest,
 )
 from backend.api.services import draft_service
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.strategy_registry.draft_repository import (
     DraftAlreadyExistsError,
     DraftNotFoundError,
@@ -46,17 +48,19 @@ def get_draft_repository() -> DraftRepository:
 @router.get("", response_model=DraftListResponse)
 def list_drafts(
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> DraftListResponse:
-    return draft_service.list_drafts(repository)
+    return draft_service.list_drafts(repository, user_id=current_user.user_id)
 
 
 @router.post("", response_model=DraftResponse, status_code=201)
 def create_draft(
     request: DraftCreateRequest,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> DraftResponse:
     try:
-        return draft_service.create_draft(request, repository)
+        return draft_service.create_draft(request, repository, user_id=current_user.user_id)
     except DraftAlreadyExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -65,9 +69,10 @@ def create_draft(
 def get_draft(
     draft_id: str,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> DraftResponse:
     try:
-        return draft_service.get_draft(draft_id, repository)
+        return draft_service.get_draft(draft_id, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -77,9 +82,10 @@ def update_draft(
     draft_id: str,
     request: DraftUpdateRequest,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> DraftResponse:
     try:
-        return draft_service.update_draft(draft_id, request, repository)
+        return draft_service.update_draft(draft_id, request, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -88,9 +94,10 @@ def update_draft(
 def archive_draft(
     draft_id: str,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> None:
     try:
-        draft_service.archive_draft(draft_id, repository)
+        draft_service.archive_draft(draft_id, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -99,8 +106,9 @@ def archive_draft(
 def delete_draft(
     draft_id: str,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> None:
     try:
-        draft_service.delete_draft(draft_id, repository)
+        draft_service.delete_draft(draft_id, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

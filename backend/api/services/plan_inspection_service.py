@@ -21,6 +21,7 @@ def inspect_draft_plan(
     draft_id:   str,
     repository: DraftRepository,
     registry:   ToolRegistry | None = None,
+    owner_id:   str | None = None,
 ) -> PlanInspectionResponse:
     """
     Load draft, compile its semantics, inspect the EvaluationPlan.
@@ -29,7 +30,7 @@ def inspect_draft_plan(
     Returns compiled=False with an error if the draft has no semantics.
     Raises DraftNotFoundError if the draft does not exist.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
 
     if draft.semantics is None:
         return PlanInspectionResponse(

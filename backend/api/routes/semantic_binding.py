@@ -18,6 +18,8 @@ from backend.api.routes.drafts import get_draft_repository
 from backend.api.routes.tools import get_tool_registry
 from backend.api.schemas.semantic_binding import BindingValidationResponse
 from backend.api.services.semantic_binding_service import validate_draft_bindings
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.strategy_registry.draft_repository import (
     DraftNotFoundError,
     DraftRepository,
@@ -37,6 +39,7 @@ def post_validate_bindings(
     draft_id:   str,
     repository: DraftRepository = Depends(get_draft_repository),
     registry:   ToolRegistry    = Depends(get_tool_registry),
+    current_user: User = Depends(require_active_subscription),
 ) -> BindingValidationResponse:
     """
     Validate that all semantic tool_output references resolve in the draft's toolset.
@@ -49,6 +52,6 @@ def post_validate_bindings(
     Returns valid=False if the draft has no semantics or any ref is unresolvable.
     """
     try:
-        return validate_draft_bindings(draft_id, repository, registry)
+        return validate_draft_bindings(draft_id, repository, registry, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

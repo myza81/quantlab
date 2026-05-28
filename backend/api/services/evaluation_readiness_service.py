@@ -21,6 +21,7 @@ def check_draft_readiness(
     draft_id:   str,
     repository: DraftRepository,
     registry:   ToolRegistry | None = None,
+    owner_id:   str | None = None,
 ) -> EvaluationReadinessResponse:
     """
     Load draft, compile semantics, validate bindings, run readiness lint.
@@ -28,7 +29,7 @@ def check_draft_readiness(
     Raises DraftNotFoundError if the draft does not exist.
     Returns a blocked report if the draft has no semantics.
     """
-    draft = repository.load(draft_id)
+    draft = repository.load(draft_id, owner_id=owner_id)
 
     if draft.semantics is None:
         report = check_readiness(

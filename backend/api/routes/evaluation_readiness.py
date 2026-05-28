@@ -31,6 +31,8 @@ from backend.api.services.evaluation_readiness_service import (
     check_draft_readiness,
     check_semantics_payload_readiness,
 )
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.strategy_registry.draft_repository import (
     DraftNotFoundError,
     DraftRepository,
@@ -51,6 +53,7 @@ def get_draft_readiness(
     draft_id:   str,
     repository: DraftRepository = Depends(get_draft_repository),
     registry:   ToolRegistry    = Depends(get_tool_registry),
+    current_user: User = Depends(require_active_subscription),
 ) -> EvaluationReadinessResponse:
     """
     Run evaluation readiness lint against the draft's compiled semantics.
@@ -60,7 +63,7 @@ def get_draft_readiness(
     per-issue list. Does NOT evaluate conditions or generate signals.
     """
     try:
-        return check_draft_readiness(draft_id, repository, registry)
+        return check_draft_readiness(draft_id, repository, registry, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

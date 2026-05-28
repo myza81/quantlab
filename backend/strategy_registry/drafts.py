@@ -43,6 +43,7 @@ class StrategyDraft(BaseModel):
     enabled: bool = True
     tags: tuple[str, ...] = ()
     notes: str | None = None
+    user_id: str | None = None
     semantics: StrategySemantics | None = None
 
     @field_validator("draft_id")

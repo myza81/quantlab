@@ -65,15 +65,17 @@ export interface ReorderToolsRequest {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP helper
+// HTTP helper — all draft endpoints require authentication (Phase 3L)
 // ---------------------------------------------------------------------------
+
+import { authedFetch } from './client'
 
 async function _req<T>(
   method: string,
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const resp = await fetch(path, {
+  const resp = await authedFetch(path, {
     method,
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,

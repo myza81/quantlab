@@ -76,6 +76,1269 @@ The immediate objective is building a disciplined modular research ecosystem.
 
 # Latest Completed Work
 
+## Phase 3P-A — Subscription Eligibility & Admin Approval Foundation (COMPLETE)
+
+Focus: transition QuantLab from an "authenticated multi-user platform" to a "governed multi-user platform". New registrations default to `subscription_status=pending` and are blocked from protected features until an admin approves them. Admin role is bootstrapped via `admin_bootstrap_email` config — no hardcoded superusers.
+
+New backend files:
+* `backend/auth/entitlement.py` — `require_active_subscription` (HTTP 403 + audit on deny), `require_admin_role` (depends on `get_current_user` only — not `require_active_subscription`, so admins can manage users even with an expired subscription)
+* `backend/api/schemas/admin.py` — `AdminUserResponse`, `ApproveUserRequest`, `SuspendUserRequest`, `ReactivateUserRequest`
+* `backend/api/services/admin_service.py` — `AdminService.list_users/get_user/approve_user/suspend_user/reactivate_user`; emits audit events for each action
+* `backend/api/routes/admin.py` — `GET/POST /admin/users/*` (5 endpoints, admin-only)
+* `tests/unit/test_entitlement.py` — 33 tests across 8 classes
+
+New frontend files:
+* `frontend/src/components/SubscriptionGate.tsx` — blocking overlay for pending/expired/suspended users; status-specific headline/body/icon; shows logged-in username; passes through `children` when active
+* `frontend/src/api/__tests__/subscriptionState.test.ts` — 9 tests (User type shape, SubscriptionStatus enum, UserRole enum, fetchOHLCV authedFetch enforcement, 403/subscription_required handling, credential_id query param)
+
+Modified (backend):
+* `backend/auth/models.py` — `UserRole` + `SubscriptionStatus` enums; `User` dataclass extended with 7 new fields; `create()` defaults to pending; `from_dict()` backward-compat defaults to active; `is_entitled`, `is_admin`, `with_active_subscription()`, `with_suspended()`, `with_reactivated()` methods
+* `backend/auth/repository.py` — added `update()` + `list_all()`
+* `backend/auth/service.py` — admin bootstrap logic in `register()` (config-driven, deterministic)
+* `backend/core/config.py` — `admin_bootstrap_email: str = ""`
+* `backend/core/audit.py` — 5 new `AuditEventKind` values (USER_APPROVED, SUBSCRIPTION_ACTIVATED, SUBSCRIPTION_EXPIRED, SUBSCRIPTION_SUSPENDED, ENTITLEMENT_DENIED)
+* `backend/api/schemas/auth.py` — `UserResponse` extended with `role`, `subscription_status`, `subscription_expires_at`
+* `backend/api/main.py` — admin router registered
+* All protected route files gated with `Depends(require_active_subscription)` (drafts, backtest_runs, catalog, vault, semantics, plan_inspection, evaluation_readiness, draft_composition, strategy_runs composition path, market_data)
+* Test fixtures updated across 12+ test files: `subscription_status="active"` added to User constructors; `require_active_subscription` override added to API test clients; vault fixtures use admin bootstrap + admin API to approve non-bootstrap users
+
+Modified (frontend):
+* `frontend/src/auth/types.ts` — `User` interface extended with `role`, `subscription_status`, `subscription_expires_at`; `SubscriptionStatus` + `UserRole` types added
+* `frontend/src/api/marketData.ts` — always uses `authedFetch` (removed conditional plain-fetch path for public providers after Phase 3P-A)
+* `frontend/src/App.tsx` — `SubscriptionGate` wraps authenticated content
+* `frontend/src/auth/__tests__/AuthContext.test.tsx` — `mockUser` updated with new fields
+
+Architecture invariants established:
+* `require_admin_role` depends on `get_current_user` ONLY — admins retain management access if their own subscription expires
+* New registrations: `subscription_status=pending` by default — no auto-approval
+* Admin bootstrap: single config-driven email (`admin_bootstrap_email`) gets role=admin + status=active on registration; deterministic and documented; no runtime escalation API
+* HTTP 403 (not 401) for authenticated-but-not-entitled users; detail includes `{code: "subscription_required", subscription_status: <status>}`
+* `is_entitled` property accounts for `subscription_expires_at` — active + not expired = entitled
+* `UserRepository.from_dict()` backward-compat: users loaded from JSON without `subscription_status` default to `active` (existing users unaffected)
+
+Tests:
+* Backend: 3415 passed, 0 failed
+* Frontend: 71 passed, 0 failed
+
+---
+
+## Phase 3M — Frontend Ownership Integration (COMPLETE)
+
+Focus: update frontend API clients so all ownership-scoped backend endpoints use authenticated requests via the centralized auth/session client. `AuthError` is thrown on 401 and caught in components to trigger logout → AuthGuard shows LoginPage.
+
+Modified files:
+* `frontend/src/api/client.ts` — added `AuthError` class (custom Error subclass, name="AuthError"), `isAuthError()` type guard; `authedFetch()` now throws `AuthError` on HTTP 401
+* `frontend/src/api/drafts.ts` — `_req` helper uses `authedFetch` (was plain `fetch`)
+* `frontend/src/api/semantics.ts` — two helpers: `_authedReq` (authedFetch) for `getSemantics`/`setSemantics`/`validateDraftSemantics`; `_publicReq` (plain fetch) for `validateSemanticsPayload` (POST /semantics/validate stays public)
+* `frontend/src/api/planInspection.ts` — uses `authedFetch` for `fetchDraftPlanInspection` and `fetchDraftReadiness`
+* `frontend/src/api/compositionRun.ts` — `runComposition` uses `authedFetch` (POST /strategy-runs/run-composition is protected)
+* `frontend/src/api/backtestRuns.ts` — `runBacktest` + `fetchBacktestReport` use `authedFetch`; download functions (`downloadTradesCSV`/`downloadEquityCSV`/`downloadReportJSON`) converted from anchor-click to `authedFetch` + `URL.createObjectURL(blob)` (return `Promise<void>` now)
+* `frontend/src/components/StrategyTestPanel.tsx` — imports `useAuth` + `isAuthError`; all four catch blocks check `isAuthError(e)` first and call `logout()` (triggers AuthGuard → LoginPage)
+* `frontend/src/components/DraftWorkspace.tsx` — imports `useAuth` + `isAuthError`; `loadList` + `handleSelect` catch blocks call `logout()` on AuthError
+
+New files:
+* `frontend/src/api/__tests__/authClients.test.ts` — 17 tests: AuthError class, isAuthError guard, authedFetch (token injection, no-token, 401 throws, non-401 doesn't throw), protected clients throw AuthError on 401 (drafts, semantics draft-scoped, planInspection, compositionRun, backtestRuns), public validateSemanticsPayload does NOT throw AuthError
+
+Public clients unchanged (remain on plain fetch):
+* `frontend/src/api/marketData.ts` — GET /market-data/ohlcv (public)
+* `frontend/src/api/tools.ts` — GET /tools (public)
+* `frontend/src/api/health.ts` — GET /health (public)
+* `frontend/src/api/strategyRuns.ts` — POST /strategy-runs/run (file-based, public)
+* `frontend/src/api/backtest.ts` — stateless simulation endpoints (public)
+
+Tests:
+* Frontend: 32 passed, 0 failed (17 new auth client tests + 15 pre-existing auth context/session tests)
+* TypeScript: `tsc --noEmit` clean
+
+Architecture constraints enforced:
+* No direct `fetch()` calls to ownership-scoped endpoints
+* `user_id` never sent from frontend — always derived server-side from JWT
+* `AuthError` thrown on 401 → component catches → `logout()` → `AuthGuard` shows `LoginPage`
+* Download functions use `authedFetch` + blob URL (browser anchor-click cannot send Authorization headers)
+* POST /semantics/validate (stateless, no draft_id in URL) stays on plain `fetch`
+
+---
+
+## Phase 3O — Credential-Aware Market Data Workflow UX (COMPLETE)
+
+Focus: implement the first complete authenticated external market data workflow — user selects provider + owned credential, fetches normalized OHLCV, sees dataset provenance metadata. Completes the loop: credential vault → market data pipeline → frontend visualization.
+
+Modified files:
+* `frontend/src/api/marketData.ts` — added `DatasetFetchMetadata` type; extended `MarketDataOHLCVResponse` with `fetch_metadata: DatasetFetchMetadata | null`; added `credential_id?: string` to `MarketDataParams`; `fetchOHLCV` now uses `authedFetch` when `credential_id` is present (plain `fetch` otherwise — backward compatible for Yahoo)
+* `frontend/src/components/Controls.tsx` — added `polygon` to PROVIDERS; added `CREDENTIALED_PROVIDERS = new Set(['polygon'])`; added credential loading via `fetchCredentials()` on mount; added credential selector (dropdown of active credentials filtered by provider); Fetch button disabled when credentialed provider selected but no credential available; `useAuth().logout()` called on `AuthError` from credential load
+* `frontend/src/App.tsx` — added `DatasetFetchMetadata` import; added `fetchMetadata` state; `handleFetch` now stores `resp.fetch_metadata`; `handleFetch` calls `logout()` on `AuthError` (prevents silent fail when credential fetch uses expired token); added `DatasetMetaBadge` component (provider, candle count, dataset_id, fingerprint strip above chart)
+
+New files:
+* `frontend/src/api/__tests__/marketDataCredential.test.ts` — 12 tests: plain fetch has no Authorization header, no credential_id in query; authedFetch injects header, includes credential_id in query; 401 throws AuthError; 400 detail propagated; fetch_metadata parsed; null fetch_metadata handled; omit credential_id when undefined; correct provider in query string
+
+Credential filtering behavior:
+* `CREDENTIALED_PROVIDERS = new Set(['polygon'])` — extensible: add provider name to enable vault credential flow
+* Credential selector filters: `allCredentials.filter(c => c.provider_name === provider && c.active)`
+* No-credential state: yellow hint "No polygon credentials. Add one in the Credentials tab."
+* Wrong-provider credentials: never shown — selector is provider-scoped
+
+Security invariants:
+* No raw secret ever stored, logged, or rendered — only credential_id (opaque UUID) is passed to backend
+* `authedFetch` is used only when credential_id is present; no auth header leaked for public providers
+* `AuthError` on credential load → `logout()` in Controls; `AuthError` on fetch → `logout()` in App.handleFetch
+* Backend resolves the actual API key from the vault; frontend never receives it
+
+Architecture note:
+* The `fetch_metadata` response field always contains `DatasetFetchMetadata` (not a cache-hit/miss indicator — the storage pipeline is transparent). The fingerprint (first 12 chars shown) enables reproducibility auditing.
+
+Tests:
+* 12 new frontend tests in `marketDataCredential.test.ts`
+* Full frontend suite: 60 passed, 0 failed
+* TypeScript: `tsc --noEmit` clean
+
+---
+
+## Phase 3N — Frontend Provider Credential Management UI (COMPLETE)
+
+Focus: implement the frontend credential management workflow — list, add, disable, delete provider API keys — backed by the encrypted vault APIs from Phase 3I. No raw secrets are rendered, stored, or leaked.
+
+New files:
+* `frontend/src/types/credentials.ts` — `CredentialMetadata`, `CredentialListResponse`, `RegisterCredentialRequest`; `encrypted_secret` and `secret_value` intentionally absent from `CredentialMetadata`
+* `frontend/src/api/credentials.ts` — `fetchCredentials`, `registerCredential`, `disableCredential`, `deleteCredential`; all via `authedFetch`; 204 No Content handled for delete
+* `frontend/src/components/CredentialManager.tsx` — full management UI: credential list with active/disabled badges, add-credential form (provider dropdown, label, masked secret input), disable/delete with confirm step; auth errors call `logout()`; secret cleared from state immediately after API call
+* `frontend/src/api/__tests__/credentialClient.test.ts` — 16 tests: AuthError on 401 for all 4 functions, list parsing, POST body correctness, 204 handling, 404 error propagation, 422 error propagation, Authorization header injection, no secret fields in response type
+
+Modified files:
+* `frontend/src/App.tsx` — added `CredentialManager` import; `ActiveView` type extended with `'credentials'`; "Credentials" NavTab in header; `activeView === 'credentials'` render block with scrollable fill container
+
+Security invariants enforced:
+* `CredentialMetadata` type has no `secret_value`, `encrypted_secret`, or `raw_secret` fields
+* `secret_value` is cleared from React state immediately after `registerCredential()` call (success and error paths)
+* No credential is stored in `localStorage`/`sessionStorage`
+* No secret is displayed after form submission
+* All vault API calls use `authedFetch` — no plain `fetch` calls
+* `logout()` called on `AuthError` from any vault operation
+
+Tests:
+* 16 new frontend tests in `credentialClient.test.ts`
+* Full frontend suite: 48 passed, 0 failed
+* TypeScript: `tsc --noEmit` clean
+
+Supported providers in this phase: Polygon. Architecture is provider-agnostic via the `SUPPORTED_PROVIDERS` constant — adding a new provider requires adding to the array only.
+
+---
+
+## Phase 3M.1 — Browser-Level Authentication & Ownership Validation (COMPLETE)
+
+Focus: runtime integrity validation of the full authenticated ownership architecture (3K + 3L + 3M). Validate ownership boundaries, session lifecycle, authenticated downloads, and HTTP status correctness. Four bugs discovered and fixed.
+
+Bugs fixed:
+* **AuthGuard blank screen** — `AuthGuard.tsx` returned `null` during token hydration (`isLoading=true`); replaced with minimal dark-themed loading indicator
+* **`/catalog` missing from Vite proxy** — `vite.config.ts` had no entry for `/catalog`; requests fell through with Vite 404
+* **Composition run 422 instead of 404 for wrong owner** — `composition_run_service.py` caught `DraftNotFoundError` and re-raised as `CompositionRunError` (→ 422); fixed by letting `DraftNotFoundError` propagate; added `DraftNotFoundError → 404` handler in `strategy_runs.py`
+* **Backtest run 422 instead of 404 for wrong owner** — same pattern in `backtest_run_service.py` / `backtest_runs.py`; same fix applied
+
+Modified files:
+* `frontend/src/components/AuthGuard.tsx` — loading state returns visible indicator instead of `null`
+* `frontend/vite.config.ts` — added `/catalog` proxy entry
+* `backend/api/services/composition_run_service.py` — removed `DraftNotFoundError` wrapper; import cleaned
+* `backend/api/routes/strategy_runs.py` — added `DraftNotFoundError` import; added `except DraftNotFoundError → 404` before `CompositionRunError` handler
+* `backend/api/services/backtest_run_service.py` — same `DraftNotFoundError` wrapper removal
+* `backend/api/routes/backtest_runs.py` — same `DraftNotFoundError → 404` handler added
+
+New tests:
+* `tests/unit/test_ownership.py` — added `TestCompositionAndBacktestRunOwnership` (3 tests): composition run wrong-owner → 404, backtest run wrong-owner → 404, composition run requires auth → 401; total now **53 passed**
+
+New documentation:
+* `docs/VALIDATION_3M1.md` — flows validated, bugs found/fixed, tests added, known limitations, architecture invariants confirmed
+
+Architecture invariants confirmed:
+* Wrong-owner access: 404 (same as not-found, information hiding) — enforced at route level for both composition run and backtest run
+* `DraftNotFoundError` must propagate from services to routes unmodified — never wrapped in service-layer errors that map to 4xx other than 404
+* All draft-scoped endpoints require valid Bearer token; public endpoints work without token
+* Authenticated download pattern: `authedFetch → blob() → createObjectURL → anchor click → revokeObjectURL`
+
+---
+
+## Phase 3L — User Ownership & Resource Scoping (COMPLETE)
+
+Focus: convert strategy drafts, dataset catalog entries, and backtest runs from globally accessible resources to user-owned resources. Users can only see and modify their own resources. `user_id` always comes from the JWT (never request body). Wrong-owner errors are indistinguishable from not-found (HTTP 404, same exception type). Legacy resources (user_id=None) are inaccessible to any authenticated user.
+
+Modified files:
+* `backend/core/audit.py` — 7 new AuditEventKind values (DRAFT_CREATED/UPDATED/DELETED/ARCHIVED/OWNERSHIP_DENIED, DATASET_OWNERSHIP_DENIED, BACKTEST_OWNERSHIP_DENIED)
+* `backend/strategy_registry/drafts.py` — `user_id: str | None = None` added to `StrategyDraft`
+* `backend/strategy_registry/draft_repository.py` — `load/list_all/update/archive/delete` all accept `owner_id`/`user_id`; ownership enforced via `DraftNotFoundError` (information hiding)
+* `backend/storage/dataset_catalog.py` — `user_id: str | None = None` added to `LocalDatasetEntry`; `register/get/get_any/list_all/list_enabled/remove/disable` all accept ownership params
+* `backend/api/services/draft_service.py` — `create/get/list/update/archive/delete` all accept and propagate ownership params; emits DRAFT_CREATED/UPDATED/ARCHIVED/DELETED
+* `backend/api/routes/drafts.py` — all 6 handlers get `Depends(get_current_user)`; `user_id` extracted from JWT only
+* `backend/api/services/draft_composition_service.py` + `backend/api/routes/draft_composition.py` — auth added to all 5 composition endpoints
+* `backend/api/services/semantic_service.py` + `backend/api/routes/semantics.py` — draft-scoped handlers get auth; payload-only handler unchanged
+* `backend/api/services/semantic_compilation_service.py` + `backend/api/routes/semantic_compilation.py` — compile draft gets auth
+* `backend/api/services/semantic_binding_service.py` + `backend/api/routes/semantic_binding.py` — validate bindings gets auth
+* `backend/api/services/evaluation_readiness_service.py` + `backend/api/routes/evaluation_readiness.py` — readiness gets auth
+* `backend/api/services/plan_inspection_service.py` + `backend/api/routes/plan_inspection.py` — plan inspection gets auth
+* `backend/api/services/composition_run_service.py` + `backend/api/routes/strategy_runs.py` — composition run gets auth; file-based run unchanged
+* `backend/api/services/catalog_service.py` + `backend/api/routes/catalog.py` — all 5 catalog endpoints get auth
+* `backend/api/schemas/backtest_runs.py` — `owner_user_id: str | None = None` added to `BacktestRunSummary`
+* `backend/api/services/backtest_run_service.py` — `BacktestAccessDeniedError` added; create attaches owner; load enforces ownership (maps to HTTP 404)
+* `backend/api/routes/backtest_runs.py` — all handlers get auth; `BacktestAccessDeniedError` → HTTP 404
+
+Updated test files (added `get_current_user` override):
+* `tests/unit/test_drafts_api.py`, `test_draft_composition_api.py`, `test_semantics_api.py`, `test_semantic_compilation_api.py`, `test_semantic_binding_api.py`, `test_evaluation_readiness_api.py`, `test_plan_inspection_api.py`, `test_dataset_catalog.py`, `test_backtest_exports.py`, `test_security_baseline.py`
+
+New files:
+* `tests/unit/test_ownership.py` — 50 tests, 9 classes: repository, service, catalog, draft routes, catalog routes, backtest, public routes, legacy behavior, vault unaffected
+* `docs/OWNERSHIP_SCOPING.md` — ownership model, access control rules, audit events
+
+Tests:
+* Full suite: 3379 passed, 0 failed
+
+Architecture constraints enforced:
+* `user_id` always from `current_user.user_id` (JWT) — never from request body
+* Wrong-owner → identical exception as not-found (information hiding, HTTP 404)
+* GET /tools, GET /market-data/providers, GET /health, POST /strategy-runs/run (file) remain unauthenticated
+* Payload-only endpoints without `{draft_id}` in URL remain unauthenticated
+* Legacy resources (user_id=None) inaccessible to all authenticated users
+* `BacktestAccessDeniedError` → HTTP 404
+* Vault/provider credential code untouched
+
+---
+
+## Phase 3J — Provider Credential Resolver Refactor (COMPLETE)
+
+Focus: complete the security-identity sequence (3F→3G→3H→3I→3J). Polygon provider now supports authenticated user-owned credentials from the vault as the primary path. ENV-based resolver retained as documented transitional fallback. All other providers (yahoo, csv, parquet) unaffected.
+
+Modified files:
+* `backend/auth/dependencies.py` — added `get_optional_current_user()` dependency; returns `User | None` instead of raising 401; used for optional-auth endpoints
+* `backend/data_providers/provider_factory.py` — `_build_polygon_adapter()` now accepts optional `api_key` kwarg; if provided, uses it directly (vault path); if absent, falls back to `EnvironmentCredentialResolver` (ENV path); both `_build_polygon_adapter` and `create_default_factory_registry` docstrings updated
+* `backend/api/services/market_data_service.py` — added `_resolve_provider_api_key(provider, credential_id, user_id)` helper; all vault errors mapped to sanitized `MarketDataError`; `fetch_ohlcv()` gains `credential_id` and `user_id` params (backward-compatible defaults=None); calls resolver before factory.build(); passes resolved `api_key` to factory
+* `backend/api/routes/market_data.py` — added optional `credential_id` query param; added `current_user: Optional[User] = Depends(get_optional_current_user)`; auth gate: if `credential_id` present and user not authenticated → HTTP 401; passes `user_id` and `credential_id` to service
+
+New file:
+* `tests/unit/test_market_data_credential.py` — 33 tests across 6 classes: TestResolveProviderApiKey, TestPolygonBuilderVaultPath, TestGetOptionalCurrentUser, TestMarketDataRouteCredentialFlow, TestFetchOhlcvCredentialIntegration, TestArchitectureBoundary
+
+Tests:
+* Full suite: 3329 passed, 0 failed
+
+Credential resolution flow (complete path):
+```
+GET /market-data/ohlcv?provider=polygon&credential_id=<id>
+→ route: auth gate (401 if credential_id + no token)
+→ route: passes user_id + credential_id to fetch_ohlcv()
+→ service: _resolve_provider_api_key() → VaultService.resolve_secret()
+→ service: factory.build("polygon", ..., api_key=raw_key)
+→ factory: _build_polygon_adapter() uses api_key directly (no ENV)
+→ PolygonProviderAdapter(api_key=raw_key)
+→ OHLCVService → cache/storage → response
+```
+
+ENV fallback flow (backward compat):
+```
+GET /market-data/ohlcv?provider=polygon  (no credential_id)
+→ route: no auth required
+→ service: _resolve_provider_api_key() returns None
+→ factory: _build_polygon_adapter() reads POLYGON_API_KEY env var
+→ PolygonProviderAdapter(api_key=env_key)
+```
+
+Architecture boundaries enforced:
+* `market_data_service.py` has no concrete adapter imports (AST-verified)
+* No vault imports at route module level — lazy imports only in service
+* `get_optional_current_user` never raises 401 (callers decide)
+* Auth check (is user present?) is in route; vault logic (resolve secret) is in service
+
+---
+
+## Phase 3I — User Provider Credential Vault (COMPLETE)
+
+Focus: user-owned provider credential vault. Authenticated users register/manage API credentials for external providers. Secrets are Fernet-encrypted (never stored as plaintext). Ownership strictly enforced — cross-user access returns 404 (information hiding). Prepares Polygon and future providers for per-user credential resolution.
+
+New files:
+* `backend/vault/models.py` — `ProviderCredential` frozen dataclass; `__repr__` omits `encrypted_secret`; `with_active()` immutable update
+* `backend/vault/crypto.py` — `encrypt_secret` / `decrypt_secret` using Fernet; key derived from `vault_encryption_key` via SHA-256; `VaultCryptoError` on tamper/wrong-key
+* `backend/vault/repository.py` — `CredentialRepository` (thread-safe lock + atomic rename write); `save`/`update`/`delete`/`get_by_id`/`list_by_user`
+* `backend/vault/service.py` — `VaultService`; `register_credential` (encrypts secret before persistence), `list_credentials`, `get_credential`, `disable_credential`, `delete_credential`, `resolve_secret` (internal use only); ownership enforcement via `requesting_user_id`; all 7 vault audit events emitted
+* `backend/vault/dependencies.py` — `get_vault_service()` FastAPI dep
+* `backend/vault/__init__.py`
+* `backend/api/schemas/vault.py` — `RegisterCredentialRequest`, `CredentialMetadataResponse`, `CredentialListResponse`; no `encrypted_secret`/`secret_value` in responses
+* `backend/api/routes/vault.py` — POST /provider-credentials (201), GET /provider-credentials (200), GET /provider-credentials/{id} (200), PATCH /provider-credentials/{id}/disable (200), DELETE /provider-credentials/{id} (204)
+* `docs/PROVIDER_CREDENTIAL_VAULT.md`
+
+Modified files:
+* `backend/core/config.py` — added `vault_encryption_key`, `credentials_file_path`
+* `backend/core/audit.py` — added 7 new `AuditEventKind` values: VAULT_CREDENTIAL_REGISTERED, _RESOLVED, _LISTED, _DISABLED, _DELETED, _ACCESS_DENIED, _RESOLUTION_FAILED
+* `backend/core/credentials.py` — added `CredentialSource.VAULT` enum value
+* `backend/api/main.py` — registered vault router
+* `pyproject.toml` — added `cryptography>=42.0`
+* `tests/unit/test_security_baseline.py` — updated `test_all_event_kinds_defined` to include 7 vault events
+
+Tests:
+* `tests/unit/test_vault.py` — 88 tests across 9 classes: TestProviderCredentialModel, TestVaultCrypto, TestCredentialRepository, TestVaultService, TestVaultRoutes, TestCrossUserIsolation, TestSecurityInvariants, TestArchitectureBoundary, TestPolygonBackwardCompatibility
+* Full suite: 3296 passed, 0 failed
+
+Security invariants enforced:
+* `CredentialMetadataResponse` has no `encrypted_secret`/`secret_value` fields
+* `ProviderCredential.__repr__` omits `encrypted_secret`
+* JSON file stores only Fernet ciphertext
+* `CredentialAccessDeniedError` is same for not-found and wrong-owner (information hiding)
+* All 7 vault audit events contain no raw secrets
+* `resolve_secret()` is internal-only — never called from routes
+
+Polygon backward compatibility:
+* Polygon still uses `EnvironmentCredentialResolver` (Phase 3J will refactor to vault)
+* Factory len=4 unchanged; all existing tests pass
+
+---
+
+## Phase 3H — Authentication & User Identity Foundation (COMPLETE)
+
+Focus: foundational authentication before user-owned provider credentials. User identity model, JWT-based tokens, bcrypt passwords, JSON-backed repository, `get_current_user` dependency, three auth endpoints, audit integration.
+
+New files:
+* `backend/auth/models.py` — `User` frozen dataclass; `create()` factory assigns uuid4, lowercases username/email, sets UTC created_at
+* `backend/auth/password.py` — bcrypt hash/verify; empty input guard; timing-safe verify
+* `backend/auth/tokens.py` — `create_access_token` / `decode_access_token`; `TokenError` / `TokenExpiredError`; payload: `{sub, user_id, exp}` only
+* `backend/auth/repository.py` — `UserRepository` (thread-safe lock + atomic rename write); `DuplicateUsernameError` / `DuplicateEmailError`
+* `backend/auth/service.py` — `AuthService`; `register()` + `login()`; emits audit events for all outcomes; generic error message on login failure
+* `backend/auth/dependencies.py` — `get_current_user` FastAPI dependency (`HTTPBearer`); emits audit events for INVALID_TOKEN / PROTECTED_ROUTE_DENIED
+* `backend/auth/__init__.py` — re-exports User, AuthService, get_current_user
+* `backend/api/schemas/auth.py` — `RegisterRequest`, `LoginRequest`, `TokenResponse`, `UserResponse` (no password_hash field in any response)
+* `backend/api/routes/auth.py` — POST /auth/register (201), POST /auth/login (200), GET /auth/me (200)
+* `docs/AUTH_FOUNDATION.md`
+
+Modified files:
+* `backend/core/config.py` — added `auth_secret_key`, `auth_algorithm`, `access_token_expire_minutes`, `users_file_path`
+* `backend/core/audit.py` — added 5 new `AuditEventKind` values: USER_REGISTERED, LOGIN_SUCCESS, LOGIN_FAILURE, INVALID_TOKEN, PROTECTED_ROUTE_DENIED
+* `backend/api/main.py` — registered auth router
+* `pyproject.toml` — added `bcrypt>=4.0.0`, `PyJWT>=2.8.0`, `email-validator>=2.0`
+* `tests/unit/test_security_baseline.py` — updated `test_all_event_kinds_defined` to include 5 new auth event kinds
+
+Tests:
+* `tests/unit/test_auth.py` — 83 tests across 8 classes: TestUserModel, TestPasswordHashing, TestTokens, TestUserRepository, TestAuthService, TestGetCurrentUserDependency, TestAuthRoutes, TestSecurityInvariants, TestArchitectureBoundary
+* Full suite: 3208 passed, 0 failed
+
+Security invariants enforced:
+* `password_hash` never in any API response schema
+* Token payload: `{sub, user_id, exp}` only — no secrets
+* Login error is generic regardless of which field is wrong
+* Auth secret key never in logs or responses
+* JSON users file uses atomic write (temp + rename)
+
+Architecture boundary:
+* `backend/auth/` has no imports from `data_providers/`, `strategy_runtime/`, `strategy_registry/`
+* Auth tightly decoupled from provider layer — no credential vault yet (Phase 3I+)
+
+---
+
+## Phase 3G — Polygon Market Data Provider Integration (COMPLETE)
+
+Focus: introduce Polygon.io as the first external API-key-based market data provider. Validates that the existing provider architecture, credential system, normalization pipeline, cache/storage layer, and dataset identity all work correctly with a real remote REST API — without any changes to API services, routes, or the strategy layer.
+
+Pre-existing (already correctly implemented before this phase):
+* `ProviderAdapterFactory` + 3 providers (yahoo/csv/parquet) — Phases 3A/3D
+* `EnvironmentCredentialResolver` + `MissingCredentialError` — Phase 3F
+* `DatasetCachePolicy` (4 policies) — Phase 3C
+* `DatasetFetchIdentity` + `build_fetch_identity` — Phase 3B
+* `OHLCVService.get_ohlcv(cache_policy=...)` — Phase 3C
+
+Completed in this phase:
+
+**`backend/data_providers/polygon/adapter.py`** (new):
+* `PolygonAdapterError(ProviderFetchError)` — base error; messages never contain API key values or names
+* `PolygonRateLimitError(PolygonAdapterError)` — raised on HTTP 429
+* `SUPPORTED_TIMEFRAMES: dict[str, tuple[int, str]]` — all 15 canonical QuantLab timeframes mapped to `(multiplier, timespan)` for Polygon v2/aggs endpoint
+* `PolygonProviderAdapter(RangeProviderAdapter)` — receives `api_key` at construction; never logs or propagates it
+* `fetch(start, end)` — calls Polygon `/v2/aggs/ticker/{ticker}/range/{mult}/{span}/{from}/{to}`; follows pagination (`next_url`) for up to `_MAX_PAGES=50` pages; applies `[start, end]` filter after conversion; returns `list[NormalizedOHLCV]`
+* `_format_date_params(start, end, timespan)` — `day/week/month` → `YYYY-MM-DD` strings; intraday → Unix millisecond strings
+* `_handle_http_error(exc)` — 404 → `{}` (empty); 401 → `PolygonAdapterError` (no key in message); 429 → `PolygonRateLimitError`; 5xx → `PolygonAdapterError`
+* `_parse_result(item)` — `t` (ms) → UTC `datetime`; `vw`/`n` optional → `NormalizedOHLCV.vwap`/`trade_count`
+* Isolation: no imports of yahoo, csv, parquet, api routes, strategy_runtime, or credentials (factory builder resolves credentials)
+
+**`backend/data_providers/polygon/__init__.py`** (new):
+* Exports: `PolygonAdapterError`, `PolygonProviderAdapter`, `PolygonRateLimitError`, `POLYGON_SUPPORTED_TIMEFRAMES`
+
+**`backend/data_providers/provider_factory.py`** (modified):
+* `_POLYGON_CAPABILITIES` — 15 timeframes, 5 asset classes
+* `_build_polygon_adapter()` — lazy-imports `CredentialSpec`/`EnvironmentCredentialResolver`; catches `MissingCredentialError` and re-raises as `ProviderBuildError` (safe message, no key); lazy-imports `PolygonProviderAdapter`; passes resolved `api_key`
+* `create_default_factory_registry()` — now registers 4 providers: `yahoo`, `csv`, `parquet`, `polygon`
+
+**`backend/data_providers/__init__.py`** (modified):
+* Added exports: `PolygonAdapterError`, `PolygonProviderAdapter`, `PolygonRateLimitError`, `POLYGON_SUPPORTED_TIMEFRAMES`
+
+**`docs/POLYGON_PROVIDER.md`** (new):
+* Architecture position, credential setup, supported timeframes table, pagination behavior, error handling matrix, NormalizedOHLCV field mapping, cache policy compatibility, architecture boundaries, known limitations
+
+**`tests/unit/test_polygon_provider.py`** (new — 85 tests):
+* `TestPolygonErrorHierarchy` (3): error class relationships
+* `TestPolygonAdapterConstruction` (8): valid/invalid constructor args
+* `TestPolygonAdapterCapabilities` (6): all 15 timeframes, asset classes, ProviderCapabilities contract
+* `TestPolygonAdapterFetch` (8): UTC enforcement, empty result, source/symbol/timeframe/timezone
+* `TestPolygonAdapterNormalization` (11): OHLCV fields, vwap/trade_count present/absent, ms timestamp conversion, malformed row skipped
+* `TestPolygonAdapterHTTPErrors` (8): 401/429/404/500/bad JSON/network/generic — all sanitized
+* `TestPolygonDateParams` (5): day/week/month → date strings; minute/hour → millisecond strings
+* `TestPolygonAdapterPagination` (4): single page, follows next_url, accumulates, stops at MAX_PAGES
+* `TestPolygonFactoryRegistration` (6): factory contains polygon, len=4, capabilities correct, build with env var, missing key → ProviderBuildError
+* `TestPolygonCredentialResolution` (5): env var resolves, missing → ProviderBuildError, no key value in error, cause is MissingCredentialError, audit events emitted
+* `TestPolygonCacheIntegration` (4): FETCH_AND_STORE, BYPASS_CACHE, FORCE_REFRESH, READ_ONLY — all via OHLCVService
+* `TestPolygonDatasetIdentity` (4): build_fetch_identity for polygon, deterministic fingerprint, dataset_id contains "polygon", no API key in identity
+* `TestPolygonArchitectureBoundary` (8): no yahoo/csv/parquet/api/strategy_runtime/credentials imports; 401 message no key value; 401 message no key name
+* `TestPolygonBackwardCompatibility` (5): yahoo/csv/parquet still in factory, len=4, legacy CSVAdapter unaffected
+
+**`tests/unit/test_provider_factory.py`** (modified):
+* `test_default_registry_has_three_providers` → `test_default_registry_has_four_providers` (len == 4)
+
+**`tests/unit/test_local_providers.py`** (modified):
+* `test_factory_len_is_three` → `test_factory_len_is_four` (len == 4)
+* `test_factory_len_increased_by_two` → `test_factory_len_increased_by_three` (len == 4)
+
+**`tests/unit/test_security_baseline.py`** (modified):
+* `test_factory_still_has_three_providers` → `test_factory_still_has_four_providers` (len == 4)
+
+Validation:
+* `pytest` → **3125 passed**, zero regressions (3040 pre-3G + 85 new)
+* Architecture boundaries: `polygon/adapter.py` imports no yahoo, csv, parquet, api routes, strategy_runtime, or credentials (AST-verified in tests)
+* Credential safety: `PolygonAdapterError` message tested to not contain raw API key value or env var name
+* Cache interoperability: all 4 cache policies tested end-to-end via `OHLCVService`
+* Dataset identity: `build_fetch_identity` for `polygon` produces deterministic fingerprint; no API key present
+* Factory: `create_default_factory_registry()` now returns 4 providers; all prior providers fully preserved
+
+Correct Polygon provider flow after Phase 3G:
+```
+factory.build("polygon", symbol="AAPL", timeframe="1d", ...)
+    → _build_polygon_adapter()
+    → EnvironmentCredentialResolver.resolve(POLYGON_API_KEY)  # emits audit event
+    → PolygonProviderAdapter(api_key=<secret>)
+    → OHLCVService.get_ohlcv(cache_policy=...)
+    → fetch(start, end) → GET /v2/aggs/ticker/AAPL/range/1/day/... (with pagination)
+    → list[NormalizedOHLCV] (source="polygon")
+    → cache/storage layer
+    → API response
+```
+
+Known limitations:
+* REST only — no WebSocket, tick streaming, or live subscriptions
+* No auto-retry on rate limits — callers are responsible for retry policy
+* No symbol validation at construction time — HTTP 404 at fetch returns `[]`
+* `adjustment_mode="raw"` sets `adjusted=false` on Polygon's end; QuantLab makes no additional adjustment
+
+---
+
+## Phase 3F — Security Baseline for Provider & Dataset Access (COMPLETE)
+
+Focus: establish the minimum security foundation required before adding external API-key-based providers (Binance, Polygon, IBKR). Enforces credential isolation, audit traceability, safe error messages, and request validation hardening — without implementing full auth, OAuth, RBAC, or any live provider.
+
+Pre-existing (already correctly implemented before this phase):
+* `ProviderAdapterFactory` + 3 providers (yahoo/csv/parquet) — Phase 3A/3D
+* `DatasetCatalog` + catalog service + HTTP routes — Phase 3E
+* File path isolation in API responses — Phase 3E
+
+Completed in this phase:
+
+**`backend/core/credentials.py`** (new):
+* `CredentialSource(str, Enum)` — `ENV_VAR` (extensible for future vault/SSM)
+* `CredentialSpec(BaseModel, frozen)` — `provider_name`, `credential_key` (env var name, not value), `source_type`, `description`; validates no empty fields
+* `CredentialResolutionError(Exception)` — base; invariant: messages never contain raw secret values
+* `MissingCredentialError(CredentialResolutionError)` — raised when env var absent/empty; message names provider but not the key or value
+* `EnvironmentCredentialResolver.resolve(spec)` — reads `os.environ[spec.credential_key]`; emits audit events for attempt + missing; logs warning on missing (no secret in log); returns raw secret (caller's responsibility to keep private)
+
+**`backend/core/audit.py`** (new):
+* `AuditEventKind(str, Enum)` — 6 kinds: `credential_resolution_attempt`, `credential_missing`, `dataset_registered`, `dataset_removed`, `provider_fetch_request`, `catalog_ohlcv_fetch`
+* `AuditEvent(frozen dataclass)` — `event_kind`, `provider_name`, `details` (safe metadata only), `timestamp` (UTC)
+* `emit_audit_event(event)` — logs structured JSON to `quantlab.audit` logger at INFO; details must contain no paths, secrets, or tokens
+
+**`backend/core/request_validation.py`** (new):
+* `ALLOWED_CATALOG_PROVIDER_TYPES = frozenset({"csv", "parquet"})` — extends when new local providers added
+* `validate_date_range(start, end)` — raises `ValueError` if `start >= end`
+* `validate_provider_type(provider_type, allowed)` — case-insensitive; raises `ValueError("Unknown provider_type ...")` listing allowed values
+* `validate_symbol(symbol)` — raises `ValueError` for blank/whitespace
+* `validate_catalog_id_format(catalog_id)` — raises `ValueError` for blank/whitespace
+
+**`backend/api/services/catalog_service.py`** (modified):
+* `register_dataset()`: validates `provider_type` via `validate_provider_type()` before touching filesystem; sanitized file-not-found message (path stripped from HTTP error); sanitized duplicate message; emits `DATASET_REGISTERED` audit event with `catalog_id/symbol/asset_class/timeframe` (no path)
+* `remove_dataset()`: emits `DATASET_REMOVED` audit event
+* `fetch_ohlcv()`: emits `CATALOG_OHLCV_FETCH` audit event before fetch; `ProviderFetchError` and `OHLCVIngestionError` caught → full error logged internally → sanitized `CatalogFetchError` raised (no file path in message); `ProviderBuildError` similarly sanitized
+
+**`backend/api/routes/catalog.py`** (modified):
+* `get_catalog_ohlcv()`: calls `validate_date_range(start, end)` after UTC coercion; returns HTTP 400 if start >= end
+
+**`tests/unit/test_security_baseline.py`** (new — 62 tests):
+* `TestCredentialSpec` (8): construction, frozen, empty fields raise, description stored, source_type default, spec safe to serialize
+* `TestEnvironmentCredentialResolver` (6): resolve present, missing raises `MissingCredentialError`, missing is `CredentialResolutionError`, error message has no secret value or key name, error message contains provider name, empty env var raises
+* `TestAuditEvent` (4): construction, frozen, default timestamp UTC, all 6 event kinds defined
+* `TestEmitAuditEvent` (4): emits to audit logger, emitted record is valid JSON, no file_path in audit record, credential attempt+missing events both emitted
+* `TestRequestValidation` (14): date range valid/equal/reversed, provider_type csv/parquet/case-insensitive/unknown/lists-allowed, symbol valid/empty/whitespace, catalog_id format valid/empty/whitespace, allowed types contains csv+parquet, not yahoo
+* `TestSafeErrorPolicy` (3): fetch error after file deletion does not expose path, file-not-found message safe, unknown provider_type raises with safe message
+* `TestAuditHookIntegration` (4): register emits DATASET_REGISTERED, remove emits DATASET_REMOVED, fetch emits CATALOG_OHLCV_FETCH, audit records contain no file_path
+* `TestArchitectureBoundary` (7): strategies/ no core.credentials import, credentials.py no yahoo, audit.py no provider_factory, API schemas no credential fields, LocalDatasetEntry no credential fields, catalog_service no yahoo import, MissingCredentialError hierarchy
+* `TestRouteValidation` (3): start > end returns 400, unknown provider_type returns 400, register response no credential fields
+* `TestBackwardCompatibility` (5): yahoo/csv/parquet still in factory, factory len=3, catalog register still works, OHLCVService still accepts cache_policy
+
+**`tests/unit/test_dataset_catalog.py`** (modified):
+* `test_register_directory_path_raises` — removed `match="not a regular file"` pattern (message now sanitized in Phase 3F)
+
+Validation:
+* `pytest` → **3040 passed**, zero regressions (2978 pre-3F + 62 new)
+* Architecture boundaries: credentials.py and audit.py verified by AST tests to import no provider-specific modules
+* Secret safety: `MissingCredentialError` tested to not contain raw secret value or env var key name
+* File path safety: `CatalogFetchError` tested to not expose file path after provider fetch failure
+
+Safe credential flow (ready for future external providers):
+```
+Future Binance provider:
+    _SPEC = CredentialSpec(provider_name="binance", credential_key="BINANCE_API_KEY")
+    _RESOLVER = EnvironmentCredentialResolver()
+    api_key = _RESOLVER.resolve(_SPEC)  # raises MissingCredentialError if absent
+                                         # emits audit event
+                                         # never logs or returns the value externally
+```
+
+Known limitations:
+* `EnvironmentCredentialResolver` only supports `ENV_VAR` source type — no vault, AWS SSM, or secrets manager yet (acceptable for Phase 3F scope)
+* No credential rotation detection (static env var read per request)
+* Audit events are log-only (no persistence to DB or audit store — future phase)
+* `validate_provider_type` for catalog hardcodes `{"csv", "parquet"}` — must be updated when new catalog-compatible local providers are added to `create_default_factory_registry()`
+
+---
+
+## Phase 3E — Dataset Catalog & File Path Resolution (COMPLETE)
+
+Focus: bridge local dataset providers (CSV / Parquet) to the HTTP API without exposing raw filesystem paths. API consumers interact with opaque `catalog_id` references only; file path resolution is encapsulated inside the service layer.
+
+Pre-existing (already correctly implemented before this phase):
+* `LocalCSVProvider` / `LocalParquetProvider` — Phase 3D local providers
+* `ProviderAdapterFactory` + `create_default_factory_registry()` — routes `build("csv", file_path=...)` to provider
+* `OHLCVService.get_ohlcv()` — full pipeline (Phase 3C)
+
+Completed in this phase:
+
+**`backend/storage/dataset_catalog.py`** (new):
+* `LocalDatasetEntry` — frozen Pydantic model with: `catalog_id` (UUID str), `provider_type`, `file_path` (backend-only, never in responses), `display_name`, `dataset_type`, `asset_class`, `timeframe`, `symbol`, `venue`, `adjustment_mode`, `registered_at` (UTC), `enabled`, `metadata` (optional dict)
+* `DatasetCatalog` — JSON-backed registry at `{base_path}/catalog/datasets.json`; methods: `register()` (UUID assignment, symbol/venue uppercased, provider_type lowercased, duplicate path check), `get()` (raises `DatasetDisabledError` for disabled), `get_any()` (admin, ignores disabled), `list_all()`, `list_enabled()`, `disable()`, `remove()`, `__contains__`, `__len__`
+* Error hierarchy: `DatasetCatalogError` → `UnknownDatasetError`, `DatasetDisabledError`, `DuplicateDatasetError`
+* `_persist()` flushes immediately on every mutation; `_load_all()` reads from disk on every query (no in-memory cache)
+
+**`backend/api/schemas/catalog.py`** (new):
+* `RegisterDatasetRequest` — input schema (includes `file_path` for backend use)
+* `CatalogEntryResponse` — no `file_path`; 11 metadata fields
+* `CatalogListResponse` — wraps `list[CatalogEntryResponse]` with count
+* `RegisterDatasetResponse` — no `file_path`; catalog_id + key metadata
+* `CatalogOHLCVCandle` + `CatalogOHLCVResponse` — no `file_path`; candles with catalog_id envelope
+
+**`backend/api/services/catalog_service.py`** (new):
+* `register_dataset()` — validates file exists + is regular file; calls `DatasetCatalog.register()`; never returns `file_path`
+* `list_datasets()` — returns `CatalogListResponse` (enabled only by default; `include_disabled=True` flag)
+* `get_dataset()` — returns `CatalogEntryResponse`; translates `UnknownDatasetError` → `CatalogNotFoundError`, `DatasetDisabledError` → `CatalogDatasetDisabledError`
+* `remove_dataset()` — soft-deletes from catalog (does not touch underlying file)
+* `fetch_ohlcv()` — full resolution: `catalog.get(catalog_id)` → `entry.file_path` (internal) → `factory.build(provider_type, file_path=entry.file_path, ...)` → `DatasetIdentity + Instrument` → `OHLCVService.get_ohlcv()` → `CatalogOHLCVResponse`; `file_path` never propagated to caller
+* Service error hierarchy: `CatalogRegistrationError`, `CatalogNotFoundError`, `CatalogDatasetDisabledError`, `CatalogFetchError`
+
+**`backend/api/routes/catalog.py`** (new):
+* `POST   /catalog/datasets` → 201 `RegisterDatasetResponse`; 400 on registration error
+* `GET    /catalog/datasets` → 200 `CatalogListResponse`; `?include_disabled=true` supported
+* `GET    /catalog/datasets/{catalog_id}` → 200 `CatalogEntryResponse`; 404 / 410 (disabled)
+* `DELETE /catalog/datasets/{catalog_id}` → 204; 404 on unknown
+* `GET    /catalog/datasets/{catalog_id}/ohlcv` → 200 `CatalogOHLCVResponse`; 404 / 410 / 400; naive datetimes coerced to UTC
+
+**`backend/api/main.py`** (modified):
+* `from backend.api.routes import catalog` added; `app.include_router(catalog.router)` added
+
+**`tests/unit/test_dataset_catalog.py`** (new — 72 tests):
+* `TestLocalDatasetEntry` (5): construction, immutability, enabled default, metadata optional/stored
+* `TestDatasetCatalogRegistration` (8): returns entry, creates JSON file, symbol/venue uppercased, provider_type lowercased, duplicate raises, allow_duplicate_path flag, empty symbol raises, unique catalog_ids
+* `TestDatasetCatalogGet` (4): get registered, get unknown raises, get disabled raises DatasetDisabledError, get_any returns disabled
+* `TestDatasetCatalogList` (5): list_all empty, list_all returns all, list_enabled excludes disabled, list_all includes disabled
+* `TestDatasetCatalogDisableRemove` (5): disable unknown raises, disable returns updated, remove unknown raises, remove then not in, remove reduces len
+* `TestDatasetCatalogPersistence` (6): entries survive new instance, contains operator, missing returns false, non-string false, empty catalog no file, JSON response has no file_path
+* `TestCatalogServiceRegister` (5): file not found raises, no file_path in response, catalog_id present, duplicate raises, directory path raises
+* `TestCatalogServiceList` (5): empty, after register, excludes disabled, include_disabled flag, entries have no file_path field
+* `TestCatalogServiceGetRemove` (6): get unknown, get disabled, returns CatalogEntryResponse, no file_path, remove unknown, remove then get raises
+* `TestCatalogServiceFetchOHLCV` (4): unknown raises, disabled raises, returns CatalogOHLCVResponse, naive datetimes treated as UTC
+* `TestCatalogHTTPRegister` (3): 201 + no file_path, file not found 400, duplicate 400
+* `TestCatalogHTTPList` (3): empty 200, after register count=1, entries no file_path
+* `TestCatalogHTTPGetDelete` (5): get 200 + no file_path, get unknown 404, delete 204, delete then get 404, delete unknown 404
+* `TestCatalogHTTPOHLCV` (3): unknown 404, returns candles, no file_path in response
+* `TestFilePathIsolation` (5): CatalogEntryResponse no file_path, RegisterDatasetResponse no file_path, CatalogOHLCVResponse no file_path, CatalogListResponse no file_path, catalog_service AST-verified (no yahoo import)
+
+Validation:
+* `pytest` → **2978 passed**, zero regressions (2906 pre-3E + 72 new)
+* File path isolation enforced: `file_path` absent from all 4 response schema classes (verified by AST + model_fields assertions in tests)
+* Architecture boundary: `catalog_service.py` imports no yahoo/concrete adapter modules (AST-verified in test suite)
+
+Correct catalog resolution flow after Phase 3E:
+```
+POST /catalog/datasets { file_path: "/data/aapl.csv", ... }
+    → DatasetCatalog.register() → catalog_id stored with file_path
+    → RegisterDatasetResponse { catalog_id, display_name, ... }  ← no file_path
+
+GET /catalog/datasets/{catalog_id}/ohlcv
+    → catalog_service.fetch_ohlcv(catalog_id)
+    → DatasetCatalog.get(catalog_id) → entry.file_path (backend only)
+    → factory.build("csv", file_path=entry.file_path, ...)
+    → OHLCVService.get_ohlcv()
+    → CatalogOHLCVResponse { catalog_id, candles, ... }  ← no file_path
+```
+
+Known limitations:
+* No pagination on GET /catalog/datasets (small catalog assumed for Phase 3E scope)
+* No authentication or user-scoping (single-user research tool)
+* catalog.json mutation is not thread-safe (acceptable for single-process dev/research)
+* file_path is validated for existence at registration time only; file moves/deletes are not tracked after registration
+
+---
+
+## Phase 3D — Local Dataset Providers (CSV / Parquet) (COMPLETE)
+
+Focus: validate that QuantLab's provider architecture is truly provider-agnostic by adding local CSV and Parquet dataset providers. After normalization, local files and remote API sources (Yahoo, future Binance/IBKR/Polygon) flow through identical pipelines. This phase is a major architectural validation milestone.
+
+Pre-existing (already correctly implemented before this phase):
+* `ProviderAdapterFactory` + `create_default_factory_registry()` — Phase 3A provider isolation
+* `DatasetFetchIdentity` + fingerprinting — Phase 3B traceability
+* `DatasetCacheRegistry` + cache policies — Phase 3C persistence layer
+* `CSVAdapter` (legacy) — general-purpose CSV loader with `file_path` at call time (unchanged)
+
+Completed in this phase:
+
+**`backend/data_providers/local/_shared.py`** (new):
+* `LocalColumnMap` — dataclass mapping source column names to canonical field names; defaults match standard OHLCV naming; override for non-standard files (e.g. Yahoo CSV export with capitalized headers)
+* `parse_timestamp_string(raw) → datetime` — parses Unix epoch, ISO-8601 (with/without tz, Z suffix), naive ISO, date-only YYYY-MM-DD; raises `ValueError` on unsupported format
+
+**`backend/data_providers/local/csv_provider.py`** (new):
+* `LocalCSVProviderError(ProviderFetchError)` — file not found, missing columns, parse errors
+* `LocalCSVProvider(RangeProviderAdapter)` — file path embedded at construction; `provider_name="csv"`; `fetch(start, end)` loads file and filters by date; `load()` loads all; column map support; supports all 15 canonical timeframes and 7 asset classes
+
+**`backend/data_providers/local/parquet_provider.py`** (new):
+* `LocalParquetProviderError(ProviderFetchError)` — file not found, missing columns, corrupt file, parse errors
+* `LocalParquetProvider(RangeProviderAdapter)` — file path embedded at construction; `provider_name="parquet"`; `fetch(start, end)` with date filtering; timestamp resolution handles `datetime` (tz/naive), microsecond integers (pyarrow style), second integers, ISO strings
+* `_resolve_parquet_timestamp(raw)` — resolves all pyarrow `to_pydict()` timestamp formats to UTC datetime
+
+**`backend/data_providers/local/__init__.py`** (new):
+* Package exports: `LocalColumnMap`, `LocalCSVProvider`, `LocalCSVProviderError`, `LocalParquetProvider`, `LocalParquetProviderError`
+
+**`backend/data_providers/provider_factory.py`** (modified):
+* `_CSV_CAPABILITIES` + `_build_csv_provider()` — requires `file_path` kwarg; raises `ProviderBuildError` if absent
+* `_PARQUET_CAPABILITIES` + `_build_parquet_provider()` — same
+* `create_default_factory_registry()` now registers 3 providers: `yahoo`, `csv`, `parquet`
+* All imports of local adapters are lazy (inside builder functions) — same pattern as Yahoo
+
+**`backend/data_providers/__init__.py`** (modified):
+* Added exports for all 5 new local provider symbols
+
+**`tests/fixtures/ohlcv_nonstandard_cols.csv`** (new):
+* 3-row OHLCV CSV with capitalized headers (`Date`, `Open`, `High`, `Low`, `Close`, `Volume`) for column map tests
+
+**`tests/unit/test_local_providers.py`** (new — 80 tests):
+* `TestLocalColumnMap` (3): defaults, custom values, is dataclass
+* `TestLocalCSVProviderBasic` (8): provider_name, source field, NormalizedOHLCV, metadata fields, timeframes, asset classes, empty body, UTC-aware timestamps
+* `TestLocalCSVProviderFetch` (6): full range, excludes before start, excludes after end, empty range, naive start raises, naive end raises
+* `TestLocalCSVProviderErrors` (5): missing file, missing column, error message, invalid timestamp, subclass of ProviderFetchError
+* `TestLocalCSVProviderColumnMap` (3): nonstandard column map works, fails without map, date-only YYYY-MM-DD to midnight UTC
+* `TestLocalCSVProviderRealFixture` (2): loads valid_ohlcv.csv, all records UTC-aware
+* `TestLocalParquetProviderBasic` (7): provider_name, source field, NormalizedOHLCV, metadata fields, UTC-aware, timeframes, OHLCV values
+* `TestLocalParquetProviderFetch` (4): full range, excludes out of range, empty range, naive raises
+* `TestLocalParquetTimestampTypes` (5): datetime with tz, datetime naive, microsecond int, second int, ISO string
+* `TestLocalParquetProviderErrors` (5): missing file, missing column, invalid parquet, empty returns [], subclass
+* `TestFactoryRegistration` (12): csv/parquet in factory, yahoo still in factory, len=3, build returns correct type, missing file_path → ProviderBuildError ×2, capabilities fields, timeframes, asset classes
+* `TestOHLCVServiceCSVIntegration` (4): FETCH_AND_STORE, BYPASS_CACHE no storage, cache_metadata.json written, second call hits cache
+* `TestOHLCVServiceParquetIntegration` (3): FETCH_AND_STORE, records normalized, cache_metadata.json written
+* `TestFetchIdentityIntegration` (4): build_fetch_identity csv, deterministic, build_fetch_identity parquet, csv≠parquet fingerprints
+* `TestArchitectureBoundary` (5): csv no yahoo, parquet no yahoo, csv no api, parquet no api, shared no yahoo
+* `TestBackwardCompatibility` (4): yahoo still in factory, len=3, legacy CSVAdapter unaffected, OHLCVService signature unchanged
+
+**`tests/unit/test_provider_factory.py`** (modified):
+* `test_default_registry_has_exactly_one_provider` → `test_default_registry_has_three_providers` (assert len==3)
+
+Validation:
+* `pytest` → **2906 passed**, zero regressions (2826 pre-3D + 80 new)
+* Architecture boundary enforced: csv_provider.py, parquet_provider.py, _shared.py contain no yahoo or api imports
+* Backward compatibility: `CSVAdapter` (legacy) unchanged; factory still has yahoo; OHLCVService contract unchanged
+* Architectural proof: CSV, Parquet, and Yahoo all flow through the identical `OHLCVService → cache/storage` pipeline after construction via `ProviderAdapterFactory`
+
+Correct provider flow after Phase 3D:
+```
+factory.build("csv",     file_path=..., symbol=...) → LocalCSVProvider
+factory.build("parquet", file_path=..., symbol=...) → LocalParquetProvider
+factory.build("yahoo",   symbol=...)                → YahooFinanceAdapter
+                                  ↓
+                    RangeProviderAdapter (same contract)
+                                  ↓
+                    OHLCVService → DataNormalizer → ohlcv_store → DatasetCacheRegistry
+```
+
+Known limitations:
+* `file_path` is not surfaced in the HTTP API — using CSV/Parquet providers via the API route requires a future dataset catalog or file path parameter extension (no special-case logic added)
+* `file_path` is not part of the `DatasetFetchIdentity` fingerprint — two files with identical metadata but different content produce the same fingerprint (by design; fingerprint identifies the logical dataset, not the physical file)
+
+---
+
+## Phase 3C — Provider Storage & Cache Architecture (COMPLETE)
+
+Focus: establish deterministic dataset persistence, configurable cache reuse behavior, and fetch fingerprint lineage tracking. Every OHLCV dataset now has a canonical on-disk location, a rich `cache_metadata.json` file, and a rolling fingerprint history for reproducibility auditing — without any breaking changes to existing callers.
+
+Pre-existing (already correctly implemented before this phase):
+* `OHLCVService` — full pipeline with `CoverageRegistry` coverage gap detection
+* `DatasetFetchIdentity` + `compute_fetch_fingerprint` — SHA-256 deterministic fingerprinting
+* `ohlcv_store` — canonical `{base_path}/{provider}/{asset_class}/{exchange}/{symbol}/{timeframe}/{adjustment_mode}/data.parquet` layout
+* `CoverageRegistry` — boundary coverage metadata in `coverage.json`
+
+Completed in this phase:
+
+**`backend/data/models/cache_policy.py`** (new):
+* `DatasetCachePolicy(str, Enum)` — `FETCH_AND_STORE`, `READ_ONLY`, `FORCE_REFRESH`, `BYPASS_CACHE`
+
+**`backend/storage/dataset_cache.py`** (new):
+* `DatasetCacheState` — plain class with string constants `EMPTY`, `HIT`, `PARTIAL`
+* `DatasetCacheEntry` — frozen dataclass: `dataset_id`, `storage_path`, `record_count`, `earliest_ts`, `latest_ts`, `created_at`, `last_refreshed_at`, `last_fetch_fingerprint`, `fetch_fingerprints: list[str]`
+* `DatasetCacheLookupResult` — frozen dataclass: `state`, `missing_ranges`, `entry`
+* `DatasetCacheRegistry` — reads/writes `cache_metadata.json` alongside `data.parquet`; `lookup()` / `update()` / `get()` / `invalidate()`
+* Rolling fingerprint history: max 10, newest first, deduplication of identical consecutive fingerprints
+* `created_at` preserved across updates (set only on first write)
+
+**`backend/data/models/__init__.py`** (modified):
+* Added export: `DatasetCachePolicy`
+
+**`backend/services/ohlcv_service.py`** (extended):
+* Added `DatasetCacheRegistry` to `__init__`
+* `get_ohlcv()` signature extended with `cache_policy: DatasetCachePolicy = DatasetCachePolicy.FETCH_AND_STORE` and `fetch_fingerprint: Optional[str] = None` — fully backward-compatible
+* `BYPASS_CACHE` — fetch full range, normalize, return; no storage reads or writes
+* `READ_ONLY` — `_read_slice()` only, no provider call
+* `FORCE_REFRESH` — fetch full range, `ohlcv_store.write(merge=False)`, update coverage + cache metadata
+* `FETCH_AND_STORE` (default) — gap-based fetch, persist, update coverage + cache metadata
+* `_refresh_cache()` — reads stored records, calls `DatasetCacheRegistry.update()`
+
+**`backend/api/services/market_data_service.py`** (modified):
+* `build_fetch_identity()` moved before `service.get_ohlcv()` so fingerprint propagates to cache metadata on every fetch
+
+**`docs/DATASET_STORAGE_LAYOUT.md`** (new):
+* Canonical directory tree and file contracts for `data.parquet`, `coverage.json`, `cache_metadata.json`
+* Cache policy behavior matrix; architecture boundary rules
+
+**`tests/unit/test_dataset_cache.py`** (new — 64 tests):
+* `TestDatasetCachePolicyEnum` (6), `TestDatasetCacheState` (3), `TestDatasetCacheEntry` (3), `TestDatasetCacheLookupResult` (2)
+* `TestDatasetCacheRegistry` (17): create/update/get/invalidate/fingerprint history/max-10/dedup/JSON keys
+* `TestDatasetCacheRegistryLookup` (8): EMPTY/HIT/PARTIAL states, naive datetime raises
+* `TestComputeMissingRangesHelper` (5): gap scenarios, null timestamps
+* `TestOHLCVServiceCachePolicy` (13): all four policies, fingerprint stored, BYPASS no storage writes
+* `TestOHLCVServiceBackwardCompat` (3): default policy, naive datetime still raises
+* `TestArchitectureBoundary` (4): no yahoo imports in cache_policy, dataset_cache, ohlcv_service
+
+Validation:
+* `pytest` → **2826 passed**, zero regressions (2762 pre-3C + 64 new)
+* Architecture boundary enforced: `dataset_cache.py` and `cache_policy.py` import no yahoo/api/factory modules
+* Backward compatibility: `cache_policy` and `fetch_fingerprint` default to safe values — all existing callers unaffected
+* Fingerprint lineage: rolling max-10 history written to `cache_metadata.json` on every successful store
+
+Cache policy behavior:
+| Policy            | Reads Parquet | Calls Provider | Writes Parquet | Updates Metadata |
+|-------------------|:---:|:---:|:---:|:---:|
+| `FETCH_AND_STORE` | ✓ (gaps only) | Only for gaps  | ✓ (merge)     | ✓                |
+| `READ_ONLY`       | ✓             | ✗              | ✗              | ✗                |
+| `FORCE_REFRESH`   | ✓ (return)    | ✓ (full range) | ✓ (overwrite) | ✓                |
+| `BYPASS_CACHE`    | ✗             | ✓ (full range) | ✗              | ✗                |
+
+---
+
+## Phase 3B — Provider Contract Hardening & Dataset Identity (COMPLETE)
+
+Focus: harden the market data provider contract with deterministic fetch identity, provider traceability metadata, and stable dataset fingerprinting. Every OHLCV fetch now produces a fully traceable record auditable back to provider, symbol, timeframe, date range, and adjustment mode — with a deterministic SHA-256 fingerprint — without any breaking changes to existing API consumers.
+
+Pre-existing (already correctly implemented before this phase):
+* `DatasetIdentity` — static dataset classification model (instrument + provider + timeframe + adjustment)
+* `MarketDataOHLCVResponse` — OHLCV API response schema
+* `ProviderAdapterFactory` + `create_default_factory_registry()` — Phase 3A provider isolation
+* `OHLCVService` — full pipeline: coverage check → fetch → normalize → persist → read slice
+
+Completed in this phase:
+
+**`backend/data/models/fetch_identity.py`** (new):
+* `DatasetFetchParameters` — frozen Pydantic model: provider, symbol, asset_class, exchange, timeframe, start (UTC-aware datetime), end (UTC-aware datetime), adjustment_mode; all string fields validated non-empty; naive datetimes rejected
+* `compute_fetch_fingerprint(params) → str` — deterministic SHA-256 hex fingerprint from pipe-delimited canonical string (all values lowercased, timestamps in ISO UTC); stable across processes and platforms; provably sensitive to every field
+* `DatasetFetchIdentity` — frozen Pydantic model: parameters, fingerprint, dataset_id, schema_version
+* `FETCH_IDENTITY_SCHEMA_VERSION = "1"` — bump when canonical fingerprint format changes
+* `build_fetch_identity(**kwargs) → DatasetFetchIdentity` — convenience builder; constructs parameters, computes fingerprint, assembles identity record
+
+**`backend/data/models/__init__.py`** (modified):
+* Added exports: `DatasetFetchIdentity`, `DatasetFetchParameters`, `FETCH_IDENTITY_SCHEMA_VERSION`, `build_fetch_identity`, `compute_fetch_fingerprint`
+
+**`backend/api/schemas/market_data.py`** (modified):
+* Added `DatasetFetchMetadataResponse` — API-layer traceability schema: dataset_id, fingerprint, provider, symbol, asset_class, exchange, timeframe, start_utc (ISO string), end_utc (ISO string), adjustment_mode, schema_version
+* Extended `MarketDataOHLCVResponse` with `fetch_metadata: DatasetFetchMetadataResponse | None = None` — backward-compatible; existing consumers unaffected when field absent
+
+**`backend/api/services/market_data_service.py`** (modified):
+* Added `build_fetch_identity()` call after `DatasetIdentity` construction — pure domain layer call, no provider-specific imports
+* Populates `fetch_metadata` in `MarketDataOHLCVResponse` with all identity fields including fingerprint and schema_version
+* Logger now includes fingerprint prefix (first 12 hex chars) for traceability in logs
+* Architecture contract preserved: still zero Yahoo imports in this module
+
+**`tests/unit/test_dataset_fetch_identity.py`** (new — 65 tests):
+* `TestDatasetFetchParameters` (13): frozen, extra forbidden, fields stored, empty/whitespace raises, naive datetime raises, UTC accepted, non-UTC tz-aware accepted
+* `TestComputeFetchFingerprint` (15): returns string, SHA-256 length=64, deterministic, same-params same, different field → different, canonical SHA-256 verification, timezone normalization (non-UTC and UTC same moment → same fingerprint), provider/symbol case-insensitive
+* `TestDatasetFetchIdentity` (7): frozen, parameters/fingerprint/dataset_id stored, schema_version has default, non-empty, matches constant
+* `TestBuildFetchIdentity` (8): returns identity, deterministic, matches direct compute, parameters reflect inputs, dataset_id passed through, schema_version set, empty provider raises, naive datetime raises
+* `TestDatasetFetchMetadataResponseSchema` (3): expected fields present, constructable, serializes to dict
+* `TestMarketDataOHLCVResponseBackwardCompat` (3): fetch_metadata defaults to None, existing fields unchanged, response with metadata serializes
+* `TestMarketDataServiceFetchMetadataIntegration` (11): response includes fetch_metadata, fingerprint 64 chars, dataset_id contains provider+symbol, provider/symbol/timeframe match request, adjustment_mode/schema_version/start_utc/end_utc present, fingerprint deterministic across requests, existing OHLCV fields unchanged
+* `TestArchitectureBoundary` (4): fetch_identity no yahoo import, fetch_identity no provider_factory import, market_data_service still no yahoo import, fetch_identity no api layer import
+
+Validation:
+* `pytest` → **2762 passed**, zero regressions (2697 pre-3B + 65 new)
+* Architecture boundary enforced: `fetch_identity.py` imports only stdlib + pydantic + `backend.data.models.instrument`
+* Backward compatibility: `MarketDataOHLCVResponse.fetch_metadata` defaults to `None` — zero impact on existing consumers
+* Fingerprint stability: SHA-256 of pipe-delimited canonical string; bump `FETCH_IDENTITY_SCHEMA_VERSION` if format changes
+
+Correct provider traceability flow after Phase 3B:
+```
+API route → factory.build() → OHLCVService → normalized candles
+         → build_fetch_identity() → DatasetFetchIdentity
+         → MarketDataOHLCVResponse.fetch_metadata → client
+```
+
+---
+
+## Phase 3A — Market Data Provider Layer (COMPLETE)
+
+Focus: complete the provider abstraction layer so all market data access routes through normalized provider adapters. The primary architectural violation was `market_data_service.py` directly importing `YahooFinanceAdapter` — this is now fixed. The `ProviderAdapterFactory` pattern decouples API services from concrete adapter classes.
+
+Pre-existing (already correctly implemented before this phase):
+* `BaseDataAdapter` + `RangeProviderAdapter` — abstract contracts in `backend/data_providers/`
+* `YahooFinanceAdapter` — isolated in `backend/data_providers/yahoo/adapter.py`
+* `ProviderRegistry` — instance-based registry for pre-built adapters
+* `OHLCVService` — full pipeline: coverage check → fetch → normalize → persist → read slice
+* `NormalizedOHLCV` — canonical schema with all required fields (`source` = provider)
+* Storage layer: `ohlcv_store`, `parquet_store`, `coverage_registry`
+* Symbol mapping: `SymbolMapService`
+
+Completed in this phase:
+
+**`backend/data_providers/base.py`** (modified):
+* Added `ProviderFetchError` exception — base for all provider-level fetch failures; API services catch this instead of Yahoo-specific errors
+* Added `ProviderCapabilities` frozen Pydantic model — `provider_id`, `display_name`, `supported_timeframes`, `supported_asset_classes`
+* Added concrete (non-abstract) methods to `BaseDataAdapter`: `supported_timeframes() → ()`, `supported_asset_classes() → ()`, `capabilities() → ProviderCapabilities` — safe defaults, overridden by concrete adapters
+
+**`backend/data_providers/yahoo/adapter.py`** (modified):
+* `YahooAdapterError` now subclasses `ProviderFetchError` — callers can catch the generic error
+* Implemented `supported_timeframes()` — all Yahoo timeframe strings
+* Implemented `supported_asset_classes()` — `("crypto", "equity", "etf", "fx", "fund", "future", "index")`
+* Implemented `capabilities()` — returns concrete `ProviderCapabilities` for Yahoo
+
+**`backend/data_providers/provider_factory.py`** (new):
+* `UnknownProviderError` — raised when build() called with unregistered provider
+* `ProviderBuildError` — raised when adapter construction fails (wraps ValueError from adapter)
+* `ProviderAdapterFactory` — register(provider_id, capabilities, builder) / build(provider_id, **kwargs) / get_capabilities() / list_capabilities() / `__contains__` / `__len__`
+* `_YAHOO_CAPABILITIES` + `_build_yahoo_adapter()` — Yahoo factory internals (Yahoo-specific code stays here)
+* `create_default_factory_registry()` — returns factory with Yahoo registered; future providers added here
+
+**`backend/data_providers/__init__.py`** (modified):
+* Exports: `ProviderCapabilities`, `ProviderFetchError`, `ProviderAdapterFactory`, `ProviderBuildError`, `UnknownProviderError`, `create_default_factory_registry`
+
+**`backend/api/services/market_data_service.py`** (rewritten):
+* REMOVED: direct `YahooFinanceAdapter` and `YahooAdapterError` imports — architectural violation fixed
+* Accepts `factory: ProviderAdapterFactory` as parameter — provider resolution is factory's responsibility
+* Uses `factory.build(provider, **kwargs)` instead of `if provider == "yahoo": YahooFinanceAdapter(...)`
+* Catches `ProviderFetchError` instead of `YahooAdapterError` (provider-agnostic)
+* Added `list_providers(factory) → ProvidersListResponse`
+
+**`backend/api/routes/market_data.py`** (rewritten):
+* Added `get_provider_factory()` FastAPI dependency — overridable in tests
+* Added `GET /market-data/providers` endpoint — lists all registered providers and capabilities
+* `GET /market-data/ohlcv` passes `factory=factory` to service — no functional change to callers
+
+**`backend/api/schemas/market_data.py`** (modified):
+* Added `ProviderCapabilitiesResponse` — `provider_id`, `display_name`, `supported_timeframes`, `supported_asset_classes`
+* Added `ProvidersListResponse` — `providers: list[ProviderCapabilitiesResponse]`
+
+**`tests/unit/test_provider_factory.py`** (new — 38 tests):
+* `TestProviderCapabilitiesModel` (2): frozen, fields stored
+* `TestProviderAdapterFactoryRegistration` (7): register/contains, case-insensitive, len, duplicate, empty name, whitespace, non-string
+* `TestProviderAdapterFactoryBuild` (6): returns adapter, unknown raises, error lists available, case-insensitive, kwargs forwarded, ValueError→ProviderBuildError
+* `TestProviderAdapterFactoryCapabilities` (5): get known, unknown raises, list empty, sorted, all returned
+* `TestCreateDefaultFactoryRegistry` (8): contains yahoo, capabilities fields, timeframes, asset classes, multiple timeframes, len=1, list contains yahoo
+* `TestYahooBuilderIntegration` (4): adapter returned, provider_name, unsupported timeframe, extra kwargs ignored
+* `TestProviderFetchErrorInheritance` (2): YahooAdapterError is subclass, ProviderFetchError is Exception
+* `TestArchitectureBoundary` (2): service no yahoo import, factory loads correctly
+
+**`tests/unit/test_market_data_providers.py`** (new — 17 tests):
+* `TestGetProvidersEndpoint` (10): 200, providers list, yahoo present, display name, timeframes, 1d in timeframes, asset classes, equity in asset classes, schema fields, custom factory override
+* `TestListProvidersService` (4): yahoo from default registry, empty factory, custom provider, sorted alphabetically
+* `TestOHLCVRegressionViaFactory` (3): ohlcv endpoint still works, unsupported provider → 400, unsupported timeframe → 400
+* `TestArchitectureBoundary` (2): no yahoo import in service, no YahooFinanceAdapter/YahooAdapterError attributes on service module
+
+Validation:
+* `pytest` → **2697 passed**, zero regressions (2642 pre-3A + 55 new)
+* Architecture boundary enforced: `backend/api/services/market_data_service.py` contains no `yahoo` import on any line
+
+Correct provider flow after Phase 3A:
+```
+API route → factory.build(provider, **kwargs) → RangeProviderAdapter → OHLCVService.get_ohlcv()
+```
+Future providers (Binance, IBKR, Polygon, CSV, Parquet) register in `create_default_factory_registry()` only — no API/service/route changes required.
+
+---
+
+## Phase 2U — ATR + Bollinger Bands (COMPLETE)
+
+Focus: final two standard indicators completing the baseline indicator layer. ATR renders in the oscillator pane; Bollinger Bands render as three simultaneous price-pane overlays. No frontend redesign required — existing pane/kind routing handled both tools automatically.
+
+Completed:
+
+**`backend/tools/atr.py`** (new):
+* `ATR_METADATA` — `tool_id="atr"`, `output_feature_names=("atr",)`, `produces_oscillator_series`, `stateful=True`, `min_warmup_bars=1`
+* Parameters: `period` (int, required, default=14, min=1), `name`, `color`
+* `compute_atr(candles, period, name, color) → IndicatorSeries` — Wilder's smoothing; SMA seed at bar `period`; first output at bar index `period`; TR = max(H-L, |H-C_prev|, |L-C_prev|)
+* `_true_range(high, low, prev_close) → float` — exported helper
+
+**`backend/tools/bollinger_bands.py`** (new):
+* `BOLLINGER_METADATA` — `tool_id="bollinger_bands"`, `output_feature_names=("middle_band","upper_band","lower_band")`, no oscillator capability, `stateful=False`, `min_warmup_bars=1`
+* Parameters: `period` (int, required, default=20, min=2), `std_dev` (float, default=2.0), `name`, `color`
+* `compute_bollinger(candles, period, std_dev, name, color) → tuple[IndicatorSeries×3]` — population stddev; all 3 outputs share warmup = period-1
+* `_bollinger_values(window, multiplier) → (middle, upper, lower)` — exported helper
+
+**`backend/tools/historical_computation.py`** (modified):
+* `_compute_atr_series()` — Wilder smoothing; requires "high","low","close" from price_fields; warmup = period
+* `_compute_bollinger_series()` — rolling SMA + population stddev; requires "close"; warmup = period-1; returns 3 series
+* `derive_warmup_bars_required()` — extended for `atr` (warmup=period) and `bollinger_bands` (warmup=period-1)
+* `_TOOL_DISPATCHERS` — extended with `"atr"` and `"bollinger_bands"` entries
+* Added `import math`
+
+**`backend/tools/__init__.py`** (modified):
+* Imports: `ATR_METADATA`, `compute_atr`, `BOLLINGER_METADATA`, `compute_bollinger`
+* `create_default_registry()` — now registers 6 tools (added ATR + Bollinger)
+* `__all__` — extended with new exports
+
+**`tests/unit/test_atr.py`** (new — 41 tests):
+* TestTrueRange (6): gap-up/down/inside bar, equal OHLC, always non-negative
+* TestATRMetadata (8): tool_id, output names, oscillator capability, stateful, period param
+* TestComputeATRVisualization (9): empty, name, pane/kind, invalid period, warmup, flat prices, determinism
+* TestATRHistoricalPipeline (12): warmup, output_ref, flat prices, single series, missing fields, Wilder seeding, two instances isolated, determinism, too few bars, exact boundary
+* TestATRWarmupDerivation (4): period default, various periods
+
+**`tests/unit/test_bollinger_bands.py`** (new — 44 tests):
+* TestBollingerValues (6): mean, flat window, symmetry, multiplier scaling, population stddev, upper>=lower
+* TestBollingerMetadata (9): tool_id, output names, no oscillator capability, stateless, parameters
+* TestComputeBollingerVisualization (10): empty, naming, panes/kinds, invalid args, warmup, flat zero-width, equal lengths, determinism, upper>=lower
+* TestBollingerHistoricalPipeline (14): 3 series, output refs, warmup, flat zero-width, middle=SMA, symmetry, missing close, two instances, shared warmup, multiplier scaling, determinism, too few bars, exact boundary
+* TestBollingerWarmupDerivation (4): various periods, default
+
+**`tests/unit/test_composition_run_visualization.py`** (modified — 14 new tests):
+* TestATROscillatorRouting (4): pane=oscillator, kind=line, not on price, one series
+* TestBollingerPriceRouting (5): pane=price, kind=line, 3 series, not on oscillator, output names
+* TestAllSixToolsRouting (5): 10 total series, 5 price / 5 oscillator split, no histogram from new tools, valid panes/kinds
+
+**`tests/unit/test_ema_tool.py`** (modified):
+* Updated `test_registered_in_default_registry`: `len(registry) == 6` (was 4)
+
+Validation:
+* `pytest` → **2642 passed**, zero regressions (2543 pre-2U + 99 new)
+* `npm run build` → **59 modules**, clean (no new frontend files needed — existing pane/kind routing handles ATR and Bollinger automatically)
+
+Architecture preserved:
+* ATR and Bollinger are computed entirely in backend — frontend renders only
+* Bollinger's 3 price-pane overlays route correctly via empty `visualization_capabilities` (no `produces_oscillator_series` flag)
+* ATR oscillator routing via `VisualizationCapability.produces_oscillator_series` — same pattern as RSI/MACD
+* `composition_run_service` boundary intact — no new service changes required
+
+This is the LAST standard indicator phase. Future direction: custom research tools, pivot/swing framework, divergence systems, advanced semantic conditions.
+
+---
+
+## Phase 2T.3 — Chart Run Reset & Overlay Cleanup (COMPLETE)
+
+Focus: high-priority frontend UX correctness fix for stale strategy drawings after clear/rerun. No backend/API/indicator logic changes.
+
+Completed:
+* `frontend/src/App.tsx`
+  * Added `clearStrategyResults()` as the owner of strategy visualization reset state.
+  * Passes `onClearStrategyResults` to `Chart`.
+  * Clearing sets `overlay=null` only; candles, provider, symbol, timeframe, and loaded OHLCV data remain intact.
+* `frontend/src/components/Chart.tsx`
+  * Added chart-header `Clear Strategy Results` button.
+  * Button clears signals, marker drawings, price overlays, oscillator series, MACD histogram, RSI guide lines, forecast line, and result counters by clearing App-owned overlay state.
+  * Replaced repeated `createSeriesMarkers(...)` calls with one retained marker plugin (`markerApiRef`) and explicit `setMarkers([])` cleanup.
+  * Marker plugin detaches on unmount.
+  * Existing overlay cleanup still removes all price series, oscillator series, RSI guide price lines, and forecast data before rendering the current overlay.
+
+Validation:
+* `npm run build` in `frontend/` → clean
+* Build output: 59 modules transformed
+
+Notes:
+* Within allowed scope, no `StrategyTestPanel.tsx` changes were made. Rerun cleanup is enforced when `Chart` receives the latest overlay; the chart removes existing artifacts before drawing the new result.
+* No frontend test runner exists beyond the current TypeScript/Vite build pipeline.
+
+---
+
+## Phase 2T.2 — Oscillator Reference Lines (COMPLETE)
+
+Focus: frontend-only RSI oscillator readability enhancement. No backend/API contract changes.
+
+Completed:
+* `frontend/src/components/Chart.tsx`
+  * Added subtle RSI oscillator guide lines at 70, 50, and 30.
+  * Guides render only when an RSI oscillator series exists.
+  * Guides attach to the first matching RSI line series via Lightweight Charts `createPriceLine()`.
+  * Guide lifecycle is tracked separately and cleaned up before oscillator series removal and on chart unmount.
+  * Matching is localized through `_OSCILLATOR_REFERENCE_GUIDES`, keeping room for future oscillator guides without refactoring chart lifecycle.
+* Frontend remains visualization-only:
+  * no RSI calculation
+  * no indicator recomputation
+  * no backend/API changes
+
+Validation:
+* `npm run build` in `frontend/` → clean
+* Build output: 59 modules transformed
+
+Notes:
+* Existing oscillator pane remains fixed-height at 180px.
+* No frontend test runner exists beyond the current TypeScript/Vite build pipeline.
+
+---
+
+## Phase 2T.1 — Browser-Level Visualization Validation (COMPLETE)
+
+Focus: end-to-end runtime validation of Phase 2T visualization pipeline against live AAPL data. Confirmed all 6 indicator series reach the frontend with correct pane/kind routing.
+
+Validation commands run:
+* Backend: `uvicorn backend.main:app --reload --port 8000`
+* Frontend: `npm run dev` (port 3000)
+* Semantics: `PUT /drafts/viz-validation/semantics` with SMA20>close entry rule
+* Data: `GET /market-data/ohlcv?provider=yahoo&symbol=AAPL&timeframe=1d&start=2023-01-01&end=2024-01-01` → 250 bars
+* Run: `POST /strategy-runs/run-composition` with `draft_id=viz-validation`
+
+API response confirmed (6 indicators, all correct):
+```
+sma20.sma       pane=price       kind=line       231 points
+ema20.ema       pane=price       kind=line       231 points
+rsi14.rsi       pane=oscillator  kind=line       236 points
+macd1.macd_line pane=oscillator  kind=line       225 points
+macd1.signal_line pane=oscillator kind=line      217 points
+macd1.histogram pane=oscillator  kind=histogram  217 points
+```
+
+Type chain verified: `CompositionRunResponse.indicators` → `App.tsx:handleCompositionResult` → `StrategyOverlay.indicators` → `Chart.tsx` pane/kind routing → `HistogramSeries` / `LineSeries`.
+
+TypeScript: `tsc --noEmit` → clean (0 errors).
+Tests: 2543 passed (unchanged — no new backend code required for validation).
+
+Files changed: none (validation-only phase; all code was correct on first run).
+
+Known limitations / future work:
+* Oscillator pane height is fixed at 180px; future: user-resizable
+
+---
+
+## Phase 2T — Tool Output Visualization (COMPLETE)
+
+Focus: established the first visualization bridge from backend-computed tool outputs to the frontend chart. SMA/EMA render as price-pane overlays, RSI and MACD render in a separate oscillator pane, and MACD histogram uses a histogram series with per-bar sign coloring.
+
+Completed:
+
+**`backend/strategy_runtime/visualization.py`** (modified):
+* Added `histogram = "histogram"` to `IndicatorSeriesKind` enum (was commented as "future")
+
+**`backend/api/services/composition_run_service.py`** (modified):
+* Added `from backend.tools.models import VisualizationCapability`
+* Each `ToolOutputSeries` now derives `pane` and `kind` from registry metadata:
+  - `VisualizationCapability.produces_oscillator_series` → `pane="oscillator"`
+  - Else → `pane="price"`
+  - `series.output_name == "histogram"` → `kind="histogram"`
+  - Else → `kind="line"`
+* Previously hardcoded `pane="price"` and `kind="line"` for all indicators
+
+**`frontend/src/types/toolVisualization.ts`** (new):
+* `ToolOutputKind = 'line' | 'histogram'`
+* `ToolOutputPane = 'price' | 'oscillator'`
+* `ToolVisualizationSeries` — stable contract for future extensibility (Bollinger Bands, ATR, VWAP, etc.)
+
+**`frontend/src/components/Chart.tsx`** (rewritten):
+* Two chart instances: price chart (always visible) + oscillator chart (shown only when oscillator series present)
+* Price chart: renders candles + SMA/EMA/price overlays + signal markers + forecast line (unchanged from before)
+* Oscillator chart: renders RSI (LineSeries) and MACD (macd_line/signal_line as LineSeries, histogram as HistogramSeries)
+* MACD histogram: per-bar sign coloring (green ≥ 0, red < 0) — pure rendering logic, no indicator computation
+* Time scale synchronization: `subscribeVisibleLogicalRangeChange` bidirectional sync between price and oscillator
+* Oscillator container: `height: 180px` when oscillator series present, `height: 0` when none (CSS transition)
+* Lifecycle discipline: all series removed and maps cleared on each overlay update; both charts destroyed on unmount
+* Header badges updated: separate "overlays" and "oscillators" counts
+
+**`tests/unit/test_composition_run_visualization.py`** (new — 28 tests):
+* TestIndicatorSeriesKindHistogram: 4 tests for new enum value
+* TestPricePaneRouting: 6 tests — SMA/EMA pane="price"/kind="line", multiple instances, no oscillator bleed
+* TestRSIOscillatorRouting: 3 tests — RSI pane="oscillator"/kind="line", not on price pane
+* TestMACDOscillatorRouting: 7 tests — all 3 outputs on oscillator, histogram kind, line kinds, 3 series
+* TestMixedToolRouting: 6 tests — both panes, 6 total series, valid pane/kind sets
+* TestCompositionRunVisualizationArchitecture: 2 tests — no forbidden imports, VisualizationCapability from tools
+
+Validation:
+* `pytest` → **2543 passed**, zero regressions (2515 pre-2T + 28 new)
+* `npm run build` → **60 modules** (59 + `toolVisualization.ts`), clean build
+
+Architecture preserved:
+* Frontend never computes indicators — only routes and renders backend-provided values
+* Histogram bar colors (sign-based) are rendering logic, not indicator computation
+* Backend retains full authority over pane and kind assignments via registry metadata
+* `composition_run_service` still forbidden from strategy_runtime/execution/forward_testing/backtesting
+
+Known limitations / future work:
+* Oscillator pane height is fixed at 180px; future: user-resizable
+
+---
+
+## Phase 2S — RSI + MACD Tool Expansion (COMPLETE)
+
+Focus: added RSI and MACD indicator tools to the historical computation pipeline, expanding the tool registry from 2 to 4 stable tools, with full warmup enforcement, multi-output MACD architecture, oscillator pane support, and 116 new tests.
+
+Completed:
+
+**`backend/strategy_runtime/visualization.py`** (modified):
+* Added `oscillator = "oscillator"` to `IndicatorPane` enum (was marked "future")
+* Required for RSI and MACD separate-pane indicator series
+
+**`backend/tools/rsi.py`** (new):
+* `RSI_METADATA` — `tool_id="rsi"`, `output_feature_names=("rsi",)`, `produces_oscillator_series`, `stateful=True`, `min_warmup_bars=2`
+* Parameters: `period` (int, required, default=14, min=2), `name`, `color`
+* `compute_rsi(candles, period, name, color) → IndicatorSeries` — Wilder's smoothing; SMA seed at `period`; first output at bar index `period`; RSI bounded [0, 100]
+
+**`backend/tools/macd.py`** (new):
+* `MACD_METADATA` — `tool_id="macd"`, `output_feature_names=("macd_line", "signal_line", "histogram")`, `produces_oscillator_series`, `stateful=True`, `min_warmup_bars=2`
+* Parameters: `fast_period` (default=12), `slow_period` (default=26), `signal_period` (default=9), `name`, `color`
+* `compute_macd(...) → tuple[IndicatorSeries, IndicatorSeries, IndicatorSeries]` — all EMAs SMA-seeded
+* Helper functions `_ema_series`, `_compute_dual_ema`, `_compute_signal_and_hist` exported for reuse
+
+**`backend/tools/historical_computation.py`** (modified):
+* `_compute_rsi_series()` — Wilder's smoothing; warmup = period; first output at bar_index = period
+* `_compute_macd_series()` — returns 3 `ToolOutputSeries`; macd_line warmup = `slow_period - 1`; signal/histogram warmup = `slow_period + signal_period - 2`
+* `derive_warmup_bars_required()` extended for rsi (warmup = period) and macd (warmup = slow + signal - 2)
+* `_TOOL_DISPATCHERS` extended: `"rsi": _compute_rsi_series`, `"macd": _compute_macd_series`
+
+**`backend/tools/__init__.py`** (modified):
+* Imports `RSI_METADATA`, `compute_rsi`, `MACD_METADATA`, `compute_macd`
+* `create_default_registry()` now registers all 4 tools: SMA, EMA, RSI, MACD
+
+**`frontend/src/components/DraftWorkspace.tsx`** (modified):
+* Fetches tool registry on mount via `fetchTools()`; stores in `toolRegistry` state keyed by `tool_id`
+* `toolOutputSuggestions` now uses actual `output_feature_names` from metadata — MACD correctly generates `["inst.macd_line", "inst.signal_line", "inst.histogram"]` instead of naive `inst.tool_id`
+
+**`tests/unit/test_rsi_tool.py`** (new — ~80 tests):
+* RSI metadata contract, standalone compute, pipeline correctness with known values (period=2; RSI[2]≈66.67, RSI[3]≈85.71, RSI[4]≈54.55), warmup enforcement, no-lookahead, multi-instance, multi-tool, semantic integration (rsi < 30 threshold), errors, API integration, architecture guards
+
+**`tests/unit/test_macd_tool.py`** (new — ~80 tests):
+* MACD metadata (3 outputs, correct order), standalone compute, 3 series per instance, separate warmup counts (signal has more warmup than macd_line), no-lookahead, multi-instance → 6 series disjoint refs, multi-tool SMA+EMA+RSI+MACD → 6 series total, semantic integration (histogram > 0 crossover), errors, API integration, architecture guards
+
+**`tests/unit/test_ema_tool.py`** (modified):
+* Updated registry size assertion: `len(registry) == 2` → `len(registry) == 4`
+* Changed unknown tool_id from `"rsi"` to `"unknown_indicator_xyz"` (RSI now registered)
+
+Architecture note — MACD histogram on linear prices: For perfectly linear price series, macd_line is constant, signal equals macd_line, histogram = 0.0 exactly. Tests use flat-then-surge price patterns to produce non-zero histograms.
+
+Validation:
+* `pytest` → **2515 passed**, zero regressions (2399 pre-2S + 116 new)
+* `npm run build` → **59 modules**, clean build
+
+---
+
+## Phase 2R.2 — Warmup Enforcement + Lookahead Prevention (COMPLETE)
+
+Focus: strict historical replay integrity across tool computation, evaluator ordering, signal/trade timestamp lineage, and backtest report outputs.
+
+Completed:
+* `ToolOutputSeries.warmup_bars_required` added as the configured series-level warmup exposure.
+* `derive_warmup_bars_required(tool_config, metadata)` added and exported; SMA/EMA derive actual warmup from `period - 1`.
+* Historical evaluator now canonicalizes replay by ascending `bar_index`, rejects duplicate bar indexes, and rejects timestamp regressions when timestamps are present.
+* Historical evaluation service, composition run service, and backtest run service now sort/validate bars before computation/evaluation/report metadata.
+* Backtest simulator now rejects duplicate price bars and intent timestamps that do not match the referenced price bar timestamp.
+* Backtest reports now derive `dataset_start` / `dataset_end`, equity order, trades, and open-position timestamps from canonical historical order, not request payload order.
+* New regression coverage:
+  * `tests/unit/test_backtest_integrity.py` — reversed input bars still replay historically; duplicate bars rejected.
+  * Additional tests in historical tool computation, crossover evaluator, and backtest simulation for warmup exposure, canonical ordering, duplicate rejection, and timestamp mismatch rejection.
+* Docs updated:
+  * `docs/HISTORICAL_TOOL_COMPUTATION_PIPELINE.md`
+  * `docs/HISTORICAL_EVALUATION_ITERATOR.md`
+  * `docs/BACKTESTING_ENGINE_CONTRACT.md`
+
+Validation:
+* Targeted suites passing:
+  * `test_historical_tool_computation.py`
+  * `test_crossover_evaluator.py`
+  * `test_ema_tool.py`
+  * `test_backtest_simulation.py`
+  * `test_backtest_integrity.py`
+  * `test_backtest_exports.py`
+  * `test_backtest_analytics.py`
+
+Known limitations:
+* Indicator values at signal time are still not captured in report artifacts.
+* Tool version pinning / registry snapshotting is still not implemented.
+
+---
+
+## Phase 2Q — Backtest Report Hardening (COMPLETE)
+
+Focus: correctness validation, trade audit enrichment, export capability, reproducibility metadata, test coverage.
+
+Completed:
+
+**Analytics Tests (`tests/unit/test_backtest_analytics.py`, new — 37 tests)**
+* `total_return_pct` — positive, negative, zero, empty curve
+* `max_drawdown_pct` — single trough, worst-of-multiple, monotonic rise, recovery to peak
+* Drawdown curve — per-bar values, bar_index preservation, initial cash as starting peak
+* Win/loss/breakeven classification — no trades, all winners, all losers, mixed
+* `win_rate` — None when no trades, 0.0 / 1.0 / fractional
+* `gross_profit` / `gross_loss` — sums only correct sign
+* `profit_factor` — no losses → None, no wins → 0.0, mixed
+* `avg_win` / `avg_loss` — None when absent, correct averages
+* `best_trade_pnl` / `worst_trade_pnl` — None when empty, correct extremes
+* Open position excluded from closed-trade metrics
+* Breakeven at exactly 0.0 PnL
+* Determinism — identical inputs → identical outputs
+* Immutability — frozen dataclass raises on mutation attempt
+* Architecture guard — no forbidden imports in analytics.py (import-lines only)
+
+**Trade Audit Enrichment**
+* `TradeRecord` extended (backward-compatible, all new fields `= None` default):
+  * `entry_rule_id`, `exit_rule_id` — rule_id from originating `TradeIntentSource`
+  * `entry_signal_event_id`, `exit_signal_event_id` — event_id from originating `SignalEvent`
+* `_build_trade_records()` now accepts `intent_batch: TradeIntentBatch`, builds `intent_map: dict[intent_id, TradeIntent]`, populates audit fields from `intent.source.rule_id` and `intent.source.signal_event_id`
+* Open position record also enriched with `entry_rule_id` / `entry_signal_event_id`
+
+**Reproducibility Metadata**
+* `BacktestRunSummary` extended (backward-compatible optional fields):
+  * `dataset_start: str | None` — ISO timestamp of first bar in dataset
+  * `dataset_end: str | None` — ISO timestamp of last bar in dataset
+  * `engine_version: str = "2P.9"` — backtesting engine version tag
+* Service populates `dataset_start` / `dataset_end` from `request.bars[0]` / `request.bars[-1]`
+
+**Export Service (`backend/api/services/export_service.py`, new)**
+* `export_trade_ledger_csv(report)` — all closed + open trades; 23 columns including audit fields; None → empty string (never literal "None")
+* `export_equity_curve_csv(report)` — per-bar equity joined with drawdown_pct by bar_index
+* `export_report_json(report)` — canonical JSON via `model_dump_json()`, round-trips via `BacktestReport.model_validate()`
+
+**Export Endpoints (`backend/api/routes/backtest_runs.py`, modified)**
+* `GET /backtests/runs/{run_id}/export/trades` → CSV download, `Content-Disposition: attachment`
+* `GET /backtests/runs/{run_id}/export/equity` → CSV download
+* `GET /backtests/runs/{run_id}/export/report` → JSON download
+* All 3 return 404 for unknown run_id
+
+**Export + Schema Tests (`tests/unit/test_backtest_exports.py`, new — 23 tests)**
+* CSV header correctness, field serialization, open position status column
+* None → empty string (not literal "None")
+* Empty trades → header-only CSV
+* Drawdown join by bar_index; missing bar → empty cell
+* JSON valid, round-trips, schema-stable (all required keys present)
+* API 200 for all 3 export endpoints (mocked `load_backtest_report`)
+* API 404 for all 3 endpoints with unknown run_id
+* `BacktestRunSummary` reproducibility fields present
+* `TradeRecord` audit fields present and optional
+* CSV row counts match trade/equity curve lengths
+
+**Frontend**
+* `frontend/src/types/backtestRuns.ts` — `TradeRecord` extended with 4 audit fields; `BacktestRunSummary` extended with `dataset_start`, `dataset_end`, `engine_version`
+* `frontend/src/api/backtestRuns.ts` — `downloadTradesCSV()`, `downloadEquityCSV()`, `downloadReportJSON()` (browser anchor-click pattern)
+* `frontend/src/components/BacktestReportPage.tsx` — 3 export buttons in header (↓ Trades, ↓ Equity, ↓ JSON); rule audit section shows `entry_rule_id`/`exit_rule_id` per trade when available
+
+**Validation**
+* 2330 pre-existing tests: all pass, zero regressions
+* 60 new tests: all pass
+* Total: **2390 passed**
+
+Known limitations:
+* Indicator values at signal time not yet captured (placeholder note in UI)
+* Tool version pinning (registry snapshot) not yet implemented
+
+---
+
 ## Phase 2R.1 — EMA Tool + Multi-Tool Computation Proof (COMPLETE)
 
 Completed:

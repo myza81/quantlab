@@ -20,7 +20,18 @@ from fastapi.testclient import TestClient
 
 from backend.api.main import app
 from backend.api.routes.drafts import get_draft_repository
+from backend.auth.dependencies import get_current_user
+from backend.auth.models import User
 from backend.strategy_registry.draft_repository import DraftRepository
+
+_TEST_USER = User(
+    user_id="test-user-id",
+    username="testuser",
+    email="test@example.com",
+    password_hash="hash",
+    created_at="2026-01-01T00:00:00+00:00",
+    subscription_status="active",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +46,7 @@ def repo(tmp_path):
 @pytest.fixture
 def client(repo):
     app.dependency_overrides[get_draft_repository] = lambda: repo
+    app.dependency_overrides[get_current_user] = lambda: _TEST_USER
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -337,7 +349,10 @@ class TestDraftResponseBackwardCompatibility:
         assert "semantics" in draft
 
     def test_existing_draft_without_semantics_still_loadable(self, client, repo, tmp_path):
-        """Drafts persisted before Phase 2O.1 (no semantics field) must deserialise correctly."""
+        """
+        Phase 3L: Legacy drafts (no user_id) are inaccessible to authenticated users.
+        The repository can still deserialise them, but ownership filtering returns 404.
+        """
         import json
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
@@ -355,7 +370,7 @@ class TestDraftResponseBackwardCompatibility:
             "enabled": True,
             "tags": [],
             "notes": None,
-            # intentionally no "semantics" key
+            # intentionally no "semantics" or "user_id" key — legacy format
         }
         # Write legacy JSON directly to repository
         active_dir = tmp_path / "strategy_drafts"
@@ -363,7 +378,6 @@ class TestDraftResponseBackwardCompatibility:
         (active_dir / "legacy_draft.json").write_text(
             json.dumps(legacy_data), encoding="utf-8"
         )
+        # Phase 3L: legacy draft (user_id=None) is inaccessible to authenticated user
         resp = client.get("/drafts/legacy_draft")
-        assert resp.status_code == 200
-        assert resp.json()["draft_id"] == "legacy_draft"
-        assert resp.json()["semantics"] is None
+        assert resp.status_code == 404

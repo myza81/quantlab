@@ -43,7 +43,10 @@ However, it must not become a full historical archive. Completed or obsolete det
 
 ## Active Phase
 
-PHASE 2R.1 — EMA TOOL + MULTI-TOOL COMPUTATION PROOF COMPLETE
+PHASE 3P-A — SUBSCRIPTION ELIGIBILITY & ADMIN APPROVAL FOUNDATION COMPLETE
+(backend: 3415 tests | frontend: 71 tests | tsc clean)
+
+Previous completed phases: 3O (Credential-Aware Market Data UX), 3N (Frontend Credential Management UI), 3M.1 (Browser Auth Validation), 3M (Frontend Ownership Integration), 3L (User Ownership & Resource Scoping), 3J (Provider Credential Resolver), 3I (User Credential Vault), 3H (Auth & User Identity), 3G (Polygon Provider), 3F (Security Baseline), 3E (Dataset Catalog), 3D (Local CSV/Parquet Providers), 3C (Cache Architecture), 3B (Dataset Identity), 3A (Provider Layer)
 
 Current repository focus:
 * base scaffold established (backend, frontend, strategies, datasets)
@@ -56,6 +59,18 @@ Current repository focus:
 * OHLCV retrieval orchestration complete (`backend/services/` — `OHLCVService`)
 * dataset API layer complete (`backend/api/routes/datasets.py`, `backend/api/services/dataset_service.py`, `backend/api/schemas/dataset.py`)
 * DEBUG config parsing hardened (`backend/core/config.py`)
+* dataset catalog complete (`backend/storage/dataset_catalog.py`, `backend/api/routes/catalog.py`, `backend/api/services/catalog_service.py`, `backend/api/schemas/catalog.py`) — file_path isolation enforced; 5 HTTP endpoints under `/catalog`
+* security baseline complete (`backend/core/credentials.py`, `backend/core/audit.py`, `backend/core/request_validation.py`) — CredentialSpec + EnvironmentCredentialResolver; AuditEvent + emit_audit_event; date range + provider_type validators; sanitized provider errors; audit hooks in catalog_service
+* Polygon.io provider complete (Phase 3G): `PolygonProviderAdapter` (all 15 canonical timeframes, pagination, sanitized errors, vwap/trade_count); `_build_polygon_adapter` factory builder (MissingCredentialError → ProviderBuildError); factory now len=4 (yahoo/csv/parquet/polygon); 85 new tests; 3125 total
+* authentication & user identity foundation complete (Phase 3H): `backend/auth/` (User, password bcrypt, JWT tokens, UserRepository JSON-backed, AuthService, get_current_user dependency); POST /auth/register + POST /auth/login + GET /auth/me; 5 new AuditEventKind values; bcrypt+PyJWT+email-validator deps; 83 new tests; 3208 total
+* user provider credential vault complete (Phase 3I): `backend/vault/` (ProviderCredential, Fernet crypto, CredentialRepository JSON-backed, VaultService with ownership enforcement, get_vault_service dep); POST/GET/PATCH/DELETE /provider-credentials; 7 new AuditEventKind values; cryptography dep; 88 new tests; 3296 total; Polygon backward compat confirmed
+* provider credential resolver refactor complete (Phase 3J): Polygon now supports user-owned vault credentials as primary path; `get_optional_current_user` dep added; `_build_polygon_adapter` accepts `api_key` kwarg; `_resolve_provider_api_key` service helper resolves vault credential before factory.build(); `/market-data/ohlcv` accepts optional `credential_id` + auth gate; ENV fallback preserved + documented; 33 new tests; 3329 total
+* user ownership & resource scoping complete (Phase 3L): drafts, catalog entries, backtest runs are now user-owned; `user_id` always from JWT; wrong-owner → HTTP 404 (information hiding, same exception as not-found); legacy resources (user_id=None) inaccessible to authenticated users; 14 modified route/service/schema files; 10 updated test files; `tests/unit/test_ownership.py` (50 tests, 9 classes); `docs/OWNERSHIP_SCOPING.md`; 50 new tests; 3379 total
+* frontend ownership integration complete (Phase 3M): `AuthError` class + `isAuthError` type guard + `authedFetch` throws on 401; drafts/semantics/planInspection/compositionRun/backtestRuns all use `authedFetch`; semantics `validateSemanticsPayload` stays on plain fetch (public); download functions converted from anchor-click to authenticated blob URL; `StrategyTestPanel` + `DraftWorkspace` call `logout()` on `AuthError`; 17 new frontend tests; `tsc --noEmit` clean; 32 total frontend tests passing
+* credential-aware market data workflow complete (Phase 3O): `fetchOHLCV` credential_id + authedFetch path; `Controls.tsx` polygon provider + credential selector (filtered by provider, active only, empty state); `App.tsx` `DatasetMetaBadge` + `fetchMetadata` state + isAuthError in handleFetch; `DatasetFetchMetadata` type; 12 new tests; 60 total frontend tests; `tsc --noEmit` clean
+* subscription eligibility & admin approval foundation complete (Phase 3P-A): `UserRole` + `SubscriptionStatus` enums + 7 new User fields; `User.create()` defaults to pending; `User.from_dict()` backward-compat defaults to active for legacy users; `require_active_subscription` + `require_admin_role` entitlement deps (admin does NOT depend on subscription so admins can manage users after expiry); `AdminService` + 5 admin routes (`GET/POST /admin/users/*`); `admin_bootstrap_email` config-driven bootstrap (no hardcoded superuser); 5 new AuditEventKind values; `SubscriptionGate.tsx` blocking overlay for pending/expired/suspended; `User` type + `SubscriptionStatus` + `UserRole` in frontend; `fetchOHLCV` always uses `authedFetch`; 33 new backend tests; 11 new frontend tests; 3415 backend total; 71 frontend total
+* provider credential management UI complete (Phase 3N): `CredentialManager` component (list/add/disable/delete); `credentials.ts` API client (all via `authedFetch`); `credentials.ts` types (no secret fields); "Credentials" nav tab in `App.tsx`; 16 new tests; 48 total frontend tests; `tsc --noEmit` clean; secret cleared from state immediately after API call
+* browser-level authentication & ownership validation complete (Phase 3M.1): 4 integration bugs found and fixed (AuthGuard blank screen, `/catalog` missing from Vite proxy, composition run returns 422 instead of 404 for wrong-owner draft, backtest run returns 422 instead of 404 for wrong-owner draft); `TestCompositionAndBacktestRunOwnership` (3 tests) added to `test_ownership.py`; 53 total ownership tests; `docs/VALIDATION_3M1.md` written
 * provider registry foundation complete (`backend/data_providers/provider_registry.py`)
 * provider symbol mapping foundation complete (`backend/data_providers/provider_symbol_map.py`)
 * Yahoo Finance provider adapter complete (`backend/data_providers/yahoo/` — adapter + metadata)
@@ -94,7 +109,39 @@ Current repository focus:
 * backtest position sizing complete (PositionSizeMode EQUITY_FRACTION, equity_fraction config field, resolve_position_quantity helper, ZERO_QUANTITY rejection, SimulatedTrade audit fields, 83 new tests)
 * historical tool computation pipeline complete (ToolOutputPoint/Series/Result contracts, ToolComputationBarInput, compute_tool_outputs_for_history, build_bar_tool_outputs, SMA dispatch with running-sum no-lookahead, HistoricalEvaluationRequest.toolset field, ambiguity rejection, backward-compatible manual path, 52 new tests)
 * EMA tool + multi-tool computation proof complete (EMA_METADATA, compute_ema, _compute_ema_series with SMA-seed + recursive formula, _TOOL_DISPATCHERS registration, SMA+EMA coexistence, crossover semantics, 71 new tests)
-* 2330 tests passing, frontend build clean (53 modules)
+* warmup/lookahead enforcement complete (configured `warmup_bars_required` exposure, canonical ascending bar replay, duplicate/timestamp validation, simulator intent timestamp matching, report outputs based on canonical historical order)
+* RSI tool complete (rsi.py, Wilder's smoothing, period warmup, oscillator pane, bounded [0,100], ~80 tests)
+* MACD tool complete (macd.py, 3 outputs: macd_line/signal_line/histogram, SMA-seeded EMAs, separate warmup counts per series, oscillator pane, ~80 tests)
+* IndicatorPane.oscillator added to visualization.py for RSI/MACD separate-pane rendering
+* historical computation pipeline extended: _compute_rsi_series, _compute_macd_series, _TOOL_DISPATCHERS updated, derive_warmup_bars_required extended for rsi/macd
+* tool registry expanded to 4 stable tools: SMA, EMA, RSI, MACD
+* frontend DraftWorkspace toolOutputSuggestions now uses actual output_feature_names from registry (multi-output MACD correctly generates 3 suggestions per instance)
+* tool output visualization complete (Phase 2T): IndicatorSeriesKind.histogram added; composition_run_service pane/kind routing via registry metadata; Chart.tsx oscillator pane with two-chart architecture; HistogramSeries for MACD histogram; sign-colored bars; time-scale sync; 28 new tests
+* ToolVisualizationSeries stable frontend contract type (extensible for Bollinger Bands, ATR, VWAP, etc.)
+* browser-level visualization validation complete (Phase 2T.1): API confirmed 6-series response (sma/ema → price/line; rsi → oscillator/line; macd_line/signal_line → oscillator/line; histogram → oscillator/histogram); type chain verified (CompositionRunResponse → App.tsx → StrategyOverlay → Chart.tsx); tsc --noEmit clean; 2543 tests passing unchanged
+* oscillator reference lines complete (Phase 2T.2): Chart.tsx renders subtle RSI 70/50/30 guides only when RSI oscillator series exists; guide lifecycle cleanup prevents duplication/leaks on rerun/unmount; frontend-only visualization change
+* chart run reset/overlay cleanup complete (Phase 2T.3): App owns clear/reset overlay state; Chart header has Clear Strategy Results button; marker lifecycle fixed with retained marker plugin + setMarkers([]); overlay rerenders remove stale price overlays, oscillator series, histogram series, RSI guides, forecast line, counters
+* ATR tool complete (Phase 2U): Wilder's smoothing, TR = max(H-L, |H-C_prev|, |L-C_prev|), oscillator pane, warmup=period, 41 tests
+* Bollinger Bands tool complete (Phase 2U): rolling SMA + population stddev, 3 price-pane overlays (middle/upper/lower), warmup=period-1, 44 tests
+* 6-tool registry (Phase 2U): SMA, EMA, RSI, MACD, ATR, Bollinger Bands — standard indicator layer finalized
+* 14 new integration tests (Phase 2U): ATR pane/kind routing, Bollinger 3-series routing, all-6-tools combined routing; existing routing tests all pass
+* Standard indicator expansion COMPLETE — next direction: custom research tools, pivot/swing framework, divergence systems
+* provider abstraction layer complete (Phase 3A): ProviderFetchError + ProviderCapabilities in base.py; YahooAdapterError subclasses ProviderFetchError; YahooFinanceAdapter implements capabilities(); ProviderAdapterFactory with register/build/capabilities; create_default_factory_registry() with Yahoo; market_data_service.py routes via factory (no direct Yahoo import); GET /market-data/providers endpoint; 55 new tests; 2697 total
+* Correct provider flow: API route → factory.build(provider) → adapter → OHLCVService — future providers register in create_default_factory_registry() only
+* dataset fetch identity complete (Phase 3B): DatasetFetchParameters (frozen, UTC enforcement, non-empty validation); compute_fetch_fingerprint (SHA-256 canonical, case-insensitive, timezone-normalized); DatasetFetchIdentity (parameters + fingerprint + dataset_id + schema_version); build_fetch_identity() builder; DatasetFetchMetadataResponse API schema; MarketDataOHLCVResponse.fetch_metadata (backward-compatible, defaults to None); market_data_service populates fetch_metadata on every fetch; 65 new tests; 2762 total
+* Correct provider traceability flow: fetch_ohlcv() → build_fetch_identity() → DatasetFetchIdentity → MarketDataOHLCVResponse.fetch_metadata → client
+* Architecture boundary: fetch_identity.py imports only stdlib + pydantic + backend.data.models.instrument (no yahoo, no api, no factory)
+* dataset cache & storage architecture complete (Phase 3C): DatasetCachePolicy (4 policies: FETCH_AND_STORE/READ_ONLY/FORCE_REFRESH/BYPASS_CACHE); DatasetCacheState constants; DatasetCacheEntry + DatasetCacheLookupResult frozen dataclasses; DatasetCacheRegistry reads/writes cache_metadata.json with rolling fingerprint history (max 10, deduped); OHLCVService.get_ohlcv() extended with cache_policy + fetch_fingerprint params (backward-compatible defaults); DATASET_STORAGE_LAYOUT.md canonical doc; 64 new tests; 2826 total
+* Correct cache flow: OHLCVService dispatches on policy → CoverageRegistry for gap detection (FETCH_AND_STORE) → DatasetCacheRegistry for lineage metadata → cache_metadata.json alongside data.parquet
+* Architecture boundary: dataset_cache.py and cache_policy.py import no yahoo/api/provider-factory modules; providers remain unaware of storage
+* local dataset providers complete (Phase 3D): LocalColumnMap + parse_timestamp_string shared utilities; LocalCSVProvider (file_path at construction, 15 timeframes, column map support); LocalParquetProvider (all pyarrow timestamp types resolved); LocalCSVProviderError + LocalParquetProviderError subclass ProviderFetchError; both registered in create_default_factory_registry() (factory now len=3: yahoo, csv, parquet); legacy CSVAdapter unchanged; 80 new tests; 2906 total
+* Architectural proof (Phase 3D): CSV, Parquet, Yahoo all route through identical ProviderAdapterFactory → RangeProviderAdapter → OHLCVService → cache/storage pipeline — provider architecture is truly provider-agnostic
+* Known limitation: file_path not surfaced in HTTP API (future dataset catalog phase); file_path not part of DatasetFetchIdentity fingerprint (identifies logical dataset, not physical file)
+* dataset catalog complete (Phase 3E): LocalDatasetEntry (frozen Pydantic, catalog_id UUID, file_path backend-only); DatasetCatalog (JSON-backed registry at {base_path}/catalog/datasets.json, register/get/list_all/list_enabled/disable/remove); error hierarchy (DatasetCatalogError, UnknownDatasetError, DatasetDisabledError, DuplicateDatasetError); catalog_service (register_dataset, list_datasets, get_dataset, remove_dataset, fetch_ohlcv — file_path resolved internally, never propagated); 5 HTTP endpoints (POST/GET/DELETE /catalog/datasets, GET /catalog/datasets/{id}, GET /catalog/datasets/{id}/ohlcv); CatalogEntryResponse + RegisterDatasetResponse + CatalogOHLCVResponse — all file_path-free; 72 new tests; 2978 total
+* File path isolation enforced (Phase 3E): file_path present only in LocalDatasetEntry (domain model) and RegisterDatasetRequest (input); absent from all response schemas (CatalogEntryResponse, RegisterDatasetResponse, CatalogOHLCVResponse, CatalogListResponse); AST-verified catalog_service.py imports no yahoo adapter
+* Correct catalog resolution flow (Phase 3E): POST /catalog/datasets → register with file_path → GET /catalog/datasets/{id}/ohlcv → catalog_service.fetch_ohlcv → DatasetCatalog.get(catalog_id) → entry.file_path (internal) → factory.build(provider_type, file_path=...) → OHLCVService → candles returned (no file_path in response)
+* Security baseline (Phase 3F): CredentialSpec (frozen Pydantic, provider_name + credential_key + CredentialSource.ENV_VAR); EnvironmentCredentialResolver.resolve() raises MissingCredentialError (no raw secret/key name in message); AuditEventKind (6 kinds: credential_resolution_attempt, credential_missing, dataset_registered, dataset_removed, provider_fetch_request, catalog_ohlcv_fetch); emit_audit_event() logs structured JSON to quantlab.audit logger; catalog_service emits audit events on register/remove/fetch; provider errors sanitized (file paths stripped from HTTP responses, full error logged internally); validate_date_range + validate_provider_type + validate_symbol + validate_catalog_id_format in request_validation.py; catalog route validates start < end (400); catalog_service validates provider_type before file check; 62 new tests; 3040 total
+* Architecture boundaries (Phase 3F): strategies/ imports no core.credentials (AST-verified); credentials.py imports no yahoo; audit.py imports no provider_factory; API response schemas contain no credential-like fields (AST+model_fields verified); LocalDatasetEntry stores no raw credentials
 * candlestick chart component (lightweight-charts v5)
 * provider/symbol/timeframe/date-range controls
 * strategy overlay type placeholders
@@ -467,7 +514,7 @@ COMPLETED (2026-05-09)
 
 * `GET /market-data/ohlcv` accepts provider, symbol, timeframe, start, end (required) + asset_class, exchange, adjustment_mode, currency (optional)
 * Naive datetime query params treated as UTC at the route boundary
-* Currently only `yahoo` provider supported; extend by adding to `_SUPPORTED_PROVIDERS` and wiring adapter in service
+* Currently only `yahoo` provider supported; extend by registering new adapter factory in `create_default_factory_registry()` (no API/service/route changes required — Phase 3A completed provider abstraction)
 * Frontend chart uses `UTCTimestamp` (epoch seconds) for all timeframes including intraday
 * Strategy overlay types are placeholders only — no rendering wired yet
 
@@ -1046,9 +1093,14 @@ TASKS.md should not attempt to answer:
 
 # Current Immediate Next Recommended Actions
 
+Current state: Phase 3P-A complete. Backend 3415 tests passing. Frontend 71 tests passing.
+Platform is now a governed multi-user system: new users register as `pending`, admin approves, `SubscriptionGate` blocks non-active users in the frontend.
+All auth/vault/credential/ownership/entitlement infrastructure is in place (Phases 3A–3P-A).
+All standard indicators complete (SMA, EMA, RSI, MACD, ATR, Bollinger Bands).
+Full backtest pipeline complete (simulation, cost model, position sizing, report, exports).
+
 Recommended next sequence:
-1. Phase 2P.9 — Advanced Backtest Analytics: equity curve statistics, Sharpe, max drawdown, win/loss ratios
-2. Phase 2R.2 — Next indicator (RSI or ATR): one `_TOOL_DISPATCHERS` entry + metadata file; proves three-tool pipeline
-3. Phase 2R.3 — Tool Output Visualization: surface per-bar computed tool values from evaluate-history to frontend chart overlay
-4. Browser-level chart render validation (start both servers, fetch AAPL/yahoo/1d, inspect chart)
-5. Update `dataset_service.py` to use `ohlcv_store` (provider-aware paths) when API layer changes are scoped
+1. Phase 3P — Commit accumulated work: all changes from Phases 2T, 3A–3P-A are uncommitted; create a single commit capturing this implementation milestone
+2. Phase 3P-B — Admin UI: browser-based user management panel so admins can approve/suspend/reactivate users without using the API directly; requires admin-role-aware frontend (show/hide admin tab based on `user.role === 'admin'`)
+3. Phase 2V — Custom research tools / pivot-swing framework: first non-standard indicator (e.g. swing high/low detection, divergence signal, custom feature tool) marking the start of the QuantLab-specific research layer
+4. Phase 3Q — Backtest workflow UX: allow users to select an owned dataset from the catalog and run a full backtest directly from the browser (end-to-end workflow: credential → fetch → compose strategy → backtest → report)

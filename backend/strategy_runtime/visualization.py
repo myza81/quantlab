@@ -23,16 +23,14 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 class IndicatorSeriesKind(str, Enum):
     """Rendering style for an indicator series."""
-    line = "line"
-    # future: histogram = "histogram"
-    # future: area = "area"
+    line      = "line"
+    histogram = "histogram"  # bar chart per point (MACD histogram, volume)
 
 
 class IndicatorPane(str, Enum):
     """Chart pane the series belongs to."""
-    price = "price"
-    # future: oscillator = "oscillator"
-    # future: separate = "separate"
+    price      = "price"
+    oscillator = "oscillator"  # separate pane (RSI, MACD, etc.)
 
 
 class IndicatorPoint(BaseModel):

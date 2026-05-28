@@ -20,6 +20,10 @@ from backend.api.routes import strategy_runs
 from backend.api.routes import tools
 from backend.api.routes import backtest_simulation
 from backend.api.routes import backtest_runs
+from backend.api.routes import catalog
+from backend.api.routes import auth
+from backend.api.routes import vault
+from backend.api.routes import admin
 
 setup_logging()
 
@@ -50,3 +54,7 @@ app.include_router(strategy_runs.router)
 app.include_router(tools.router)
 app.include_router(backtest_simulation.router)
 app.include_router(backtest_runs.router)
+app.include_router(catalog.router)
+app.include_router(auth.router)
+app.include_router(vault.router)
+app.include_router(admin.router)

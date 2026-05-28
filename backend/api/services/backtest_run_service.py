@@ -37,7 +37,8 @@ from backend.backtesting.models import (
     SimulationPriceBar,
 )
 from backend.backtesting.simulator import run_simulation
-from backend.strategy_registry.draft_repository import DraftNotFoundError, DraftRepository
+from backend.strategy_registry.draft_repository import DraftRepository
+from backend.strategy_registry.trade_intents import TradeIntent, TradeIntentBatch
 from backend.strategy_registry.historical_evaluator import (
     HistoricalBarContext,
     HistoricalEvaluationInput,
@@ -63,10 +64,15 @@ class BacktestRunError(Exception):
     """Raised for recoverable pipeline failures."""
 
 
+class BacktestAccessDeniedError(Exception):
+    """Raised when a user tries to access a backtest report they don't own."""
+
+
 def create_backtest_run(
     request:    BacktestRunRequest,
     repository: DraftRepository,
     storage:    Path = _DEFAULT_STORAGE,
+    user_id:    str | None = None,
 ) -> BacktestRunResponse:
     """
     Execute the full backtest pipeline for a saved strategy draft.
@@ -88,11 +94,8 @@ def create_backtest_run(
     Raises:
         BacktestRunError: for any recoverable pipeline failure.
     """
-    # Step 1 — load draft
-    try:
-        draft = repository.load(request.draft_id)
-    except DraftNotFoundError as exc:
-        raise BacktestRunError(f"Draft '{request.draft_id}' not found.") from exc
+    # Step 1 — load draft (DraftNotFoundError propagates to route — maps to 404)
+    draft = repository.load(request.draft_id, owner_id=user_id)
 
     if draft.semantics is None:
         raise BacktestRunError(
@@ -100,6 +103,7 @@ def create_backtest_run(
         )
     if not request.bars:
         raise BacktestRunError("No price bars supplied.")
+    bars = _sort_and_validate_bars(request.bars)
 
     # Step 2 — compile semantics
     compile_result = compile_semantics(draft.semantics, draft_id=request.draft_id)
@@ -117,7 +121,7 @@ def create_backtest_run(
             price_fields={"open": b.open, "high": b.high, "low": b.low,
                           "close": b.close, "volume": b.volume},
         )
-        for b in request.bars
+        for b in bars
     ]
     registry = create_default_registry()
 
@@ -143,9 +147,12 @@ def create_backtest_run(
                           "close": b.close, "volume": b.volume},
             tool_outputs=bar_tool_outputs.get(b.bar_index, {}),
         )
-        for b in request.bars
+        for b in bars
     )
-    eval_result = evaluate_history(HistoricalEvaluationInput(plan=plan, bars=bar_contexts))
+    try:
+        eval_result = evaluate_history(HistoricalEvaluationInput(plan=plan, bars=bar_contexts))
+    except ValueError as exc:
+        raise BacktestRunError(str(exc)) from exc
 
     # Step 5 — extract signal events
     signal_batch = extract_signal_events(eval_result)
@@ -161,7 +168,7 @@ def create_backtest_run(
             timestamp=b.timestamp,
             close=b.close,
         )
-        for b in request.bars
+        for b in bars
     ]
     sim_result = run_simulation(intent_batch, price_bars, sim_config)
 
@@ -196,7 +203,7 @@ def create_backtest_run(
     ]
 
     trade_records, open_position = _build_trade_records(
-        sim_result.trades, sim_result.equity_curve
+        sim_result.trades, sim_result.equity_curve, intent_batch
     )
 
     rejections = [
@@ -239,16 +246,26 @@ def create_backtest_run(
         total_rejections=s.total_rejections,
     )
 
+    dataset_start = (
+        bars[0].timestamp.isoformat() if bars[0].timestamp else None
+    )
+    dataset_end = (
+        bars[-1].timestamp.isoformat() if bars[-1].timestamp else None
+    )
+
     run_summary = BacktestRunSummary(
         run_id=run_id,
         draft_id=request.draft_id,
         draft_name=draft.display_name,
         symbol=request.symbol,
         timeframe=request.timeframe,
-        bars_count=len(request.bars),
+        bars_count=len(bars),
         run_timestamp=run_timestamp,
         status="completed",
         config=request.config,
+        dataset_start=dataset_start,
+        dataset_end=dataset_end,
+        owner_user_id=user_id,
     )
 
     report = BacktestReport(
@@ -267,19 +284,31 @@ def create_backtest_run(
 
     logger.info(
         "backtest_run: run_id=%s draft=%s bars=%d signals=%d trades=%d",
-        run_id, request.draft_id, len(request.bars),
+        run_id, request.draft_id, len(bars),
         signal_batch.summary.total_events, len(trade_records),
     )
 
     return BacktestRunResponse(run_id=run_id, status="completed", report=report)
 
 
-def load_backtest_report(run_id: str, storage: Path = _DEFAULT_STORAGE) -> BacktestReport:
-    """Load a previously persisted backtest report by run_id."""
+def load_backtest_report(
+    run_id: str,
+    storage: Path = _DEFAULT_STORAGE,
+    owner_user_id: str | None = None,
+) -> BacktestReport:
+    """Load a previously persisted backtest report by run_id.
+
+    If owner_user_id is provided, raises BacktestAccessDeniedError when
+    the report's owner_user_id does not match — information hiding: callers
+    should map this to HTTP 404 to avoid existence leakage.
+    """
     path = storage / f"{run_id}.json"
     if not path.exists():
         raise BacktestRunError(f"Backtest run '{run_id}' not found.")
-    return BacktestReport.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    report = BacktestReport.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    if owner_user_id is not None and report.run.owner_user_id != owner_user_id:
+        raise BacktestAccessDeniedError(f"Backtest run '{run_id}' not found.")
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -299,12 +328,43 @@ def _build_sim_config(cfg: BacktestRunConfig) -> BacktestSimulationConfig:
     )
 
 
+def _sort_and_validate_bars(bars: list) -> list:
+    sorted_bars = sorted(bars, key=lambda b: b.bar_index)
+    seen: set[int] = set()
+    previous_timestamp = None
+
+    for bar in sorted_bars:
+        if bar.bar_index in seen:
+            raise BacktestRunError(
+                f"duplicate bar_index={bar.bar_index} in backtest run input"
+            )
+        seen.add(bar.bar_index)
+
+        if bar.timestamp is not None and previous_timestamp is not None:
+            if bar.timestamp < previous_timestamp:
+                raise BacktestRunError(
+                    "bar timestamps must be non-decreasing when ordered by bar_index"
+                )
+        if bar.timestamp is not None:
+            previous_timestamp = bar.timestamp
+
+    return sorted_bars
+
+
 def _build_trade_records(
     trades:       tuple[SimulatedTrade, ...],
     equity_curve: tuple,
+    intent_batch: TradeIntentBatch,
 ) -> tuple[list[TradeRecord], TradeRecord | None]:
-    """Match open/close pairs into round-trip TradeRecords (FIFO)."""
+    """Match open/close pairs into round-trip TradeRecords (FIFO).
+
+    Enriches each TradeRecord with rule_id and signal_event_id from the
+    originating TradeIntent, enabling full audit traceability back to
+    the semantic rule that triggered entry or exit.
+    """
     equity_map  = {pt.bar_index: pt.equity for pt in equity_curve}
+    intent_map: dict[str, TradeIntent] = {i.intent_id: i for i in intent_batch.intents}
+
     open_stack: list[SimulatedTrade] = []
     records:    list[TradeRecord]    = []
     trade_num   = 0
@@ -322,6 +382,10 @@ def _build_trade_records(
                 net_pnl / entry_val * 100.0
                 if entry_val > 0 and net_pnl is not None else None
             )
+
+            entry_intent = intent_map.get(entry.source_intent_id)
+            exit_intent  = intent_map.get(trade.source_intent_id)
+
             records.append(TradeRecord(
                 trade_num=trade_num,
                 entry_bar_index=entry.bar_index,
@@ -341,12 +405,17 @@ def _build_trade_records(
                 return_pct=ret_pct,
                 holding_bars=trade.bar_index - entry.bar_index,
                 equity_after=equity_map.get(trade.bar_index),
+                entry_rule_id=entry_intent.source.rule_id if entry_intent else None,
+                exit_rule_id=exit_intent.source.rule_id   if exit_intent  else None,
+                entry_signal_event_id=entry_intent.source.signal_event_id if entry_intent else None,
+                exit_signal_event_id=exit_intent.source.signal_event_id   if exit_intent  else None,
             ))
 
     open_position: TradeRecord | None = None
     if open_stack:
         entry     = open_stack[0]
         trade_num += 1
+        entry_intent = intent_map.get(entry.source_intent_id)
         open_position = TradeRecord(
             trade_num=trade_num,
             entry_bar_index=entry.bar_index,
@@ -366,6 +435,10 @@ def _build_trade_records(
             return_pct=None,
             holding_bars=None,
             equity_after=None,
+            entry_rule_id=entry_intent.source.rule_id if entry_intent else None,
+            exit_rule_id=None,
+            entry_signal_event_id=entry_intent.source.signal_event_id if entry_intent else None,
+            exit_signal_event_id=None,
         )
 
     return records, open_position

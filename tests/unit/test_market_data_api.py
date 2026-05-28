@@ -25,6 +25,14 @@ from fastapi.testclient import TestClient
 
 from backend.api.main import app
 from backend.api.routes.market_data import get_storage_path
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
+
+_ACTIVE_USER = User(
+    user_id="test-uid", username="testuser", email="t@example.com",
+    password_hash="h", created_at="2025-01-01T00:00:00+00:00",
+    subscription_status="active",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -47,11 +55,13 @@ def _make_df(rows: list[dict]) -> pd.DataFrame:
 
 def _client(tmp_path: Path) -> TestClient:
     app.dependency_overrides[get_storage_path] = lambda: tmp_path
+    app.dependency_overrides[require_active_subscription] = lambda: _ACTIVE_USER
     return TestClient(app)
 
 
 def _cleanup() -> None:
     app.dependency_overrides.pop(get_storage_path, None)
+    app.dependency_overrides.pop(require_active_subscription, None)
 
 
 # ---------------------------------------------------------------------------

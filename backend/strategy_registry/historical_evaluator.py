@@ -168,9 +168,10 @@ def evaluate_history(
     entry_triggered_count = 0
     exit_triggered_count  = 0
 
+    sorted_bars = _sort_and_validate_bars(input.bars)
     previous_values: dict[str, float] | None = None
 
-    for bar in input.bars:
+    for bar in sorted_bars:
         current_values = _build_scalar_values(bar)
         context = TwoBarEvaluationContext(
             evaluation_id=f"{input.plan.draft_id or 'plan'}:bar:{bar.bar_index}",
@@ -203,3 +204,32 @@ def evaluate_history(
         exit_triggered_count=exit_triggered_count,
         bar_results=tuple(bar_results),
     )
+
+
+def _sort_and_validate_bars(
+    bars: tuple[HistoricalBarContext, ...],
+) -> tuple[HistoricalBarContext, ...]:
+    """
+    Return bars in canonical replay order and reject ambiguous sequences.
+
+    Historical replay state, especially previous-bar crossover state, must be
+    based on ascending bar_index rather than caller payload order.
+    """
+    sorted_bars = tuple(sorted(bars, key=lambda b: b.bar_index))
+    seen: set[int] = set()
+    previous_timestamp: datetime | None = None
+
+    for bar in sorted_bars:
+        if bar.bar_index in seen:
+            raise ValueError(f"duplicate bar_index={bar.bar_index} in historical evaluation")
+        seen.add(bar.bar_index)
+
+        if bar.timestamp is not None and previous_timestamp is not None:
+            if bar.timestamp < previous_timestamp:
+                raise ValueError(
+                    "bar timestamps must be non-decreasing when ordered by bar_index"
+                )
+        if bar.timestamp is not None:
+            previous_timestamp = bar.timestamp
+
+    return sorted_bars

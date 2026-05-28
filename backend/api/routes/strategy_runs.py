@@ -19,8 +19,10 @@ from backend.api.services.strategy_run_service import (
     UnsupportedProviderError,
     run_strategy,
 )
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.core.config import settings
-from backend.strategy_registry.draft_repository import DraftRepository
+from backend.strategy_registry.draft_repository import DraftNotFoundError, DraftRepository
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,7 @@ def run_strategy_endpoint(
 def run_composition_endpoint(
     request: CompositionRunRequest,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> CompositionRunResponse:
     """
     Run a saved Composer draft against OHLCV bars already loaded by the Chart page.
@@ -80,6 +83,9 @@ def run_composition_endpoint(
             timeframe=request.timeframe,
             bars=request.bars,
             repository=repository,
+            owner_id=current_user.user_id,
         )
+    except DraftNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except CompositionRunError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

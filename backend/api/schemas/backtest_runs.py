@@ -102,6 +102,12 @@ class TradeRecord(BaseModel):
     holding_bars:     int | None
     equity_after:     float | None
 
+    # Audit / traceability — links back to originating signal events and rules
+    entry_rule_id:          str | None = None  # rule_id from entry TradeIntent source
+    exit_rule_id:           str | None = None  # rule_id from exit TradeIntent source
+    entry_signal_event_id:  str | None = None  # event_id from entry SignalEvent
+    exit_signal_event_id:   str | None = None  # event_id from exit SignalEvent
+
 
 # ---------------------------------------------------------------------------
 # Rejection record
@@ -167,6 +173,13 @@ class BacktestRunSummary(BaseModel):
     run_timestamp: str
     status:        str
     config:        BacktestRunConfig
+
+    # Reproducibility metadata — enables re-running from stored context
+    dataset_start:  str | None = None  # ISO timestamp of first bar
+    dataset_end:    str | None = None  # ISO timestamp of last bar
+    engine_version: str        = "2P.9"  # backtesting engine version tag
+    # Ownership — stored in run JSON for access control; only readable by the owner
+    owner_user_id:  str | None = None
 
 
 # ---------------------------------------------------------------------------

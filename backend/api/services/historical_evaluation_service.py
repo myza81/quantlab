@@ -62,6 +62,8 @@ def evaluate_history_from_payload(
         HistoricalEvaluationError: If semantics compilation or tool computation fails,
             or if both toolset and manual tool_outputs are provided (ambiguous).
     """
+    sorted_bars = _sort_and_validate_payload_bars(bars)
+
     result = compile_semantics(semantics, draft_id=None)
     if not result.compiled or result.evaluation_plan is None:
         raise HistoricalEvaluationError(
@@ -72,7 +74,7 @@ def evaluate_history_from_payload(
 
     if toolset is not None:
         # Ambiguity check: caller must not mix manual and server-computed outputs
-        ambiguous = [b.bar_index for b in bars if b.tool_outputs]
+        ambiguous = [b.bar_index for b in sorted_bars if b.tool_outputs]
         if ambiguous:
             raise HistoricalEvaluationError(
                 f"Ambiguous input: toolset provided but bar(s) {ambiguous} also carry "
@@ -85,7 +87,7 @@ def evaluate_history_from_payload(
                 timestamp=b.timestamp,
                 price_fields=b.price_fields,
             )
-            for b in bars
+            for b in sorted_bars
         ]
 
         try:
@@ -106,12 +108,40 @@ def evaluate_history_from_payload(
             price_fields=b.price_fields,
             tool_outputs=bar_tool_outputs.get(b.bar_index, b.tool_outputs),
         )
-        for b in bars
+        for b in sorted_bars
     )
 
-    return evaluate_history(
-        HistoricalEvaluationInput(
-            plan=result.evaluation_plan,
-            bars=bar_contexts,
+    try:
+        return evaluate_history(
+            HistoricalEvaluationInput(
+                plan=result.evaluation_plan,
+                bars=bar_contexts,
+            )
         )
-    )
+    except ValueError as exc:
+        raise HistoricalEvaluationError(str(exc)) from exc
+
+
+def _sort_and_validate_payload_bars(
+    bars: list[HistoricalBarPayload],
+) -> list[HistoricalBarPayload]:
+    sorted_bars = sorted(bars, key=lambda b: b.bar_index)
+    seen: set[int] = set()
+    previous_timestamp = None
+
+    for bar in sorted_bars:
+        if bar.bar_index in seen:
+            raise HistoricalEvaluationError(
+                f"duplicate bar_index={bar.bar_index} in historical evaluation input"
+            )
+        seen.add(bar.bar_index)
+
+        if bar.timestamp is not None and previous_timestamp is not None:
+            if bar.timestamp < previous_timestamp:
+                raise HistoricalEvaluationError(
+                    "bar timestamps must be non-decreasing when ordered by bar_index"
+                )
+        if bar.timestamp is not None:
+            previous_timestamp = bar.timestamp
+
+    return sorted_bars

@@ -1,5 +1,5 @@
 """
-Historical Tool Computation Service — Phase 2R.0 / 2R.1.
+Historical Tool Computation Service — Phase 2R.0 / 2R.1 / 2S / 2U.
 
 Bridges the gap between:
     StrategyToolSet + OHLCV price bars
@@ -9,7 +9,7 @@ and:
 Pipeline:
     StrategyToolSet + ToolComputationBarInput[] + ToolRegistry
     → validate toolset against registry
-    → compute tool outputs per bar (SMA + EMA in this phase)
+    → compute tool outputs per bar (SMA, EMA, RSI, MACD, ATR, Bollinger in this phase)
     → ToolComputationResult
     → build_bar_tool_outputs() → dict[bar_index, dict[ref, float]]
     → inject into HistoricalBarContext.tool_outputs
@@ -23,21 +23,49 @@ Key rules:
     - Evaluator reads values; it never computes tools
 
 SMA computation:
-    source: price_fields["close"] (always; no source parameter yet)
+    source: price_fields["close"]
     warmup: first (period - 1) bars produce no output
-    output name: "sma" (from SMA_METADATA.output_feature_names)
     output ref: "{instance_id}.sma"
 
 EMA computation:
-    alpha: 2 / (period + 1)
-    seed: SMA of first `period` bars
+    alpha: 2 / (period + 1); seed = SMA of first `period` bars
     warmup: first (period - 1) bars produce no output
-    output name: "ema" (from EMA_METADATA.output_feature_names)
     output ref: "{instance_id}.ema"
+
+RSI computation (Wilder's smoothing):
+    seed: SMA of first `period` gains/losses (bars 1..period)
+    smoothing: (avg * (period-1) + value) / period
+    warmup: first `period` bars produce no output (needs `period` price diffs)
+    output ref: "{instance_id}.rsi"
+
+MACD computation:
+    macd_line   = EMA(fast_period) - EMA(slow_period)
+    signal_line = EMA(macd_line, signal_period)
+    histogram   = macd_line - signal_line
+    macd_line warmup:      slow_period - 1
+    signal/histogram warmup: slow_period + signal_period - 2
+    output refs: "{instance_id}.macd_line", "{instance_id}.signal_line",
+                 "{instance_id}.histogram"
+
+ATR computation (Wilder's smoothing):
+    true_range[i] = max(H[i]-L[i], |H[i]-C[i-1]|, |L[i]-C[i-1]|)   (i >= 1)
+    seed: SMA of first `period` true ranges
+    smoothing: (atr_prev * (period-1) + tr_current) / period
+    warmup: first `period` bars produce no output (needs `period` TRs)
+    output ref: "{instance_id}.atr"
+
+Bollinger Bands computation:
+    middle_band = SMA(close, period)
+    std_dev     = population stddev of close over same `period` window
+    upper_band  = middle_band + multiplier × std_dev
+    lower_band  = middle_band - multiplier × std_dev
+    warmup: first (period - 1) bars produce no output (same as SMA)
+    output refs: "{instance_id}.middle_band", "{instance_id}.upper_band",
+                 "{instance_id}.lower_band"
 
 Dispatch architecture:
     _TOOL_DISPATCHERS maps tool_id → compute function.
-    Adding RSI, ATR, etc. in future phases is one registration per tool.
+    One entry per tool — no other changes required when adding new tools.
 
 Architecture boundary — this module MUST NOT import from:
     backend.strategy_runtime
@@ -47,7 +75,10 @@ Architecture boundary — this module MUST NOT import from:
 """
 from __future__ import annotations
 
+import math
+from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -158,6 +189,11 @@ def compute_tool_outputs_for_history(
                 + "; ".join(exc.errors)
             ) from exc
 
+        try:
+            derive_warmup_bars_required(tool_config, metadata)
+        except ToolComputationError:
+            raise
+
         # Dispatch to tool-specific computation
         dispatcher = _TOOL_DISPATCHERS.get(tool_config.tool_id)
         if dispatcher is None:
@@ -206,6 +242,47 @@ def build_bar_tool_outputs(
     return output
 
 
+def derive_warmup_bars_required(
+    tool_config: ToolConfiguration,
+    metadata: Any,
+) -> int:
+    """
+    Derive the exact warmup requirement for one configured tool instance.
+
+    The metadata-level min_warmup_bars is a floor. Each tool derives its actual
+    warmup from its parameters:
+      - SMA / EMA:  period - 1   (first value at bar index period-1)
+      - RSI:        period       (needs `period` price diffs; first value at bar index period)
+      - MACD:       slow_period + signal_period - 2  (signal EMA on MACD line)
+    """
+    tid = tool_config.tool_id
+    if tid in {"sma", "ema"}:
+        period = tool_config.parameters.get("period")
+        if period is None:
+            raise ToolComputationError(
+                f"instance '{tool_config.instance_id}': missing period for warmup derivation"
+            )
+        warmup = _derive_period_warmup(period, tool_config.instance_id)
+    elif tid == "rsi":
+        period = tool_config.parameters.get("period", 14)
+        warmup = int(period)   # needs `period` price diffs; first output at bar index `period`
+    elif tid == "macd":
+        slow   = int(tool_config.parameters.get("slow_period",   26))
+        signal = int(tool_config.parameters.get("signal_period",  9))
+        warmup = slow + signal - 2
+    elif tid == "atr":
+        period = tool_config.parameters.get("period", 14)
+        warmup = int(period)   # needs `period` TRs; first output at bar index `period`
+    elif tid == "bollinger_bands":
+        period = tool_config.parameters.get("period", 20)
+        warmup = int(period) - 1   # same as SMA; first output at bar index period-1
+    else:
+        warmup = int(getattr(metadata, "min_warmup_bars", 0))
+
+    min_warmup = int(getattr(metadata, "min_warmup_bars", 0))
+    return max(min_warmup, warmup)
+
+
 # ---------------------------------------------------------------------------
 # SMA computation (internal)
 # ---------------------------------------------------------------------------
@@ -239,7 +316,7 @@ def _compute_sma_series(
         ToolComputationError: if "close" is missing from any bar's price_fields.
     """
     period = int(tool_config.parameters["period"])
-    warmup = period - 1
+    warmup = _derive_period_warmup(period, tool_config.instance_id)
 
     # Extract close prices, validating presence
     closes: list[float] = []
@@ -312,7 +389,7 @@ def _compute_ema_series(
         ToolComputationError: if "close" is missing from any bar's price_fields.
     """
     period = int(tool_config.parameters["period"])
-    warmup = period - 1
+    warmup = _derive_period_warmup(period, tool_config.instance_id)
     alpha = 2.0 / (period + 1)
 
     # Extract close prices, validating presence
@@ -354,19 +431,439 @@ def _compute_ema_series(
 
 
 # ---------------------------------------------------------------------------
+# RSI computation (internal)
+# ---------------------------------------------------------------------------
+
+_RSI_CLOSE_FIELD  = "close"
+_RSI_OUTPUT_NAME  = "rsi"   # matches RSI_METADATA.output_feature_names[0]
+
+
+def _compute_rsi_series(
+    tool_config: ToolConfiguration,
+    bars:        list[ToolComputationBarInput],
+) -> list[ToolOutputSeries]:
+    """
+    Compute RSI output series using Wilder's smoothing for one RSI instance.
+
+    Rules:
+    - period extracted from tool_config.parameters["period"] (default 14)
+    - source field: always "close"
+    - seed: SMA of the first `period` price changes (gains/losses)
+    - smoothing: (avg * (period-1) + value) / period
+    - warmup: first `period` bars produce no output point
+      (bar 0 has no delta; bars 1..period provide the seed deltas;
+       first RSI value appears at bar index `period`)
+    - no lookahead: bar N's RSI uses only closes at positions 0..N
+    - deterministic: identical inputs → identical outputs
+
+    Args:
+        tool_config: Validated RSI tool configuration.
+        bars: Sorted (by bar_index) bar inputs; must have price_fields["close"].
+
+    Returns:
+        List with one ToolOutputSeries (RSI produces one output: "rsi").
+
+    Raises:
+        ToolComputationError: if "close" is missing from any bar's price_fields.
+    """
+    period  = int(tool_config.parameters.get("period", 14))
+    warmup  = period   # first RSI value at bar_index position `period`
+
+    closes: list[float] = []
+    for bar in bars:
+        if _RSI_CLOSE_FIELD not in bar.price_fields:
+            raise ToolComputationError(
+                f"instance '{tool_config.instance_id}': "
+                f"price_fields missing '{_RSI_CLOSE_FIELD}' at bar_index={bar.bar_index}"
+            )
+        closes.append(bar.price_fields[_RSI_CLOSE_FIELD])
+
+    points: list[ToolOutputPoint] = []
+    avg_gain: float | None = None
+    avg_loss: float | None = None
+
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gain  = max(0.0, delta)
+        loss  = abs(min(0.0, delta))
+
+        if i < period:
+            # Still accumulating seed deltas — no output yet
+            continue
+
+        if i == period:
+            # Seed: SMA of the first `period` gains and losses (diffs at 1..period)
+            gains_seed  = [max(0.0, closes[j] - closes[j - 1]) for j in range(1, period + 1)]
+            losses_seed = [abs(min(0.0, closes[j] - closes[j - 1])) for j in range(1, period + 1)]
+            avg_gain = sum(gains_seed) / period
+            avg_loss = sum(losses_seed) / period
+        else:
+            # Wilder smoothing
+            avg_gain = (avg_gain * (period - 1) + gain)  / period  # type: ignore[operator]
+            avg_loss = (avg_loss * (period - 1) + loss)  / period  # type: ignore[operator]
+
+        if avg_loss == 0.0:
+            rsi = 100.0
+        else:
+            rs  = avg_gain / avg_loss   # type: ignore[operator]
+            rsi = 100.0 - (100.0 / (1.0 + rs))
+
+        points.append(ToolOutputPoint(
+            bar_index=bars[i].bar_index,
+            timestamp=bars[i].timestamp,
+            value=rsi,
+        ))
+
+    return [ToolOutputSeries(
+        instance_id=tool_config.instance_id,
+        tool_id=tool_config.tool_id,
+        output_name=_RSI_OUTPUT_NAME,
+        warmup_bar_count=warmup,
+        points=tuple(points),
+    )]
+
+
+# ---------------------------------------------------------------------------
+# MACD computation (internal)
+# ---------------------------------------------------------------------------
+
+_MACD_CLOSE_FIELD     = "close"
+_MACD_LINE_OUTPUT     = "macd_line"    # matches MACD_METADATA.output_feature_names[0]
+_MACD_SIGNAL_OUTPUT   = "signal_line"  # matches MACD_METADATA.output_feature_names[1]
+_MACD_HIST_OUTPUT     = "histogram"    # matches MACD_METADATA.output_feature_names[2]
+
+
+def _compute_macd_series(
+    tool_config: ToolConfiguration,
+    bars:        list[ToolComputationBarInput],
+) -> list[ToolOutputSeries]:
+    """
+    Compute MACD output series (three outputs) for one MACD instance.
+
+    Rules:
+    - fast_period: from parameters (default 12)
+    - slow_period: from parameters (default 26)
+    - signal_period: from parameters (default 9)
+    - fast/slow EMAs seeded with SMA of first `period` closes
+    - MACD line valid from bar slow_period - 1
+    - Signal line EMA seeded with SMA of first `signal_period` MACD values
+    - Signal/histogram valid from bar slow_period + signal_period - 2
+    - No lookahead: bar N uses only closes 0..N
+    - Deterministic: identical inputs → identical outputs
+    - State is purely local to this computation pass
+
+    Returns:
+        List with three ToolOutputSeries:
+            macd_line, signal_line, histogram.
+
+    Raises:
+        ToolComputationError: if "close" is missing from any bar's price_fields.
+    """
+    fast_period   = int(tool_config.parameters.get("fast_period",   12))
+    slow_period   = int(tool_config.parameters.get("slow_period",   26))
+    signal_period = int(tool_config.parameters.get("signal_period",  9))
+
+    macd_line_warmup    = slow_period - 1
+    signal_warmup       = slow_period + signal_period - 2
+
+    closes: list[float] = []
+    for bar in bars:
+        if _MACD_CLOSE_FIELD not in bar.price_fields:
+            raise ToolComputationError(
+                f"instance '{tool_config.instance_id}': "
+                f"price_fields missing '{_MACD_CLOSE_FIELD}' at bar_index={bar.bar_index}"
+            )
+        closes.append(bar.price_fields[_MACD_CLOSE_FIELD])
+
+    # ── Compute fast and slow EMAs ──────────────────────────────────────────
+    fast_alpha = 2.0 / (fast_period + 1)
+    slow_alpha = 2.0 / (slow_period + 1)
+
+    fast_ema: float | None = None
+    slow_ema: float | None = None
+
+    fast_ema_vals: list[float | None] = []
+    slow_ema_vals: list[float | None] = []
+
+    for i, close in enumerate(closes):
+        # Fast EMA
+        if i < fast_period - 1:
+            fast_ema_vals.append(None)
+        elif i == fast_period - 1:
+            fast_ema = sum(closes[:fast_period]) / fast_period
+            fast_ema_vals.append(fast_ema)
+        else:
+            fast_ema = fast_alpha * close + (1.0 - fast_alpha) * fast_ema  # type: ignore[operator]
+            fast_ema_vals.append(fast_ema)
+
+        # Slow EMA
+        if i < slow_period - 1:
+            slow_ema_vals.append(None)
+        elif i == slow_period - 1:
+            slow_ema = sum(closes[:slow_period]) / slow_period
+            slow_ema_vals.append(slow_ema)
+        else:
+            slow_ema = slow_alpha * close + (1.0 - slow_alpha) * slow_ema  # type: ignore[operator]
+            slow_ema_vals.append(slow_ema)
+
+    # ── Compute MACD line (valid where both EMAs are available) ────────────
+    macd_line_points:   list[ToolOutputPoint] = []
+    macd_values_only:   list[float]           = []   # for signal EMA seed
+    macd_bar_refs:      list[int]             = []   # bar index for each macd value
+
+    for i, bar in enumerate(bars):
+        f = fast_ema_vals[i]
+        s = slow_ema_vals[i]
+        if f is not None and s is not None:
+            macd_val = f - s
+            macd_line_points.append(ToolOutputPoint(
+                bar_index=bar.bar_index,
+                timestamp=bar.timestamp,
+                value=macd_val,
+            ))
+            macd_values_only.append(macd_val)
+            macd_bar_refs.append(i)
+
+    # ── Compute signal EMA over MACD line ──────────────────────────────────
+    sig_alpha = 2.0 / (signal_period + 1)
+    signal_ema: float | None = None
+
+    signal_points:   list[ToolOutputPoint] = []
+    histogram_points: list[ToolOutputPoint] = []
+
+    for local_i, (macd_val, bar_i) in enumerate(zip(macd_values_only, macd_bar_refs)):
+        bar = bars[bar_i]
+        if local_i < signal_period - 1:
+            continue
+        if local_i == signal_period - 1:
+            signal_ema = sum(macd_values_only[:signal_period]) / signal_period
+        else:
+            signal_ema = sig_alpha * macd_val + (1.0 - sig_alpha) * signal_ema  # type: ignore[operator]
+
+        signal_points.append(ToolOutputPoint(
+            bar_index=bar.bar_index,
+            timestamp=bar.timestamp,
+            value=signal_ema,  # type: ignore[arg-type]
+        ))
+        histogram_points.append(ToolOutputPoint(
+            bar_index=bar.bar_index,
+            timestamp=bar.timestamp,
+            value=macd_val - signal_ema,  # type: ignore[operator]
+        ))
+
+    iid = tool_config.instance_id
+    tid = tool_config.tool_id
+    return [
+        ToolOutputSeries(
+            instance_id=iid, tool_id=tid,
+            output_name=_MACD_LINE_OUTPUT,
+            warmup_bar_count=macd_line_warmup,
+            points=tuple(macd_line_points),
+        ),
+        ToolOutputSeries(
+            instance_id=iid, tool_id=tid,
+            output_name=_MACD_SIGNAL_OUTPUT,
+            warmup_bar_count=signal_warmup,
+            points=tuple(signal_points),
+        ),
+        ToolOutputSeries(
+            instance_id=iid, tool_id=tid,
+            output_name=_MACD_HIST_OUTPUT,
+            warmup_bar_count=signal_warmup,
+            points=tuple(histogram_points),
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# ATR computation (internal)
+# ---------------------------------------------------------------------------
+
+_ATR_HIGH_FIELD  = "high"
+_ATR_LOW_FIELD   = "low"
+_ATR_CLOSE_FIELD = "close"
+_ATR_OUTPUT_NAME = "atr"   # matches ATR_METADATA.output_feature_names[0]
+
+
+def _compute_atr_series(
+    tool_config: ToolConfiguration,
+    bars:        list[ToolComputationBarInput],
+) -> list[ToolOutputSeries]:
+    """
+    Compute ATR output series using Wilder's smoothing for one ATR instance.
+
+    Rules:
+    - period extracted from tool_config.parameters["period"] (default 14)
+    - source fields: "high", "low", "close"
+    - true range: max(H-L, |H-C_prev|, |L-C_prev|) for each bar i >= 1
+    - seed: SMA of the first `period` true ranges
+    - smoothing: (atr_prev * (period-1) + tr) / period
+    - warmup: first `period` bars produce no output
+      (bar 0 has no TR; TRs at bars 1..period seed the initial ATR;
+       first ATR value appears at bar index `period`)
+    - no lookahead: bar N's ATR uses only closes at positions 0..N
+    - deterministic: identical inputs → identical outputs
+
+    Returns:
+        List with one ToolOutputSeries (ATR produces one output: "atr").
+    """
+    period = int(tool_config.parameters.get("period", 14))
+    warmup = period   # first ATR at bar position `period` (same pattern as RSI)
+
+    for required_field in (_ATR_HIGH_FIELD, _ATR_LOW_FIELD, _ATR_CLOSE_FIELD):
+        for bar in bars:
+            if required_field not in bar.price_fields:
+                raise ToolComputationError(
+                    f"instance '{tool_config.instance_id}': "
+                    f"price_fields missing '{required_field}' at bar_index={bar.bar_index}"
+                )
+
+    highs  = [b.price_fields[_ATR_HIGH_FIELD]  for b in bars]
+    lows   = [b.price_fields[_ATR_LOW_FIELD]   for b in bars]
+    closes = [b.price_fields[_ATR_CLOSE_FIELD] for b in bars]
+
+    # tr_values[i] = TR for bars[i+1], using closes[i] as prev_close
+    tr_values: list[float] = [
+        max(highs[i + 1] - lows[i + 1],
+            abs(highs[i + 1] - closes[i]),
+            abs(lows[i + 1]  - closes[i]))
+        for i in range(len(bars) - 1)
+    ]
+
+    points: list[ToolOutputPoint] = []
+    atr: float | None = None
+
+    for i, tr in enumerate(tr_values):
+        if i < period - 1:
+            continue
+
+        if i == period - 1:
+            # Seed: SMA of the first `period` true ranges
+            atr = sum(tr_values[:period]) / period
+        else:
+            # Wilder smoothing
+            atr = (atr * (period - 1) + tr) / period  # type: ignore[operator]
+
+        # tr_values[i] corresponds to bars[i+1]
+        bar = bars[i + 1]
+        points.append(ToolOutputPoint(
+            bar_index=bar.bar_index,
+            timestamp=bar.timestamp,
+            value=atr,  # type: ignore[arg-type]
+        ))
+
+    return [ToolOutputSeries(
+        instance_id=tool_config.instance_id,
+        tool_id=tool_config.tool_id,
+        output_name=_ATR_OUTPUT_NAME,
+        warmup_bar_count=warmup,
+        points=tuple(points),
+    )]
+
+
+# ---------------------------------------------------------------------------
+# Bollinger Bands computation (internal)
+# ---------------------------------------------------------------------------
+
+_BB_CLOSE_FIELD   = "close"
+_BB_MIDDLE_OUTPUT = "middle_band"   # matches BOLLINGER_METADATA.output_feature_names[0]
+_BB_UPPER_OUTPUT  = "upper_band"    # matches BOLLINGER_METADATA.output_feature_names[1]
+_BB_LOWER_OUTPUT  = "lower_band"    # matches BOLLINGER_METADATA.output_feature_names[2]
+
+
+def _compute_bollinger_series(
+    tool_config: ToolConfiguration,
+    bars:        list[ToolComputationBarInput],
+) -> list[ToolOutputSeries]:
+    """
+    Compute Bollinger Bands (three output series) for one configured instance.
+
+    Rules:
+    - period extracted from tool_config.parameters["period"] (default 20)
+    - std_dev extracted from tool_config.parameters["std_dev"] (default 2.0)
+    - source field: always "close"
+    - middle_band = SMA(close, period)
+    - std_dev_value = population stddev(close, period)
+    - upper_band = middle_band + multiplier × std_dev_value
+    - lower_band = middle_band - multiplier × std_dev_value
+    - warmup: first (period - 1) bars produce no output (same as SMA)
+    - no lookahead: bar N uses only closes at positions 0..N
+    - deterministic: identical inputs → identical outputs
+    - state is local to this computation pass (stateless per-window)
+
+    Returns:
+        List with three ToolOutputSeries: middle_band, upper_band, lower_band.
+    """
+    period     = int(tool_config.parameters.get("period",  20))
+    multiplier = float(tool_config.parameters.get("std_dev", 2.0))
+    warmup     = period - 1   # same as SMA; first output at bar index period-1
+
+    closes: list[float] = []
+    for bar in bars:
+        if _BB_CLOSE_FIELD not in bar.price_fields:
+            raise ToolComputationError(
+                f"instance '{tool_config.instance_id}': "
+                f"price_fields missing '{_BB_CLOSE_FIELD}' at bar_index={bar.bar_index}"
+            )
+        closes.append(bar.price_fields[_BB_CLOSE_FIELD])
+
+    middle_points: list[ToolOutputPoint] = []
+    upper_points:  list[ToolOutputPoint] = []
+    lower_points:  list[ToolOutputPoint] = []
+
+    for i, bar in enumerate(bars):
+        if i < warmup:
+            continue
+
+        window   = closes[i - period + 1 : i + 1]
+        mean     = sum(window) / period
+        variance = sum((x - mean) ** 2 for x in window) / period
+        sigma    = math.sqrt(variance)
+
+        middle_points.append(ToolOutputPoint(bar_index=bar.bar_index, timestamp=bar.timestamp, value=mean))
+        upper_points.append( ToolOutputPoint(bar_index=bar.bar_index, timestamp=bar.timestamp, value=mean + multiplier * sigma))
+        lower_points.append( ToolOutputPoint(bar_index=bar.bar_index, timestamp=bar.timestamp, value=mean - multiplier * sigma))
+
+    iid = tool_config.instance_id
+    tid = tool_config.tool_id
+    return [
+        ToolOutputSeries(
+            instance_id=iid, tool_id=tid,
+            output_name=_BB_MIDDLE_OUTPUT,
+            warmup_bar_count=warmup,
+            points=tuple(middle_points),
+        ),
+        ToolOutputSeries(
+            instance_id=iid, tool_id=tid,
+            output_name=_BB_UPPER_OUTPUT,
+            warmup_bar_count=warmup,
+            points=tuple(upper_points),
+        ),
+        ToolOutputSeries(
+            instance_id=iid, tool_id=tid,
+            output_name=_BB_LOWER_OUTPUT,
+            warmup_bar_count=warmup,
+            points=tuple(lower_points),
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher registry (tool_id → compute function)
 # ---------------------------------------------------------------------------
 # Adding a new indicator: implement _compute_<tool>_series() above,
 # then add one entry here. No other changes required.
-# "rsi": _compute_rsi_series,
-# "atr": _compute_atr_series,
 
 _TOOL_DISPATCHERS: dict[
     str,
-    "type[list[ToolOutputSeries]]",  # callable type annotation (runtime: plain dict)
+    Callable[[ToolConfiguration, list[ToolComputationBarInput]], list[ToolOutputSeries]],
 ] = {
-    "sma": _compute_sma_series,  # type: ignore[dict-item]
-    "ema": _compute_ema_series,  # type: ignore[dict-item]
+    "sma":            _compute_sma_series,
+    "ema":            _compute_ema_series,
+    "rsi":            _compute_rsi_series,
+    "macd":           _compute_macd_series,
+    "atr":            _compute_atr_series,
+    "bollinger_bands": _compute_bollinger_series,
 }
 
 
@@ -382,3 +879,12 @@ def _validate_bar_index_uniqueness(bars: list[ToolComputationBarInput]) -> None:
                 f"duplicate bar_index={bar.bar_index} in computation input"
             )
         seen.add(bar.bar_index)
+
+
+def _derive_period_warmup(period: Any, instance_id: str) -> int:
+    warmup = int(period) - 1
+    if warmup < 0:
+        raise ToolComputationError(
+            f"instance '{instance_id}': warmup_bars_required must be >= 0"
+        )
+    return warmup

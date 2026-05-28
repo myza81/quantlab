@@ -72,6 +72,11 @@ class ToolOutputSeries(BaseModel):
         """Return the evaluator-compatible reference key: 'instance_id.output_name'."""
         return f"{self.instance_id}.{self.output_name}"
 
+    @property
+    def warmup_bars_required(self) -> int:
+        """Return the configured warmup requirement for this computed series."""
+        return self.warmup_bar_count
+
 
 class ToolComputationResult(BaseModel):
     """

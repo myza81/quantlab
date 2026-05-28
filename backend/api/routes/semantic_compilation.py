@@ -30,6 +30,8 @@ from backend.api.services.semantic_compilation_service import (
     compile_draft_semantics,
     compile_semantics_payload,
 )
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.strategy_registry.draft_repository import (
     DraftNotFoundError,
     DraftRepository,
@@ -50,6 +52,7 @@ def post_compile_draft_semantics(
     draft_id: str,
     repository: DraftRepository = Depends(get_draft_repository),
     registry:   ToolRegistry    = Depends(get_tool_registry),
+    current_user: User = Depends(require_active_subscription),
 ) -> CompilationResponse:
     """
     Compile the semantics stored on draft `draft_id` into a passive EvaluationPlan.
@@ -59,7 +62,7 @@ def post_compile_draft_semantics(
     Returns compiled=False with an error if the draft has no semantics.
     """
     try:
-        return compile_draft_semantics(draft_id, repository, registry)
+        return compile_draft_semantics(draft_id, repository, registry, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -103,9 +103,12 @@ class DraftRepository:
                 f"failed to save draft '{draft.draft_id}': {exc}"
             ) from exc
 
-    def load(self, draft_id: str) -> StrategyDraft:
+    def load(self, draft_id: str, owner_id: str | None = None) -> StrategyDraft:
         """
         Load an active draft by id.
+
+        If owner_id is provided, raises DraftNotFoundError (same error as not-found)
+        when the draft's user_id does not match owner_id — information hiding.
 
         Raises DraftNotFoundError if no active file exists for draft_id.
         Raises DraftPersistenceError on I/O or parse failure.
@@ -119,7 +122,10 @@ class DraftRepository:
             raise DraftPersistenceError(
                 f"failed to read draft '{draft_id}': {exc}"
             ) from exc
-        return self._deserialize(content, path)
+        draft = self._deserialize(content, path)
+        if owner_id is not None and draft.user_id != owner_id:
+            raise DraftNotFoundError(f"draft '{draft_id}' not found")
+        return draft
 
     def load_archived(self, draft_id: str) -> StrategyDraft:
         """
@@ -142,9 +148,12 @@ class DraftRepository:
         """Return True if draft_id has an active (non-archived) file."""
         return self._active_path(draft_id).exists()
 
-    def list_all(self) -> list[StrategyDraft]:
+    def list_all(self, user_id: str | None = None) -> list[StrategyDraft]:
         """
         Return all active drafts sorted by draft_id for determinism.
+
+        If user_id is provided, only drafts whose user_id matches are returned.
+        Legacy drafts (user_id=None) are NOT returned when user_id is provided.
 
         Returns an empty list if the storage directory does not yet exist.
         Raises DraftPersistenceError if any file cannot be read or parsed.
@@ -163,20 +172,23 @@ class DraftRepository:
                 raise DraftPersistenceError(
                     f"failed to read draft file '{path.name}': {exc}"
                 ) from exc
-            drafts.append(self._deserialize(content, path))
+            draft = self._deserialize(content, path)
+            if user_id is not None and draft.user_id != user_id:
+                continue
+            drafts.append(draft)
         return drafts
 
-    def update(self, draft: StrategyDraft) -> None:
+    def update(self, draft: StrategyDraft, owner_id: str | None = None) -> None:
         """
         Overwrite an existing draft.
+
+        If owner_id is provided, raises DraftNotFoundError when the stored
+        draft's user_id does not match owner_id — information hiding.
 
         Raises DraftNotFoundError if draft_id has no active file.
         Use save() when creating a new draft; use update() when replacing.
         """
-        if not self.exists(draft.draft_id):
-            raise DraftNotFoundError(
-                f"draft '{draft.draft_id}' not found; use save() for new drafts"
-            )
+        self.load(draft.draft_id, owner_id=owner_id)  # ownership check
         try:
             self._active_path(draft.draft_id).write_text(
                 self._serialize(draft), encoding="utf-8"
@@ -186,9 +198,12 @@ class DraftRepository:
                 f"failed to update draft '{draft.draft_id}': {exc}"
             ) from exc
 
-    def archive(self, draft_id: str) -> None:
+    def archive(self, draft_id: str, owner_id: str | None = None) -> None:
         """
         Move an active draft to the archive directory.
+
+        If owner_id is provided, raises DraftNotFoundError when the stored
+        draft's user_id does not match owner_id — information hiding.
 
         The draft is preserved in archive/ and removed from active listing.
         It remains retrievable via load_archived(draft_id).
@@ -196,27 +211,26 @@ class DraftRepository:
         Raises DraftNotFoundError if draft_id has no active file.
         """
         self._ensure_dirs()
-        active = self._active_path(draft_id)
-        if not active.exists():
-            raise DraftNotFoundError(f"draft '{draft_id}' not found")
+        self.load(draft_id, owner_id=owner_id)  # ownership check
         try:
-            active.rename(self._archive_path(draft_id))
+            self._active_path(draft_id).rename(self._archive_path(draft_id))
         except OSError as exc:
             raise DraftPersistenceError(
                 f"failed to archive draft '{draft_id}': {exc}"
             ) from exc
 
-    def delete(self, draft_id: str) -> None:
+    def delete(self, draft_id: str, owner_id: str | None = None) -> None:
         """
         Hard-delete an active draft.
 
+        If owner_id is provided, raises DraftNotFoundError when the stored
+        draft's user_id does not match owner_id — information hiding.
+
         Raises DraftNotFoundError if draft_id has no active file.
         """
-        path = self._active_path(draft_id)
-        if not path.exists():
-            raise DraftNotFoundError(f"draft '{draft_id}' not found")
+        self.load(draft_id, owner_id=owner_id)  # ownership check
         try:
-            path.unlink()
+            self._active_path(draft_id).unlink()
         except OSError as exc:
             raise DraftPersistenceError(
                 f"failed to delete draft '{draft_id}': {exc}"

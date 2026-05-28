@@ -1,12 +1,13 @@
 /**
- * Typed API client for plan inspection endpoints.
+ * Typed API client for plan inspection and readiness endpoints.
  *
- * No business logic. No local inspection. Backend is source-of-truth.
+ * All draft-scoped endpoints require authentication (Phase 3L).
  */
+import { authedFetch } from './client'
 import type { EvaluationReadinessResponse, PlanInspectionResponse } from '../types/planInspection'
 
 async function _req<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const resp = await fetch(path, {
+  const resp = await authedFetch(path, {
     method,
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,

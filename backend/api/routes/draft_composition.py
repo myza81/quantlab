@@ -36,6 +36,8 @@ from backend.api.services.draft_composition_service import (
     reorder_tools,
     validate_draft,
 )
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.strategy_registry.draft_repository import DraftNotFoundError, DraftRepository
 from backend.tools.registry import ToolRegistry
 
@@ -50,9 +52,10 @@ def post_add_tool(
     request: AddToolRequest,
     registry: ToolRegistry = Depends(get_tool_registry),
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> DraftResponse:
     try:
-        return add_tool(draft_id, request, registry, repository)
+        return add_tool(draft_id, request, registry, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except DraftCompositionError as exc:
@@ -66,9 +69,10 @@ def delete_remove_tool(
     draft_id: str,
     instance_id: str,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> DraftResponse:
     try:
-        return remove_tool(draft_id, instance_id, repository)
+        return remove_tool(draft_id, instance_id, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ToolInstanceNotFoundError as exc:
@@ -80,9 +84,10 @@ def post_reorder_tools(
     draft_id: str,
     request: ReorderToolsRequest,
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> DraftResponse:
     try:
-        return reorder_tools(draft_id, request.ordered_instance_ids, repository)
+        return reorder_tools(draft_id, request.ordered_instance_ids, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ToolOrderError as exc:
@@ -96,9 +101,10 @@ def patch_patch_tool(
     request: PatchToolRequest,
     registry: ToolRegistry = Depends(get_tool_registry),
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> DraftResponse:
     try:
-        return patch_tool(draft_id, instance_id, request, registry, repository)
+        return patch_tool(draft_id, instance_id, request, registry, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ToolInstanceNotFoundError as exc:
@@ -112,8 +118,9 @@ def post_validate_draft(
     draft_id: str,
     registry: ToolRegistry = Depends(get_tool_registry),
     repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
 ) -> CompositionValidationResponse:
     try:
-        return validate_draft(draft_id, registry, repository)
+        return validate_draft(draft_id, registry, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

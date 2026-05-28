@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -14,6 +15,14 @@ export default defineConfig({
       '/drafts': 'http://localhost:8000',
       '/semantics': 'http://localhost:8000',
       '/backtests': 'http://localhost:8000',
+      '/auth': 'http://localhost:8000',
+      '/provider-credentials': 'http://localhost:8000',
+      '/catalog': 'http://localhost:8000',
     },
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/test-setup.ts'],
   },
 })
