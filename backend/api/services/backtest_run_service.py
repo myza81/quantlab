@@ -12,6 +12,7 @@ Architecture boundary — this module MUST NOT import from:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -25,9 +26,12 @@ from backend.api.schemas.backtest_runs import (
     BacktestRejectionRecord,
     BacktestReport,
     BacktestRunConfig,
+    BacktestRunListItem,
     BacktestRunRequest,
     BacktestRunResponse,
     BacktestRunSummary,
+    DatasetProvenance,
+    DraftProvenance,
     TradeRecord,
 )
 from backend.backtesting.analytics import compute_analytics
@@ -57,8 +61,6 @@ from backend.tools.historical_computation import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_STORAGE = Path("storage/backtest_runs")
-
 
 class BacktestRunError(Exception):
     """Raised for recoverable pipeline failures."""
@@ -71,7 +73,7 @@ class BacktestAccessDeniedError(Exception):
 def create_backtest_run(
     request:    BacktestRunRequest,
     repository: DraftRepository,
-    storage:    Path = _DEFAULT_STORAGE,
+    storage:    Path,
     user_id:    str | None = None,
 ) -> BacktestRunResponse:
     """
@@ -253,6 +255,20 @@ def create_backtest_run(
         bars[-1].timestamp.isoformat() if bars[-1].timestamp else None
     )
 
+    dataset_provenance = DatasetProvenance(
+        source_mode=request.source_mode,
+        provider_name=request.provider_name,
+        catalog_id=request.catalog_id,
+        bars_fingerprint=_compute_bars_fingerprint(bars),
+        bar_count=len(bars),
+    )
+    draft_provenance = DraftProvenance(
+        draft_id=draft.draft_id,
+        display_name=draft.display_name,
+        lifecycle_status_at_run=draft.lifecycle_status.value,
+        semantics_hash=_compute_semantics_hash(draft.semantics),
+    )
+
     run_summary = BacktestRunSummary(
         run_id=run_id,
         draft_id=request.draft_id,
@@ -266,6 +282,8 @@ def create_backtest_run(
         dataset_start=dataset_start,
         dataset_end=dataset_end,
         owner_user_id=user_id,
+        dataset_provenance=dataset_provenance,
+        draft_provenance=draft_provenance,
     )
 
     report = BacktestReport(
@@ -293,7 +311,7 @@ def create_backtest_run(
 
 def load_backtest_report(
     run_id: str,
-    storage: Path = _DEFAULT_STORAGE,
+    storage: Path,
     owner_user_id: str | None = None,
 ) -> BacktestReport:
     """Load a previously persisted backtest report by run_id.
@@ -309,6 +327,59 @@ def load_backtest_report(
     if owner_user_id is not None and report.run.owner_user_id != owner_user_id:
         raise BacktestAccessDeniedError(f"Backtest run '{run_id}' not found.")
     return report
+
+
+def list_backtest_runs(
+    storage: Path,
+    owner_user_id: str,
+    limit: int = 50,
+) -> list[BacktestRunListItem]:
+    """
+    Return lightweight history metadata for all runs owned by owner_user_id.
+
+    Reads only the 'run' and 'metrics' keys from each persisted JSON file —
+    does NOT load equity_curve, drawdown_curve, trades, or rejections.
+    Results are ordered newest-first by run_timestamp.
+
+    Never exposes file paths, storage structure, or cross-user data.
+    """
+    if not storage.exists():
+        return []
+
+    items: list[BacktestRunListItem] = []
+    for path in storage.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            run = data.get("run", {})
+            if run.get("owner_user_id") != owner_user_id:
+                continue
+            metrics = data.get("metrics", {})
+            dp_raw = run.get("dataset_provenance")
+            drp_raw = run.get("draft_provenance")
+            items.append(BacktestRunListItem(
+                run_id=run["run_id"],
+                draft_id=run["draft_id"],
+                draft_name=run["draft_name"],
+                symbol=run["symbol"],
+                timeframe=run["timeframe"],
+                bars_count=run["bars_count"],
+                run_timestamp=run["run_timestamp"],
+                status=run.get("status", "completed"),
+                dataset_start=run.get("dataset_start"),
+                dataset_end=run.get("dataset_end"),
+                engine_version=run.get("engine_version", ""),
+                dataset_provenance=DatasetProvenance(**dp_raw) if dp_raw else None,
+                draft_provenance=DraftProvenance(**drp_raw) if drp_raw else None,
+                total_return_pct=metrics.get("total_return_pct"),
+                trade_count=metrics.get("trade_count"),
+                max_drawdown_pct=metrics.get("max_drawdown_pct"),
+                win_rate=metrics.get("win_rate"),
+            ))
+        except Exception:
+            logger.debug("skipping corrupt/unreadable backtest file: %s", path.name)
+
+    items.sort(key=lambda x: x.run_timestamp, reverse=True)
+    return items[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -442,3 +513,17 @@ def _build_trade_records(
         )
 
     return records, open_position
+
+
+def _compute_bars_fingerprint(bars: list) -> str:
+    """SHA-256 of sorted (bar_index, close) pairs — stable, server-side, unspoofable."""
+    pairs = sorted((b.bar_index, b.close) for b in bars)
+    payload = json.dumps([{"i": i, "c": c} for i, c in pairs], sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _compute_semantics_hash(semantics) -> str | None:
+    """SHA-256 of the strategy semantics JSON, or None if semantics absent."""
+    if semantics is None:
+        return None
+    return hashlib.sha256(semantics.model_dump_json().encode("utf-8")).hexdigest()

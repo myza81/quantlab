@@ -19,8 +19,9 @@ import uuid
 
 
 class UserRole(str, Enum):
-    user  = "user"
-    admin = "admin"
+    user       = "user"
+    admin      = "admin"
+    superadmin = "superadmin"
 
 
 class SubscriptionStatus(str, Enum):
@@ -102,6 +103,18 @@ class User:
             suspension_reason=None,
         )
 
+    def with_expired(self) -> "User":
+        from dataclasses import replace
+        return replace(self, subscription_status=SubscriptionStatus.expired)
+
+    def with_admin_role(self) -> "User":
+        from dataclasses import replace
+        return replace(self, role=UserRole.admin)
+
+    def with_user_role(self) -> "User":
+        from dataclasses import replace
+        return replace(self, role=UserRole.user)
+
     # ------------------------------------------------------------------
     # Computed properties
     # ------------------------------------------------------------------
@@ -121,7 +134,26 @@ class User:
 
     @property
     def is_admin(self) -> bool:
-        return self.role == UserRole.admin
+        """True for both admin and superadmin roles (admin-level access or above)."""
+        return self.role in (UserRole.admin, UserRole.superadmin)
+
+    @property
+    def is_superadmin(self) -> bool:
+        return self.role == UserRole.superadmin
+
+    @property
+    def has_platform_access(self) -> bool:
+        """True for admin (role-based) or active-subscription regular user (entitlement-based).
+
+        Admin accounts are platform governance identities — they bypass subscription
+        lifecycle entirely.  Regular user accounts require an active, unexpired
+        subscription (delegated to is_entitled).
+
+        Identity  ≠  subscription entitlement  ≠  governance authority.
+        """
+        if self.is_admin:
+            return True
+        return self.is_entitled
 
     # ------------------------------------------------------------------
     # Serialisation

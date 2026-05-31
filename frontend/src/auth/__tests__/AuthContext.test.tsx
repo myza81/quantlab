@@ -170,3 +170,51 @@ describe('AuthProvider — logout', () => {
     expect(session.getStoredToken()).toBeNull()
   })
 })
+
+describe('AuthProvider — refreshUser (Phase 3P-C)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.restoreAllMocks()
+  })
+  afterEach(() => {
+    localStorage.clear()
+    vi.restoreAllMocks()
+  })
+
+  it('updates user with fresh data from /auth/me', async () => {
+    const expiredUser = { ...mockUser, subscription_status: 'expired' as const }
+    session.storeToken('valid-token')
+    vi.spyOn(authApi, 'apiFetchMe').mockResolvedValueOnce(mockUser) // bootstrap
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await waitFor(() => expect(result.current.isAuthenticated).toBe(true))
+
+    vi.spyOn(authApi, 'apiFetchMe').mockResolvedValueOnce(expiredUser)
+    await act(async () => { await result.current.refreshUser() })
+
+    expect(result.current.user?.subscription_status).toBe('expired')
+  })
+
+  it('clears token and user when /auth/me fails on refresh', async () => {
+    session.storeToken('valid-token')
+    vi.spyOn(authApi, 'apiFetchMe').mockResolvedValueOnce(mockUser)
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await waitFor(() => expect(result.current.isAuthenticated).toBe(true))
+
+    vi.spyOn(authApi, 'apiFetchMe').mockRejectedValueOnce(new Error('401'))
+    await act(async () => { await result.current.refreshUser() })
+
+    expect(result.current.isAuthenticated).toBe(false)
+    expect(session.getStoredToken()).toBeNull()
+  })
+
+  it('does nothing when no token is stored', async () => {
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    const spy = vi.spyOn(authApi, 'apiFetchMe')
+    await act(async () => { await result.current.refreshUser() })
+
+    expect(spy).not.toHaveBeenCalled()
+    expect(result.current.isAuthenticated).toBe(false)
+  })
+})

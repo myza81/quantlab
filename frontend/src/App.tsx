@@ -1,28 +1,38 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Controls from './components/Controls'
 import Chart from './components/Chart'
 import { DraftWorkspace } from './components/DraftWorkspace'
 import { StrategyTestPanel } from './components/StrategyTestPanel'
 import { BacktestReportPage } from './components/BacktestReportPage'
+import { BacktestHistoryPanel } from './components/BacktestHistoryPanel'
+import { AdminConsole } from './components/AdminConsole'
 import { CredentialManager } from './components/CredentialManager'
+import { CatalogManager } from './components/CatalogManager'
+import { ForwardTestPanel } from './components/ForwardTestPanel'
+import { SessionProvenanceStrip } from './components/SessionProvenanceStrip'
 import { LoginPage } from './components/LoginPage'
 import { RegisterPage } from './components/RegisterPage'
 import { AuthGuard } from './components/AuthGuard'
 import { SubscriptionGate } from './components/SubscriptionGate'
 import { useAuth } from './auth/AuthContext'
-import { isAuthError } from './api/client'
+import { useSessionPersistence } from './hooks/useSessionPersistence'
+import { isAuthError, isSubscriptionExpiredError } from './api/client'
 import { fetchOHLCV } from './api/marketData'
+import { fetchBacktestReport } from './api/backtestRuns'
 import type { OHLCVCandle, MarketDataParams, DatasetFetchMetadata } from './api/marketData'
 import type { CompositionRunResponse } from './api/compositionRun'
 import type { BacktestReport } from './types/backtestRuns'
 import type { StrategyOverlay, SignalType } from './types/strategy'
+import type { CatalogOHLCVResponse, CatalogEntry } from './types/catalog'
+import type { ResearchSession } from './types/researchSession'
 
 type Status     = 'idle' | 'loading' | 'success' | 'error'
-type ActiveView = 'chart' | 'composer' | 'credentials' | 'report'
+type ActiveView = 'chart' | 'composer' | 'credentials' | 'report' | 'admin' | 'datasets' | 'history' | 'forward-test'
 type AuthView   = 'login' | 'register'
 
 export default function App() {
-  const { user, logout } = useAuth()
+  const { user, logout, refreshUser } = useAuth()
+  const { save: saveSession, load: loadSession } = useSessionPersistence()
   const [authView, setAuthView] = useState<AuthView>('login')
   const [activeView, setActiveView] = useState<ActiveView>('chart')
 
@@ -33,7 +43,57 @@ export default function App() {
   const [overlay,       setOverlay]       = useState<StrategyOverlay | null>(null)
   const [fetchMetadata, setFetchMetadata] = useState<DatasetFetchMetadata | null>(null)
 
-  const [backtestReport, setBacktestReport] = useState<BacktestReport | null>(null)
+  const [backtestReport,  setBacktestReport]  = useState<BacktestReport | null>(null)
+  const [catalogMeta,     setCatalogMeta]     = useState<{ response: CatalogOHLCVResponse; entry: CatalogEntry } | null>(null)
+  const [resumableRunId,  setResumableRunId]  = useState<string | null>(null)
+  const [resuming,        setResuming]        = useState(false)
+
+  // Restore lightweight session context on mount
+  useEffect(() => {
+    const s = loadSession()
+    if (!s) return
+    // Restore tab — but not 'report' without a loaded report
+    if (s.activeView && s.activeView !== 'report') {
+      setActiveView(s.activeView as ActiveView)
+    }
+    // Offer to resume the last report if one exists from a prior run
+    if (s.latestRunId) {
+      setResumableRunId(s.latestRunId)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist session context whenever key state changes
+  useEffect(() => {
+    saveSession({
+      sourceMode:         catalogMeta ? 'catalog' : (status === 'success' ? 'provider' : null),
+      symbol:             catalogMeta?.entry.symbol ?? params?.symbol ?? '',
+      timeframe:          catalogMeta?.entry.timeframe ?? params?.timeframe ?? '',
+      providerName:       fetchMetadata?.provider ?? null,
+      catalogId:          catalogMeta?.entry.catalog_id ?? null,
+      catalogDisplayName: catalogMeta?.entry.display_name ?? null,
+      latestRunId:        backtestReport?.run.run_id ?? resumableRunId,
+      activeView,
+    })
+  }, [catalogMeta, status, params, fetchMetadata, backtestReport, activeView]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const session: ResearchSession = {
+    sourceMode:          catalogMeta ? 'catalog' : (status === 'success' ? 'provider' : null),
+    symbol:              catalogMeta?.entry.symbol ?? params?.symbol ?? '',
+    timeframe:           catalogMeta?.entry.timeframe ?? params?.timeframe ?? '',
+    candleCount:         candles.length,
+    providerName:        fetchMetadata?.provider ?? null,
+    catalogId:           catalogMeta?.entry.catalog_id ?? null,
+    catalogDisplayName:  catalogMeta?.entry.display_name ?? null,
+    latestBacktestRunId: backtestReport?.run.run_id ?? null,
+    latestDraftId:       backtestReport?.run.draft_id ?? null,
+    latestDraftName:     backtestReport?.run.draft_name ?? null,
+  }
+
+  const sourceLabel = session.sourceMode === 'catalog'
+    ? `catalog · ${session.catalogDisplayName ?? session.catalogId?.slice(0, 8)} · ${session.symbol} · ${session.timeframe}`
+    : session.sourceMode === 'provider'
+      ? `${session.providerName ?? 'provider'} · ${session.symbol} · ${session.timeframe}`
+      : null
 
   async function handleFetch(p: MarketDataParams) {
     setStatus('loading')
@@ -41,6 +101,7 @@ export default function App() {
     setParams(p)
     setOverlay(null)
     setFetchMetadata(null)
+    setCatalogMeta(null)
     try {
       const resp = await fetchOHLCV(p)
       setCandles(resp.candles)
@@ -48,6 +109,7 @@ export default function App() {
       setStatus('success')
     } catch (err) {
       if (isAuthError(err)) { logout(); return }
+      if (isSubscriptionExpiredError(err)) { await refreshUser(); return }
       setError(err instanceof Error ? err.message : 'Unknown error')
       setStatus('error')
       setCandles([])
@@ -85,7 +147,35 @@ export default function App() {
 
   function handleBacktestResult(report: BacktestReport) {
     setBacktestReport(report)
+    setResumableRunId(null)  // current report supersedes the stored resumable run
     setActiveView('report')
+  }
+
+  async function handleResumeReport() {
+    if (!resumableRunId) return
+    setResuming(true)
+    try {
+      const report = await fetchBacktestReport(resumableRunId)
+      setBacktestReport(report)
+      setResumableRunId(null)
+      setActiveView('report')
+    } catch (err) {
+      if (isAuthError(err)) { logout(); return }
+      // Run no longer exists or access denied — clear the stale id silently
+      setResumableRunId(null)
+    } finally {
+      setResuming(false)
+    }
+  }
+
+  function handleCatalogLoad(response: CatalogOHLCVResponse, entry: CatalogEntry) {
+    setCandles(response.candles as unknown as OHLCVCandle[])
+    setFetchMetadata(null)
+    setCatalogMeta({ response, entry })
+    setOverlay(null)
+    setStatus('success')
+    setError(null)
+    setActiveView('chart')
   }
 
   const authFallback = authView === 'login'
@@ -105,6 +195,15 @@ export default function App() {
             <NavTab label="Chart"       active={activeView === 'chart'}       onClick={() => setActiveView('chart')} />
             <NavTab label="Composer"    active={activeView === 'composer'}    onClick={() => setActiveView('composer')} />
             <NavTab label="Credentials" active={activeView === 'credentials'} onClick={() => setActiveView('credentials')} />
+            <NavTab label="Datasets"    active={activeView === 'datasets'}    onClick={() => setActiveView('datasets')} />
+            <NavTab label="History" active={activeView === 'history'} onClick={() => setActiveView('history')} />
+            <NavTab label="Forward Test" active={activeView === 'forward-test'} onClick={() => setActiveView('forward-test')} />
+            {backtestReport && (
+              <NavTab label="Report" active={activeView === 'report'} onClick={() => setActiveView('report')} />
+            )}
+            {(user?.role === 'admin' || user?.role === 'superadmin') && (
+              <NavTab label="Admin" active={activeView === 'admin'} onClick={() => setActiveView('admin')} />
+            )}
           </div>
           {user && (
             <div style={st.userArea}>
@@ -113,6 +212,30 @@ export default function App() {
             </div>
           )}
         </header>
+
+        {/* ── Session provenance strip ── */}
+        <SessionProvenanceStrip
+          session={session}
+          onNavigateToReport={backtestReport ? () => setActiveView('report') : undefined}
+          onResumeReport={resumableRunId && !backtestReport ? handleResumeReport : undefined}
+          resuming={resuming}
+        />
+
+        {/* ── History ── */}
+        {activeView === 'history' && (
+          <div style={st.fill}>
+            <BacktestHistoryPanel
+              onReportLoaded={(report) => { setBacktestReport(report); setActiveView('report') }}
+            />
+          </div>
+        )}
+
+        {/* ── Forward Testing ── */}
+        {activeView === 'forward-test' && (
+          <div style={{ ...st.fill, overflowY: 'auto' }}>
+            <ForwardTestPanel />
+          </div>
+        )}
 
         {/* ── Composer ── */}
         {activeView === 'composer' && (
@@ -128,12 +251,28 @@ export default function App() {
           </div>
         )}
 
+        {/* ── Datasets ── */}
+        {activeView === 'datasets' && (
+          <div style={{ ...st.fill, overflowY: 'auto' }}>
+            <CatalogManager onLoadIntoChart={handleCatalogLoad} />
+          </div>
+        )}
+
+        {/* ── Admin Console — visible only when role === 'admin' or 'superadmin' ── */}
+        {activeView === 'admin' && (
+          <div style={st.fill}>
+            <AdminConsole />
+          </div>
+        )}
+
         {/* ── Report ── */}
         {activeView === 'report' && backtestReport && (
           <div style={st.fill}>
             <BacktestReportPage
               report={backtestReport}
               onBack={() => setActiveView('chart')}
+              sourceLabel={sourceLabel}
+              onNavigateToComposer={() => setActiveView('composer')}
             />
           </div>
         )}
@@ -150,10 +289,12 @@ export default function App() {
             <Controls onFetch={handleFetch} loading={status === 'loading'} />
             <StrategyTestPanel
               candles={candles}
-              symbol={params?.symbol ?? ''}
-              timeframe={params?.timeframe ?? ''}
+              symbol={catalogMeta?.entry.symbol ?? params?.symbol ?? ''}
+              timeframe={catalogMeta?.entry.timeframe ?? params?.timeframe ?? ''}
+              sessionContext={session}
               onResult={handleCompositionResult}
               onBacktestResult={handleBacktestResult}
+              onNavigateToComposer={() => setActiveView('composer')}
             />
           </aside>
 
@@ -176,10 +317,13 @@ export default function App() {
                 {fetchMetadata && (
                   <DatasetMetaBadge metadata={fetchMetadata} candleCount={candles.length} />
                 )}
+                {catalogMeta && (
+                  <CatalogMetaBadge response={catalogMeta.response} entry={catalogMeta.entry} candleCount={candles.length} />
+                )}
                 <Chart
                   candles={candles}
-                  symbol={params?.symbol ?? ''}
-                  timeframe={params?.timeframe ?? ''}
+                  symbol={catalogMeta?.entry.symbol ?? params?.symbol ?? ''}
+                  timeframe={catalogMeta?.entry.timeframe ?? params?.timeframe ?? ''}
                   overlay={overlay}
                   onClearStrategyResults={clearStrategyResults}
                 />
@@ -225,6 +369,52 @@ function DatasetMetaBadge({
         <span style={st.metaKey}>fingerprint</span>
         <span style={st.metaVal} title={metadata.fingerprint}>
           {metadata.fingerprint.slice(0, 12)}
+        </span>
+      </span>
+    </div>
+  )
+}
+
+function CatalogMetaBadge({
+  response,
+  entry,
+  candleCount,
+}: {
+  response:    CatalogOHLCVResponse
+  entry:       CatalogEntry
+  candleCount: number
+}) {
+  return (
+    <div data-testid="catalog-meta-badge" style={st.metaBadge}>
+      <span style={st.metaItem}>
+        <span style={st.metaKey}>source</span>
+        <span style={st.metaVal}>catalog/local</span>
+      </span>
+      <span style={st.metaSep}>·</span>
+      <span style={st.metaItem}>
+        <span style={st.metaKey}>dataset</span>
+        <span style={st.metaVal}>{entry.display_name}</span>
+      </span>
+      <span style={st.metaSep}>·</span>
+      <span style={st.metaItem}>
+        <span style={st.metaKey}>symbol</span>
+        <span style={st.metaVal}>{response.symbol}</span>
+      </span>
+      <span style={st.metaSep}>·</span>
+      <span style={st.metaItem}>
+        <span style={st.metaKey}>timeframe</span>
+        <span style={st.metaVal}>{response.timeframe}</span>
+      </span>
+      <span style={st.metaSep}>·</span>
+      <span style={st.metaItem}>
+        <span style={st.metaKey}>candles</span>
+        <span style={st.metaVal}>{candleCount.toLocaleString()}</span>
+      </span>
+      <span style={st.metaSep}>·</span>
+      <span style={st.metaItem}>
+        <span style={st.metaKey}>catalog_id</span>
+        <span style={st.metaVal} title={response.catalog_id}>
+          {response.catalog_id.slice(0, 12)}…
         </span>
       </span>
     </div>

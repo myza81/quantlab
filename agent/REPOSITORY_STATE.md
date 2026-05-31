@@ -4,10 +4,10 @@
 main
 
 ## Current Phase
-PHASE 3O — Credential-Aware Market Data Workflow UX (complete)
+PHASE 3S-C — Research Provenance & Workflow Continuity (complete)
 
-All Phases 2T, 3A–3O complete. Backend: 3382 tests. Frontend: 60 tests. tsc clean.
-Last committed phase: 2P.9 + 2N. Phases 2T, 3A–3O are implemented but uncommitted.
+All Phases 2T, 3A–3S-C complete. Backend: 3686 tests. Frontend: 155 tests. tsc clean.
+Last committed phase: 2P.9 + 2N. Phases 2T, 3A–3S-C are implemented but uncommitted.
 
 ---
 

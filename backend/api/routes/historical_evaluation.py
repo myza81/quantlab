@@ -8,23 +8,31 @@ Compiles the semantics, evaluates each bar sequentially, returns
 HistoricalEvaluationResult with per-bar traces and aggregated counts.
 
 No portfolio. No trades. No PnL. No execution.
+
+Phase 3S-B: requires require_active_subscription — this is a compute-heavy
+research primitive and must not be publicly callable.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from backend.api.schemas.historical_evaluation import HistoricalEvaluationRequest
 from backend.api.services.historical_evaluation_service import (
     HistoricalEvaluationError,
     evaluate_history_from_payload,
 )
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.strategy_registry.historical_evaluator import HistoricalEvaluationResult
 
 router = APIRouter(prefix="/semantics", tags=["historical-evaluation"])
 
 
 @router.post("/evaluate-history", response_model=HistoricalEvaluationResult)
-def post_evaluate_history(request: HistoricalEvaluationRequest) -> HistoricalEvaluationResult:
+def post_evaluate_history(
+    request: HistoricalEvaluationRequest,
+    current_user: User = Depends(require_active_subscription),
+) -> HistoricalEvaluationResult:
     """
     Evaluate a compiled StrategySemantics over a sequence of bar payloads.
 

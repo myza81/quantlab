@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from backend.auth.models import User, UserRole, SubscriptionStatus
+from backend.auth.models import User, UserRole
 from backend.auth.password import hash_password, verify_password
 from backend.auth.repository import DuplicateEmailError, DuplicateUsernameError, UserRepository
 from backend.auth.tokens import create_access_token
@@ -52,15 +52,17 @@ class AuthService:
         hashed = hash_password(password)
         user = User.create(username=username, email=email, password_hash=hashed)
 
-        # Admin bootstrap: if this email matches the configured bootstrap address,
-        # auto-promote to admin with an active subscription. This only applies at
-        # registration time — there is no API path to self-escalate to admin.
+        # Superadmin bootstrap: if this email matches the configured bootstrap address,
+        # auto-promote to superadmin role (Phase 3P-D: superadmin is platform owner).
+        # This only applies at registration time — there is no API path to self-escalate.
+        #
+        # subscription_status is intentionally left as the default (pending).
+        # Admin/superadmin access is role-based via has_platform_access, not subscription-based.
         bootstrap_email = (settings.admin_bootstrap_email or "").strip().lower()
         if bootstrap_email and email == bootstrap_email:
             user = replace(
                 user,
-                role=UserRole.admin,
-                subscription_status=SubscriptionStatus.active,
+                role=UserRole.superadmin,
                 approved_by_user_id="bootstrap",
             )
 
@@ -76,6 +78,27 @@ class AuthService:
             details={"username": username, "user_id": user.user_id, "role": user.role},
         ))
         return user
+
+    def migrate_to_superadmin(self, email: str) -> User | None:
+        """Promote an existing role=admin user to role=superadmin.
+
+        Used for one-time local migration of accounts that were created before
+        Phase 3P-D (when bootstrap produced role=admin instead of role=superadmin).
+        Safe to call repeatedly — no-op if the user is already superadmin or not found.
+
+        Returns the updated User or None if the email was not found.
+        """
+        email = email.strip().lower()
+        user = self._repo.get_by_email(email)
+        if user is None:
+            return None
+        if user.is_superadmin:
+            return user  # already promoted
+        if not user.is_admin:
+            return None  # only admins are eligible for superadmin promotion via migration
+        updated = replace(user, role=UserRole.superadmin)
+        self._repo.update(updated)
+        return updated
 
     def login(self, *, username: str, password: str) -> str:
         """

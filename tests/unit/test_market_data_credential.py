@@ -31,10 +31,12 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from backend.api.main import app
 from backend.api.services.market_data_service import (
     MarketDataError,
     _resolve_provider_api_key,
 )
+from backend.auth.entitlement import require_active_subscription
 from backend.vault.crypto import encrypt_secret
 from backend.vault.models import ProviderCredential
 from backend.vault.repository import CredentialRepository
@@ -196,15 +198,24 @@ class TestPolygonBuilderVaultPath:
             with pytest.raises(ProviderBuildError):
                 _build_polygon_adapter(symbol="AAPL", timeframe="1d")
 
-    def test_env_fallback_uses_env_key(self) -> None:
+    def test_env_fallback_disabled_by_default(self) -> None:
+        from backend.data_providers.provider_factory import ProviderBuildError, _build_polygon_adapter
+
+        with patch.dict(os.environ, {"POLYGON_API_KEY": "env-api-key"}):
+            with pytest.raises(ProviderBuildError, match="ENV fallback is disabled"):
+                _build_polygon_adapter(symbol="AAPL", timeframe="1d")
+
+    def test_env_fallback_uses_env_key_when_enabled(self) -> None:
         from backend.data_providers.provider_factory import _build_polygon_adapter
 
-        with patch("backend.data_providers.polygon.adapter.PolygonProviderAdapter") as mock_cls:
-            mock_cls.return_value = MagicMock()
-            with patch.dict(os.environ, {"POLYGON_API_KEY": "env-api-key"}):
-                _build_polygon_adapter(symbol="AAPL", timeframe="1d")
-            call_kwargs = mock_cls.call_args.kwargs
-            assert call_kwargs["api_key"] == "env-api-key"
+        with patch("backend.data_providers.provider_factory.settings") as mock_settings:
+            mock_settings.polygon_allow_env_fallback = True
+            with patch("backend.data_providers.polygon.adapter.PolygonProviderAdapter") as mock_cls:
+                mock_cls.return_value = MagicMock()
+                with patch.dict(os.environ, {"POLYGON_API_KEY": "env-api-key"}):
+                    _build_polygon_adapter(symbol="AAPL", timeframe="1d")
+                call_kwargs = mock_cls.call_args.kwargs
+                assert call_kwargs["api_key"] == "env-api-key"
 
     def test_factory_build_forwards_api_key(self) -> None:
         from backend.data_providers.provider_factory import create_default_factory_registry
@@ -326,6 +337,15 @@ class TestMarketDataRouteCredentialFlow:
     _BASE = "/market-data/ohlcv"
     _PARAMS = "?provider=polygon&symbol=AAPL&timeframe=1d&start=2024-01-01T00:00:00Z&end=2024-01-31T00:00:00Z"
 
+    def setup_method(self):
+        # Remove the default active-user conftest override so real auth runs.
+        # Tests that supply a valid Bearer token will still authenticate correctly;
+        # tests that send no token will receive 401 as expected.
+        app.dependency_overrides.pop(require_active_subscription, None)
+
+    def teardown_method(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
+
     def _headers(self, token: str) -> dict:
         return {"Authorization": f"Bearer {token}"}
 
@@ -445,15 +465,24 @@ class TestMarketDataRouteCredentialFlow:
         assert resp.status_code == 400
         assert "not registered for this provider" in resp.json()["detail"].lower()
 
-    def test_polygon_env_fallback_still_works(self, market_client) -> None:
-        """No credential_id → factory uses ENV resolver → backward compat path."""
+    def test_polygon_env_fallback_works_when_enabled(self, market_client) -> None:
+        """No credential_id + polygon_allow_env_fallback=True → factory uses ENV resolver."""
         client, token, _ = market_client
-        with patch(
-            "backend.data_providers.polygon.adapter.PolygonProviderAdapter.fetch",
-            return_value=[],
-        ), patch.dict(os.environ, {"POLYGON_API_KEY": "env-test-key"}):
-            resp = client.get(f"{self._BASE}{self._PARAMS}", headers=self._headers(token))
+        with patch("backend.data_providers.provider_factory.settings") as mock_settings:
+            mock_settings.polygon_allow_env_fallback = True
+            with patch(
+                "backend.data_providers.polygon.adapter.PolygonProviderAdapter.fetch",
+                return_value=[],
+            ), patch.dict(os.environ, {"POLYGON_API_KEY": "env-test-key"}):
+                resp = client.get(f"{self._BASE}{self._PARAMS}", headers=self._headers(token))
         assert resp.status_code == 200
+
+    def test_polygon_env_fallback_disabled_by_default(self, market_client) -> None:
+        """No credential_id + polygon_allow_env_fallback=False (default) → 400."""
+        client, token, _ = market_client
+        with patch.dict(os.environ, {"POLYGON_API_KEY": "env-test-key"}):
+            resp = client.get(f"{self._BASE}{self._PARAMS}", headers=self._headers(token))
+        assert resp.status_code == 400
 
     def test_ohlcv_without_auth_returns_401(self, market_client) -> None:
         """Phase 3P-A: all OHLCV fetches require active subscription; unauthenticated → 401."""

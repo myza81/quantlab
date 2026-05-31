@@ -52,6 +52,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.main import app
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.backtesting.cost_model import (
     CommissionMode,
     SlippageMode,
@@ -73,6 +75,16 @@ from backend.strategy_registry.trade_intents import (
     TradeIntentBatch,
     TradeIntentSource,
     TradeIntentSummary,
+)
+
+_TEST_USER = User(
+    user_id="test-user",
+    username="testuser",
+    email="test@example.com",
+    password_hash="x",
+    created_at="2024-01-01T00:00:00Z",
+    role="user",
+    subscription_status="active",
 )
 
 client = TestClient(app)
@@ -704,6 +716,12 @@ class TestRunSimulationDeterminism:
 # ---------------------------------------------------------------------------
 
 class TestCostModelAPI:
+    def setup_method(self):
+        app.dependency_overrides[require_active_subscription] = lambda: _TEST_USER
+
+    def teardown_method(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
+
     def _req(self, intents, bars, config) -> dict:
         batch = _batch(*intents)
         return {

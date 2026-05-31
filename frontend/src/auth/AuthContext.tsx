@@ -8,6 +8,7 @@ interface AuthContextValue extends AuthState {
   login: (credentials: LoginCredentials) => Promise<void>
   register: (credentials: RegisterCredentials) => Promise<void>
   logout: () => void
+  refreshUser: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -48,6 +49,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null)
   }
 
+  async function refreshUser(): Promise<void> {
+    const token = getStoredToken()
+    if (!token) return
+    try {
+      const updated = await apiFetchMe(token)
+      setUser(updated)
+    } catch {
+      clearToken()
+      setUser(null)
+    }
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -57,6 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         register,
         logout,
+        refreshUser,
       }}
     >
       {children}

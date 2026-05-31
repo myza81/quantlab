@@ -112,6 +112,9 @@ class DraftRepository:
 
         Raises DraftNotFoundError if no active file exists for draft_id.
         Raises DraftPersistenceError on I/O or parse failure.
+
+        Note: callers that receive draft_id from URL path params must validate
+        UUID format before calling (see routes/drafts.py).
         """
         path = self._active_path(draft_id)
         if not path.exists():

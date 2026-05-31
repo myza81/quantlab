@@ -33,6 +33,10 @@ _TEST_USER = User(
     subscription_status="active",
 )
 
+# Valid UUIDs for tests that call GET /drafts/{id} (phase 3S-D UUID validation).
+_UUID_DRAFT = "11111111-0000-0000-0000-000000000001"
+_UUID_LEGACY = "22222222-0000-0000-0000-000000000001"
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -179,11 +183,11 @@ class TestPutSemantics:
         assert resp.status_code == 422
 
     def test_put_updates_draft_updated_at(self, client):
-        _create_draft(client)
-        draft_before = client.get("/drafts/test_draft").json()
+        _create_draft(client, draft_id=_UUID_DRAFT)
+        draft_before = client.get(f"/drafts/{_UUID_DRAFT}").json()
         import time; time.sleep(0.01)
-        client.put("/drafts/test_draft/semantics", json=_semantics_payload())
-        draft_after = client.get("/drafts/test_draft").json()
+        client.put(f"/drafts/{_UUID_DRAFT}/semantics", json=_semantics_payload())
+        draft_after = client.get(f"/drafts/{_UUID_DRAFT}").json()
         assert draft_after["updated_at"] >= draft_before["updated_at"]
 
 
@@ -325,17 +329,17 @@ class TestValidateSemanticsPayload:
 
 class TestDraftResponseBackwardCompatibility:
     def test_draft_response_includes_semantics_null_by_default(self, client):
-        _create_draft(client)
-        resp = client.get("/drafts/test_draft")
+        _create_draft(client, draft_id=_UUID_DRAFT)
+        resp = client.get(f"/drafts/{_UUID_DRAFT}")
         assert resp.status_code == 200
         body = resp.json()
         assert "semantics" in body
         assert body["semantics"] is None
 
     def test_draft_response_includes_semantics_after_put(self, client):
-        _create_draft(client)
-        client.put("/drafts/test_draft/semantics", json=_semantics_payload())
-        resp = client.get("/drafts/test_draft")
+        _create_draft(client, draft_id=_UUID_DRAFT)
+        client.put(f"/drafts/{_UUID_DRAFT}/semantics", json=_semantics_payload())
+        resp = client.get(f"/drafts/{_UUID_DRAFT}")
         assert resp.status_code == 200
         body = resp.json()
         assert body["semantics"] is not None
@@ -352,15 +356,16 @@ class TestDraftResponseBackwardCompatibility:
         """
         Phase 3L: Legacy drafts (no user_id) are inaccessible to authenticated users.
         The repository can still deserialise them, but ownership filtering returns 404.
+        UUID required for GET /drafts/{id} path-param validation (Phase 3S-D).
         """
         import json
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
         legacy_data = {
-            "draft_id": "legacy_draft",
+            "draft_id": _UUID_LEGACY,
             "display_name": "Legacy",
             "toolset": {
-                "toolset_id": "legacy_draft",
+                "toolset_id": _UUID_LEGACY,
                 "display_name": None,
                 "tools": [],
                 "enabled": True,
@@ -375,9 +380,9 @@ class TestDraftResponseBackwardCompatibility:
         # Write legacy JSON directly to repository
         active_dir = tmp_path / "strategy_drafts"
         active_dir.mkdir(parents=True, exist_ok=True)
-        (active_dir / "legacy_draft.json").write_text(
+        (active_dir / f"{_UUID_LEGACY}.json").write_text(
             json.dumps(legacy_data), encoding="utf-8"
         )
         # Phase 3L: legacy draft (user_id=None) is inaccessible to authenticated user
-        resp = client.get("/drafts/legacy_draft")
+        resp = client.get(f"/drafts/{_UUID_LEGACY}")
         assert resp.status_code == 404

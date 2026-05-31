@@ -35,6 +35,7 @@ from backend.api.services.draft_service import (
     update_draft as svc_update_draft,
 )
 from backend.auth.dependencies import get_current_user
+from backend.auth.entitlement import require_active_subscription
 from backend.auth.models import User
 from backend.storage.dataset_catalog import (
     DatasetCatalog,
@@ -46,6 +47,10 @@ from backend.tools.toolset import StrategyToolSet
 
 _UTC = timezone.utc
 _NOW = datetime(2026, 1, 1, tzinfo=_UTC)
+
+# Valid UUIDs required for routes that enforce UUID format (Phase 3S-D).
+_B_DRAFT_UUID   = "bbbbbbbb-1111-1111-1111-111111111111"
+_LEGACY_DRAFT_UUID = "ffffffff-1111-1111-1111-111111111111"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -331,6 +336,8 @@ class TestDraftRouteOwnership:
 
     @pytest.fixture(autouse=True)
     def _cleanup(self):
+        # Remove conftest default-user override so real auth runs in these tests.
+        app.dependency_overrides.pop(require_active_subscription, None)
         yield
         app.dependency_overrides.clear()
 
@@ -385,16 +392,16 @@ class TestDraftRouteOwnership:
 
     def test_user_a_gets_404_for_user_b_draft(self, tmp_path: Path) -> None:
         repo = DraftRepository(tmp_path)
-        # Create draft as user B
+        # Create draft as user B (UUID required for GET path-param validation)
         app.dependency_overrides[get_draft_repository] = lambda: repo
         app.dependency_overrides[get_current_user] = lambda: _USER_B
         client_b = TestClient(app)
-        client_b.post("/drafts", json=_valid_create_request_dict("b-draft"))
+        client_b.post("/drafts", json=_valid_create_request_dict(_B_DRAFT_UUID))
 
-        # Try to access as user A
+        # Try to access as user A — should get 404 (ownership hidden as not-found)
         app.dependency_overrides[get_current_user] = lambda: _USER_A
         client_a = TestClient(app)
-        resp = client_a.get("/drafts/b-draft")
+        resp = client_a.get(f"/drafts/{_B_DRAFT_UUID}")
         assert resp.status_code == 404
 
 
@@ -407,6 +414,7 @@ class TestCatalogRouteOwnership:
 
     @pytest.fixture(autouse=True)
     def _cleanup(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
         yield
         app.dependency_overrides.clear()
 
@@ -521,6 +529,7 @@ class TestBacktestOwnership:
 
     @pytest.fixture(autouse=True)
     def _cleanup(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
         yield
         app.dependency_overrides.clear()
 
@@ -690,13 +699,13 @@ class TestLegacyResourceBehavior:
     def test_legacy_draft_not_found_for_authenticated_user(self, tmp_path: Path) -> None:
         """A draft written before Phase 3L (no user_id) returns 404 via API."""
         repo = DraftRepository(tmp_path)
-        legacy = _make_draft("legacy", user_id=None)
+        legacy = _make_draft(_LEGACY_DRAFT_UUID, user_id=None)
         repo.save(legacy)
 
         app.dependency_overrides[get_draft_repository] = lambda: repo
         app.dependency_overrides[get_current_user] = lambda: _USER_A
         client = TestClient(app)
-        resp = client.get("/drafts/legacy")
+        resp = client.get(f"/drafts/{_LEGACY_DRAFT_UUID}")
         assert resp.status_code == 404
 
     def test_legacy_catalog_entry_not_found_for_owner(self, tmp_path: Path) -> None:
@@ -733,6 +742,7 @@ class TestProviderCredentialsUnaffected:
 
     @pytest.fixture(autouse=True)
     def _cleanup(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
         yield
         app.dependency_overrides.clear()
 
@@ -768,6 +778,7 @@ class TestCompositionAndBacktestRunOwnership:
 
     @pytest.fixture(autouse=True)
     def _cleanup(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
         yield
         app.dependency_overrides.clear()
 

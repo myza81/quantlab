@@ -56,8 +56,10 @@ export interface StrategyRunResponse {
   error: string | null
 }
 
+import { authedFetch } from './client'
+
 export async function runStrategy(req: StrategyRunRequest): Promise<StrategyRunResponse> {
-  const resp = await fetch('/strategy-runs/run', {
+  const resp = await authedFetch('/strategy-runs/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),

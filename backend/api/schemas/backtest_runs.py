@@ -1,8 +1,9 @@
 """
-Backtest runs API schemas — Phase 2P.9.
+Backtest runs API schemas — Phase 2P.9 / 3S-C.
 
 Request/response schemas for:
     POST /backtests/runs
+    GET  /backtests/runs              (history list — Phase 3S-C)
     GET  /backtests/runs/{run_id}/report
 """
 from __future__ import annotations
@@ -34,6 +35,42 @@ class BacktestRunConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Provenance snapshots (immutable at run time — Phase 3S-C)
+# ---------------------------------------------------------------------------
+
+class DatasetProvenance(BaseModel):
+    """
+    Immutable snapshot of the dataset origin captured at backtest execution.
+
+    Never contains file_path, storage paths, or credential values.
+    bars_fingerprint is a SHA-256 of bar content computed server-side so it
+    cannot be spoofed by the client.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    source_mode:      str | None = None   # 'provider' | 'catalog' | None
+    provider_name:    str | None = None   # 'yahoo' | 'polygon' | None
+    catalog_id:       str | None = None   # catalog entry ID — never file_path
+    bars_fingerprint: str = ""            # SHA-256 of sorted (bar_index, close) pairs
+    bar_count:        int = 0
+
+
+class DraftProvenance(BaseModel):
+    """
+    Immutable snapshot of the strategy draft identity captured at run time.
+
+    Records the lifecycle_status at execution so future promotion decisions
+    can verify exactly which version produced the result.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    draft_id:               str
+    display_name:           str
+    lifecycle_status_at_run: str          # string snapshot — not enum, stays valid post-rename
+    semantics_hash:         str | None = None  # SHA-256 of semantics JSON
+
+
+# ---------------------------------------------------------------------------
 # Request
 # ---------------------------------------------------------------------------
 
@@ -45,6 +82,12 @@ class BacktestRunRequest(BaseModel):
     timeframe: str
     bars:      list[CompositionRunBar]
     config:    BacktestRunConfig = BacktestRunConfig()
+
+    # Optional provenance context from the frontend — enriches the stored report.
+    # Never used for access control; enrichment only.
+    source_mode:   str | None = None   # 'provider' | 'catalog'
+    provider_name: str | None = None   # provider display name
+    catalog_id:    str | None = None   # catalog_id if Source Mode B
 
 
 # ---------------------------------------------------------------------------
@@ -177,9 +220,13 @@ class BacktestRunSummary(BaseModel):
     # Reproducibility metadata — enables re-running from stored context
     dataset_start:  str | None = None  # ISO timestamp of first bar
     dataset_end:    str | None = None  # ISO timestamp of last bar
-    engine_version: str        = "2P.9"  # backtesting engine version tag
+    engine_version: str        = "3S-C"  # backtesting engine version tag
     # Ownership — stored in run JSON for access control; only readable by the owner
     owner_user_id:  str | None = None
+
+    # Provenance snapshots — immutable at run time (Phase 3S-C)
+    dataset_provenance: DatasetProvenance | None = None
+    draft_provenance:   DraftProvenance   | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +243,44 @@ class BacktestReport(BaseModel):
     trades:         list[TradeRecord]
     open_position:  TradeRecord | None
     rejections:     list[BacktestRejectionRecord]
+
+
+# ---------------------------------------------------------------------------
+# History list item — lightweight metadata for GET /backtests/runs
+# Does NOT include equity_curve, drawdown_curve, trades, or rejections.
+# ---------------------------------------------------------------------------
+
+class BacktestRunListItem(BaseModel):
+    """
+    Lightweight backtest run summary for history browsing.
+
+    Returned by GET /backtests/runs. Contains run metadata and key metrics
+    but NOT the full equity curve, drawdown curve, or trade ledger, so it is
+    cheap to render a large history list without loading full payloads.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    run_id:           str
+    draft_id:         str
+    draft_name:       str
+    symbol:           str
+    timeframe:        str
+    bars_count:       int
+    run_timestamp:    str
+    status:           str
+    dataset_start:    str | None = None
+    dataset_end:      str | None = None
+    engine_version:   str = ""
+
+    # Provenance snapshots
+    dataset_provenance: DatasetProvenance | None = None
+    draft_provenance:   DraftProvenance   | None = None
+
+    # Key metrics — enough to scan history without reopening reports
+    total_return_pct:   float | None = None
+    trade_count:        int   | None = None
+    max_drawdown_pct:   float | None = None
+    win_rate:           float | None = None
 
 
 # ---------------------------------------------------------------------------

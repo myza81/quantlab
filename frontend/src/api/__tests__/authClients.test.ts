@@ -1,13 +1,15 @@
 /**
- * Tests for authenticated API clients (Phase 3M).
+ * Tests for authenticated API clients (Phase 3M / 3P-C).
  *
  * Verifies that:
  *   - authedFetch injects the Bearer token and throws AuthError on 401
+ *   - authedFetch throws SubscriptionExpiredError on 403 subscription_required (Phase 3P-C)
+ *   - authedFetch returns the response for other 403s (admin_required etc.)
  *   - Protected clients (drafts, semantics, planInspection, compositionRun, backtestRuns) use authedFetch
  *   - Public clients (backtest, marketData, tools) do NOT require auth and do not throw AuthError on 401
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AuthError, authedFetch, isAuthError } from '../client'
+import { AuthError, authedFetch, isAuthError, isSubscriptionExpiredError, SubscriptionExpiredError } from '../client'
 import * as session from '../../auth/session'
 
 // ---------------------------------------------------------------------------
@@ -97,6 +99,70 @@ describe('authedFetch', () => {
     const resp = await authedFetch('/missing')
     expect(resp.status).toBe(404)
   })
+
+  it('throws SubscriptionExpiredError on 403 with subscription_required code', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: { code: 'subscription_required', subscription_status: 'expired' } }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      )
+    ))
+
+    await expect(authedFetch('/protected')).rejects.toThrow(SubscriptionExpiredError)
+  })
+
+  it('does not throw SubscriptionExpiredError on 403 with different code', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: { code: 'admin_required' } }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      )
+    ))
+
+    const resp = await authedFetch('/admin-only')
+    expect(resp.status).toBe(403)
+  })
+
+  it('does not throw SubscriptionExpiredError on 403 with non-JSON body', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response('Forbidden', { status: 403 })
+    ))
+
+    const resp = await authedFetch('/admin-only')
+    expect(resp.status).toBe(403)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SubscriptionExpiredError
+// ---------------------------------------------------------------------------
+
+describe('SubscriptionExpiredError', () => {
+  it('is an Error subclass with name "SubscriptionExpiredError"', () => {
+    const err = new SubscriptionExpiredError()
+    expect(err).toBeInstanceOf(Error)
+    expect(err.name).toBe('SubscriptionExpiredError')
+    expect(err.message).toBe('Subscription expired')
+  })
+})
+
+describe('isSubscriptionExpiredError', () => {
+  it('returns true for SubscriptionExpiredError instances', () => {
+    expect(isSubscriptionExpiredError(new SubscriptionExpiredError())).toBe(true)
+  })
+
+  it('returns false for AuthError', () => {
+    expect(isSubscriptionExpiredError(new AuthError())).toBe(false)
+  })
+
+  it('returns false for plain Error', () => {
+    expect(isSubscriptionExpiredError(new Error('other'))).toBe(false)
+  })
+
+  it('returns false for non-error values', () => {
+    expect(isSubscriptionExpiredError(null)).toBe(false)
+    expect(isSubscriptionExpiredError(403)).toBe(false)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -150,15 +216,15 @@ describe('semantics client — AuthError propagation', () => {
     await expect(getSemantics('draft-1')).rejects.toThrow(AuthError)
   })
 
-  it('validateSemanticsPayload does NOT throw AuthError on 401 (public endpoint)', async () => {
+  it('validateSemanticsPayload throws AuthError on 401 (protected endpoint — Phase 3S-D)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ valid: false, errors: [] }), { status: 401 })
+      new Response(JSON.stringify({ detail: 'Not authenticated' }), { status: 401 })
     ))
     const { validateSemanticsPayload } = await import('../semantics')
-    // Public endpoint uses plain fetch — 401 is treated as a non-OK HTTP error, not AuthError
+    // Route is now protected — authedFetch raises AuthError on 401
     await expect(
       validateSemanticsPayload({ entry_rules: [], exit_rules: [], metadata: { version: '1' } })
-    ).rejects.toSatisfy((e: unknown) => !isAuthError(e))
+    ).rejects.toThrow(AuthError)
   })
 })
 

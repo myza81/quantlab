@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from backend.strategy_registry.lifecycle import StrategyLifecycleStatus
 from backend.strategy_registry.semantics import StrategySemantics
 from backend.tools.registry import ToolRegistry
 from backend.tools.toolset import StrategyToolSet
@@ -45,6 +46,7 @@ class StrategyDraft(BaseModel):
     notes: str | None = None
     user_id: str | None = None
     semantics: StrategySemantics | None = None
+    lifecycle_status: StrategyLifecycleStatus = StrategyLifecycleStatus.DRAFT
 
     @field_validator("draft_id")
     @classmethod

@@ -25,9 +25,13 @@ const STATUS_MESSAGES: Record<SubscriptionStatus, { headline: string; body: stri
 }
 
 export function SubscriptionGate({ children }: Props) {
-  const { user } = useAuth()
+  const { user, logout } = useAuth()
 
   if (!user) return <>{children}</>
+
+  // Admins are governance identities — role-based access, not subscription-based.
+  // Do not evaluate subscription_status for admin users.
+  if (user.role === 'admin') return <>{children}</>
 
   const status = user.subscription_status
 
@@ -50,6 +54,7 @@ export function SubscriptionGate({ children }: Props) {
         <div style={st.footer}>
           Logged in as <strong>{user.username}</strong>
         </div>
+        <button style={st.signOutBtn} onClick={logout}>Sign out</button>
       </div>
     </div>
   )
@@ -121,8 +126,20 @@ const st: Record<string, React.CSSProperties> = {
     letterSpacing: '0.06em',
   },
   footer: {
-    fontSize:  11,
-    color:     '#2a3040',
+    fontSize:   11,
+    color:      '#2a3040',
     fontFamily: 'monospace',
+    marginBottom: 16,
+  },
+  signOutBtn: {
+    background:    'transparent',
+    border:        '1px solid #2a2d3e',
+    borderRadius:  4,
+    color:         '#4a5568',
+    cursor:        'pointer',
+    fontFamily:    'monospace',
+    fontSize:      11,
+    letterSpacing: '0.04em',
+    padding:       '4px 14px',
   },
 }

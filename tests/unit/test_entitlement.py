@@ -1,18 +1,21 @@
 """
-Phase 3P-A — Subscription Eligibility & Admin Approval Foundation
+Phase 3P-A / 3P-A.1 — Subscription Eligibility, Admin Approval & Entitlement Separation
 
 Tests cover:
   - User.is_entitled: active with no expiry, active with future expiry, active expired,
     pending, suspended, expired status, malformed expiry
   - User.is_admin: user role vs admin role
+  - User.has_platform_access: admin passes regardless of subscription_status;
+    regular users follow is_entitled; correct separation of governance vs entitlement
   - User state transitions: with_active_subscription, with_suspended, with_reactivated
   - User.create(): defaults to pending
   - User.from_dict(): backward-compat legacy users default to active
-  - AdminBootstrap: register with bootstrap email → admin + active subscription
-  - require_active_subscription: active passes, pending/expired/suspended return 403
+  - AdminBootstrap: register with bootstrap email → admin + pending subscription (role-only)
+  - require_active_subscription: admin always passes; active user passes;
+    pending/expired/suspended regular user returns 403
   - require_admin_role: admin passes, user returns 403
   - Admin routes (via TestClient): list_users, get_user, approve, suspend, reactivate
-  - Audit events: ENTITLEMENT_DENIED emitted on rejection
+  - Audit events: ENTITLEMENT_DENIED emitted on rejection (non-admin only)
   - Security invariants: no API path to self-escalate to admin
 """
 from __future__ import annotations
@@ -53,6 +56,11 @@ def _active_user(**kwargs) -> User:
 def _admin_user(**kwargs) -> User:
     return _active_user(user_id="admin1", username="admin", email="admin@example.com",
                         role=UserRole.admin, **kwargs)
+
+
+def _superadmin_user(**kwargs) -> User:
+    return _active_user(user_id="sa1", username="superadmin", email="sa@example.com",
+                        role=UserRole.superadmin, **kwargs)
 
 
 def _make_repo(tmp_path: Path) -> UserRepository:
@@ -105,6 +113,75 @@ class TestIsAdmin:
 
     def test_user_role_not_admin(self):
         assert _active_user().is_admin is False
+
+
+# ---------------------------------------------------------------------------
+# User.has_platform_access — Phase 3P-A.1 entitlement separation
+# ---------------------------------------------------------------------------
+
+class TestHasPlatformAccess:
+    """Admin = role-based access.  Regular user = subscription-based access."""
+
+    # --- Admin passes regardless of subscription_status ---
+
+    def test_admin_with_active_subscription_has_access(self):
+        u = _admin_user(subscription_status=SubscriptionStatus.active)
+        assert u.has_platform_access is True
+
+    def test_admin_with_pending_subscription_has_access(self):
+        u = _admin_user(subscription_status=SubscriptionStatus.pending)
+        assert u.has_platform_access is True
+
+    def test_admin_with_expired_subscription_has_access(self):
+        u = _admin_user(subscription_status=SubscriptionStatus.expired)
+        assert u.has_platform_access is True
+
+    def test_admin_with_suspended_subscription_has_access(self):
+        u = _admin_user(subscription_status=SubscriptionStatus.suspended)
+        assert u.has_platform_access is True
+
+    def test_admin_with_past_expiry_still_has_access(self):
+        past = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+        u = _admin_user(subscription_status=SubscriptionStatus.active, subscription_expires_at=past)
+        assert u.has_platform_access is True
+
+    # --- Regular users follow subscription entitlement ---
+
+    def test_active_user_no_expiry_has_access(self):
+        u = _active_user(subscription_expires_at=None)
+        assert u.has_platform_access is True
+
+    def test_active_user_future_expiry_has_access(self):
+        future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        u = _active_user(subscription_expires_at=future)
+        assert u.has_platform_access is True
+
+    def test_pending_user_no_access(self):
+        u = _active_user(subscription_status=SubscriptionStatus.pending)
+        assert u.has_platform_access is False
+
+    def test_expired_user_no_access(self):
+        u = _active_user(subscription_status=SubscriptionStatus.expired)
+        assert u.has_platform_access is False
+
+    def test_suspended_user_no_access(self):
+        u = _active_user(subscription_status=SubscriptionStatus.suspended)
+        assert u.has_platform_access is False
+
+    def test_active_past_expiry_no_access(self):
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        u = _active_user(subscription_expires_at=past)
+        assert u.has_platform_access is False
+
+    # --- Role is the sole discriminant for admins ---
+
+    def test_user_role_with_active_subscription_has_access(self):
+        u = _active_user(role=UserRole.user)
+        assert u.has_platform_access is True
+
+    def test_user_role_with_pending_no_access(self):
+        u = _active_user(role=UserRole.user, subscription_status=SubscriptionStatus.pending)
+        assert u.has_platform_access is False
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +262,9 @@ class TestUserFactory:
 # ---------------------------------------------------------------------------
 
 class TestAdminBootstrap:
-    def test_bootstrap_email_gets_admin_active(self, tmp_path):
+    def test_bootstrap_email_gets_admin_role(self, tmp_path):
+        # Bootstrap sets role=superadmin (Phase 3P-D). subscription_status stays pending
+        # because admin access is role-based (has_platform_access), not subscription-based.
         repo = _make_repo(tmp_path)
         svc = AuthService(repo)
         with patch("backend.auth.service.settings") as mock_settings:
@@ -195,9 +274,10 @@ class TestAdminBootstrap:
                 email="admin@example.com",
                 password="password123",
             )
-        assert user.role == UserRole.admin
-        assert user.subscription_status == SubscriptionStatus.active
+        assert user.role == UserRole.superadmin
+        assert user.subscription_status == SubscriptionStatus.pending  # not forced to active
         assert user.approved_by_user_id == "bootstrap"
+        assert user.has_platform_access is True  # role-based, not subscription-based
 
     def test_non_bootstrap_email_gets_pending(self, tmp_path):
         repo = _make_repo(tmp_path)
@@ -231,11 +311,11 @@ class TestAdminBootstrap:
 # ---------------------------------------------------------------------------
 
 class TestRequireActiveSubscription:
-    def _invoke(self, user: User) -> User:
+    def _invoke(self, user: User, repo=None) -> User:
         from backend.auth.entitlement import require_active_subscription
-        mock_get_current_user = MagicMock(return_value=user)
-        with patch("backend.auth.entitlement.get_current_user", mock_get_current_user):
-            return require_active_subscription(current_user=user)
+        if repo is None:
+            repo = MagicMock()
+        return require_active_subscription(current_user=user, repository=repo)
 
     def test_active_user_passes(self):
         user = _active_user()
@@ -278,6 +358,49 @@ class TestRequireActiveSubscription:
         event = mock_emit.call_args[0][0]
         assert event.event_kind == AuditEventKind.ENTITLEMENT_DENIED
         assert event.details["user_id"] == user.user_id
+
+    # --- Phase 3P-A.1: admin bypass ---
+
+    def test_admin_with_pending_subscription_passes(self):
+        # Admin role bypasses subscription check entirely
+        admin = _admin_user(subscription_status=SubscriptionStatus.pending)
+        result = self._invoke(admin)
+        assert result is admin
+
+    def test_admin_with_expired_subscription_passes(self):
+        admin = _admin_user(subscription_status=SubscriptionStatus.expired)
+        result = self._invoke(admin)
+        assert result is admin
+
+    def test_admin_with_suspended_subscription_passes(self):
+        admin = _admin_user(subscription_status=SubscriptionStatus.suspended)
+        result = self._invoke(admin)
+        assert result is admin
+
+    def test_admin_with_past_expiry_passes(self):
+        past = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+        admin = _admin_user(
+            subscription_status=SubscriptionStatus.active,
+            subscription_expires_at=past,
+        )
+        result = self._invoke(admin)
+        assert result is admin
+
+    def test_admin_bypass_does_not_emit_audit_event(self):
+        # ENTITLEMENT_DENIED must NOT fire when an admin is passed through
+        admin = _admin_user(subscription_status=SubscriptionStatus.pending)
+        with patch("backend.auth.entitlement.emit_audit_event") as mock_emit:
+            self._invoke(admin)
+        mock_emit.assert_not_called()
+
+    def test_bootstrap_admin_pending_passes(self):
+        # Bootstrap admin has subscription_status=pending; must pass via role
+        admin = _admin_user(
+            subscription_status=SubscriptionStatus.pending,
+            approved_by_user_id="bootstrap",
+        )
+        result = self._invoke(admin)
+        assert result is admin
 
 
 # ---------------------------------------------------------------------------
@@ -438,3 +561,43 @@ class TestAdminRoutes:
             assert resp.status_code == 403
         finally:
             app.dependency_overrides.pop(require_admin_role, None)
+
+
+# ---------------------------------------------------------------------------
+# require_superadmin_role dependency (Phase 3P-D)
+# ---------------------------------------------------------------------------
+
+class TestRequireSuperadminRole:
+    def _invoke(self, user: User) -> User:
+        from backend.auth.entitlement import require_superadmin_role
+        return require_superadmin_role(current_user=user)
+
+    def test_superadmin_passes(self):
+        sa = _superadmin_user()
+        result = self._invoke(sa)
+        assert result is sa
+
+    def test_regular_admin_raises_403(self):
+        admin = _admin_user()
+        with pytest.raises(HTTPException) as exc_info:
+            self._invoke(admin)
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail["code"] == "superadmin_required"
+
+    def test_regular_user_raises_403(self):
+        user = _active_user()
+        with pytest.raises(HTTPException) as exc_info:
+            self._invoke(user)
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail["code"] == "superadmin_required"
+
+    def test_superadmin_is_also_admin(self):
+        # Superadmin satisfies is_admin — they can also use require_admin_role routes
+        sa = _superadmin_user()
+        assert sa.is_admin is True
+        assert sa.is_superadmin is True
+
+    def test_admin_is_not_superadmin(self):
+        admin = _admin_user()
+        assert admin.is_admin is True
+        assert admin.is_superadmin is False

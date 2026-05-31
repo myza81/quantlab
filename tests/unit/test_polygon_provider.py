@@ -538,8 +538,10 @@ class TestPolygonFactoryRegistration:
 
     def test_build_polygon_returns_adapter(self, tmp_path):
         factory = create_default_factory_registry()
-        with patch.dict(os.environ, {"POLYGON_API_KEY": "fake_key"}):
-            adapter = factory.build("polygon", symbol="AAPL", timeframe="1d")
+        with patch("backend.data_providers.provider_factory.settings") as mock_settings:
+            mock_settings.polygon_allow_env_fallback = True
+            with patch.dict(os.environ, {"POLYGON_API_KEY": "fake_key"}):
+                adapter = factory.build("polygon", symbol="AAPL", timeframe="1d")
         assert isinstance(adapter, PolygonProviderAdapter)
 
     def test_missing_api_key_raises_provider_build_error(self):
@@ -557,8 +559,10 @@ class TestPolygonFactoryRegistration:
 class TestPolygonCredentialResolution:
     def test_resolves_api_key_from_env(self):
         factory = create_default_factory_registry()
-        with patch.dict(os.environ, {"POLYGON_API_KEY": "my_secret_key"}):
-            adapter = factory.build("polygon", symbol="AAPL", timeframe="1d")
+        with patch("backend.data_providers.provider_factory.settings") as mock_settings:
+            mock_settings.polygon_allow_env_fallback = True
+            with patch.dict(os.environ, {"POLYGON_API_KEY": "my_secret_key"}):
+                adapter = factory.build("polygon", symbol="AAPL", timeframe="1d")
         assert isinstance(adapter, PolygonProviderAdapter)
 
     def test_missing_key_raises_provider_build_error(self):
@@ -579,14 +583,24 @@ class TestPolygonCredentialResolution:
                 factory.build("polygon", symbol="AAPL", timeframe="1d")
         assert secret not in str(exc_info.value)
 
-    def test_provider_build_error_is_missing_credential_cause(self):
+    def test_provider_build_error_is_missing_credential_cause_when_fallback_enabled(self):
         from backend.core.credentials import MissingCredentialError
+        factory = create_default_factory_registry()
+        env = {k: v for k, v in os.environ.items() if k != "POLYGON_API_KEY"}
+        with patch("backend.data_providers.provider_factory.settings") as mock_settings:
+            mock_settings.polygon_allow_env_fallback = True
+            with patch.dict(os.environ, env, clear=True):
+                with pytest.raises(ProviderBuildError) as exc_info:
+                    factory.build("polygon", symbol="AAPL", timeframe="1d")
+        assert isinstance(exc_info.value.__cause__, MissingCredentialError)
+
+    def test_provider_build_error_has_no_cause_when_fallback_disabled(self):
         factory = create_default_factory_registry()
         env = {k: v for k, v in os.environ.items() if k != "POLYGON_API_KEY"}
         with patch.dict(os.environ, env, clear=True):
             with pytest.raises(ProviderBuildError) as exc_info:
                 factory.build("polygon", symbol="AAPL", timeframe="1d")
-        assert isinstance(exc_info.value.__cause__, MissingCredentialError)
+        assert exc_info.value.__cause__ is None
 
     def test_audit_events_emitted_on_resolution_attempt(self):
         import logging
@@ -603,11 +617,13 @@ class TestPolygonCredentialResolution:
         audit_logger.setLevel(logging.DEBUG)
         try:
             env = {k: v for k, v in os.environ.items() if k != "POLYGON_API_KEY"}
-            with patch.dict(os.environ, env, clear=True):
-                try:
-                    factory.build("polygon", symbol="AAPL", timeframe="1d")
-                except ProviderBuildError:
-                    pass
+            with patch("backend.data_providers.provider_factory.settings") as mock_settings:
+                mock_settings.polygon_allow_env_fallback = True
+                with patch.dict(os.environ, env, clear=True):
+                    try:
+                        factory.build("polygon", symbol="AAPL", timeframe="1d")
+                    except ProviderBuildError:
+                        pass
         finally:
             audit_logger.removeHandler(handler)
 

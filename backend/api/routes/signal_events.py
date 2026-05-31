@@ -11,16 +11,21 @@ No portfolio. No trades. No PnL. No execution. No orders.
 
 Signal events are informational — they record which rules triggered on
 which bars. Capital allocation and execution decisions are not made here.
+
+Phase 3S-B: requires require_active_subscription — compute-heavy research
+primitive; must not be publicly callable.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from backend.api.schemas.historical_evaluation import HistoricalEvaluationRequest
 from backend.api.services.signal_event_service import (
     SignalEventExtractionError,
     extract_signal_events_from_payload,
 )
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.strategy_registry.signal_events import SignalEventBatch
 
 router = APIRouter(prefix="/semantics", tags=["signal-events"])
@@ -29,6 +34,7 @@ router = APIRouter(prefix="/semantics", tags=["signal-events"])
 @router.post("/extract-signal-events", response_model=SignalEventBatch)
 def post_extract_signal_events(
     request: HistoricalEvaluationRequest,
+    current_user: User = Depends(require_active_subscription),
 ) -> SignalEventBatch:
     """
     Evaluate semantics over bars and extract passive semantic signal events.

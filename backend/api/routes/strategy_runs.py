@@ -2,7 +2,7 @@
 Strategy runs API route — thin layer delegating to strategy_run_service.
 
 Endpoints:
-    POST /strategy-runs/run               — execute a file-based strategy over a historical window
+    POST /strategy-runs/run               — execute a file-based strategy (deprecated; use /strategy-runs/run-composition)
     POST /strategy-runs/run-composition   — run a saved Composer draft against chart bars
 """
 import logging
@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from backend.api.dependencies import get_draft_repository
 from backend.api.schemas.composition_run import CompositionRunRequest, CompositionRunResponse
 from backend.api.schemas.strategy_runs import StrategyRunRequest, StrategyRunResponse
 from backend.api.services.composition_run_service import CompositionRunError, run_composition
@@ -28,12 +29,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/strategy-runs", tags=["strategy-runs"])
 
-_DEFAULT_DRAFT_STORAGE = Path("storage/strategy_drafts")
-
-
-def get_draft_repository() -> DraftRepository:
-    return DraftRepository(_DEFAULT_DRAFT_STORAGE)
-
 
 def get_storage_path() -> Path:
     """Dependency — overridable in tests via app.dependency_overrides."""
@@ -50,6 +45,7 @@ def run_strategy_endpoint(
     request: StrategyRunRequest,
     storage_path: Path = Depends(get_storage_path),
     strategies_path: Path = Depends(get_strategies_path),
+    current_user: User = Depends(require_active_subscription),
 ) -> StrategyRunResponse:
     try:
         return run_strategy(

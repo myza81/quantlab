@@ -27,6 +27,9 @@ from backend.strategy_registry.drafts import StrategyDraft
 from backend.tools.configuration import ToolConfiguration
 from backend.tools.toolset import StrategyToolSet
 
+# Valid UUID for regression tests that call /drafts/{id} path-param routes (Phase 3S-D).
+_REG_DRAFT_ID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
 _UTC = timezone.utc
 _NOW = datetime(2026, 5, 18, 12, 0, 0, tzinfo=_UTC)
 
@@ -516,7 +519,7 @@ class TestRegressionExistingDraftsAPI:
     def test_list_drafts_still_works(self, tmp_path: Path) -> None:
         client = _client(tmp_path)
         try:
-            _seed_draft(client)
+            _seed_draft(client, draft_id=_REG_DRAFT_ID)
             response = client.get("/drafts")
             assert response.status_code == 200
             assert response.json()["count"] == 1
@@ -526,8 +529,8 @@ class TestRegressionExistingDraftsAPI:
     def test_get_draft_still_works(self, tmp_path: Path) -> None:
         client = _client(tmp_path)
         try:
-            _seed_draft(client)
-            response = client.get("/drafts/alpha")
+            _seed_draft(client, draft_id=_REG_DRAFT_ID)
+            response = client.get(f"/drafts/{_REG_DRAFT_ID}")
             assert response.status_code == 200
         finally:
             _cleanup()
@@ -535,8 +538,8 @@ class TestRegressionExistingDraftsAPI:
     def test_archive_draft_still_works(self, tmp_path: Path) -> None:
         client = _client(tmp_path)
         try:
-            _seed_draft(client)
-            response = client.post("/drafts/alpha/archive")
+            _seed_draft(client, draft_id=_REG_DRAFT_ID)
+            response = client.post(f"/drafts/{_REG_DRAFT_ID}/archive")
             assert response.status_code == 204
         finally:
             _cleanup()
@@ -544,8 +547,8 @@ class TestRegressionExistingDraftsAPI:
     def test_delete_draft_still_works(self, tmp_path: Path) -> None:
         client = _client(tmp_path)
         try:
-            _seed_draft(client)
-            response = client.delete("/drafts/alpha")
+            _seed_draft(client, draft_id=_REG_DRAFT_ID)
+            response = client.delete(f"/drafts/{_REG_DRAFT_ID}")
             assert response.status_code == 204
         finally:
             _cleanup()

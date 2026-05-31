@@ -60,7 +60,7 @@ from backend.backtesting.models import PositionSizeMode
 # ---------------------------------------------------------------------------
 
 _TS = "2024-01-15T10:00:00+00:00"
-_RUN_ID = "test-run-00000000-0000-0000-0000-000000000001"
+_RUN_ID = "00000000-0000-0000-0000-000000000001"
 
 
 def _config() -> BacktestRunConfig:
@@ -428,7 +428,8 @@ def test_api_export_404_for_unknown_run_id(export_client):
         side_effect=BacktestRunError("not found"),
     ):
         for endpoint in ("trades", "equity", "report"):
-            resp = export_client.get(f"/backtests/runs/nonexistent/export/{endpoint}")
+            # Use a valid UUID so UUID validation passes; service raises BacktestRunError → 404
+            resp = export_client.get(f"/backtests/runs/{_RUN_ID}/export/{endpoint}")
             assert resp.status_code == 404, f"{endpoint} should return 404"
 
 
@@ -467,7 +468,7 @@ def test_run_summary_reproducibility_fields_optional():
     )
     assert summary.dataset_start is None
     assert summary.dataset_end is None
-    assert summary.engine_version == "2P.9"
+    assert summary.engine_version == "3S-C"
 
 
 def test_trade_record_audit_fields():

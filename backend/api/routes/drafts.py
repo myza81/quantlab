@@ -14,10 +14,10 @@ Endpoints:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from backend.api.dependencies import get_draft_repository
 from backend.api.schemas.drafts import (
     DraftCreateRequest,
     DraftListResponse,
@@ -27,6 +27,7 @@ from backend.api.schemas.drafts import (
 from backend.api.services import draft_service
 from backend.auth.entitlement import require_active_subscription
 from backend.auth.models import User
+from backend.core.request_validation import validate_uuid_id
 from backend.strategy_registry.draft_repository import (
     DraftAlreadyExistsError,
     DraftNotFoundError,
@@ -37,12 +38,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/drafts", tags=["drafts"])
 
-_DEFAULT_STORAGE = Path("storage/strategy_drafts")
-
-
-def get_draft_repository() -> DraftRepository:
-    """Dependency — overridable in tests via app.dependency_overrides."""
-    return DraftRepository(_DEFAULT_STORAGE)
+# Re-export so other route modules that import get_draft_repository from here
+# continue to work without modification.
+__all__ = ["get_draft_repository", "router"]
 
 
 @router.get("", response_model=DraftListResponse)
@@ -72,6 +70,10 @@ def get_draft(
     current_user: User = Depends(require_active_subscription),
 ) -> DraftResponse:
     try:
+        validate_uuid_id(draft_id, "draft_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
         return draft_service.get_draft(draft_id, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -85,9 +87,15 @@ def update_draft(
     current_user: User = Depends(require_active_subscription),
 ) -> DraftResponse:
     try:
+        validate_uuid_id(draft_id, "draft_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
         return draft_service.update_draft(draft_id, request, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/{draft_id}/archive", status_code=204)
@@ -96,6 +104,10 @@ def archive_draft(
     repository: DraftRepository = Depends(get_draft_repository),
     current_user: User = Depends(require_active_subscription),
 ) -> None:
+    try:
+        validate_uuid_id(draft_id, "draft_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         draft_service.archive_draft(draft_id, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:
@@ -108,6 +120,10 @@ def delete_draft(
     repository: DraftRepository = Depends(get_draft_repository),
     current_user: User = Depends(require_active_subscription),
 ) -> None:
+    try:
+        validate_uuid_id(draft_id, "draft_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         draft_service.delete_draft(draft_id, repository, owner_id=current_user.user_id)
     except DraftNotFoundError as exc:

@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from backend.strategy_registry.lifecycle import StrategyLifecycleStatus
 from backend.strategy_registry.semantics import StrategySemantics
 from backend.tools.toolset import StrategyToolSet
 
@@ -31,6 +32,7 @@ class DraftCreateRequest(BaseModel):
     enabled: bool = True
     tags: list[str] = []
     notes: str | None = None
+    lifecycle_status: StrategyLifecycleStatus = StrategyLifecycleStatus.DRAFT
 
 
 class DraftUpdateRequest(BaseModel):
@@ -49,6 +51,7 @@ class DraftUpdateRequest(BaseModel):
     enabled: bool | None = None
     tags: list[str] | None = None
     notes: str | None = None
+    lifecycle_status: StrategyLifecycleStatus | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +85,7 @@ class DraftResponse(BaseModel):
     tags: list[str]
     notes: str | None
     semantics: StrategySemantics | None = None
+    lifecycle_status: StrategyLifecycleStatus = StrategyLifecycleStatus.DRAFT
 
 
 class DraftListResponse(BaseModel):

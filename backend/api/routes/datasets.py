@@ -1,10 +1,18 @@
 """
-Dataset API routes — thin layer delegating to dataset_service.
+Dataset API routes — DEPRECATED (Phase 3S-D).
 
-Endpoints:
-    POST /datasets/import/csv   — import a CSV file as a normalized Parquet dataset
-    GET  /datasets              — list stored datasets
-    GET  /datasets/{dataset_id}/ohlcv — read normalized candle data
+These routes predate the governed dataset catalog system (/catalog/*).
+They are retained for backward compatibility but:
+  - all routes now require require_active_subscription
+  - no new functionality will be added here
+  - callers should migrate to /catalog/* endpoints
+
+Canonical dataset workflow: POST/GET/DELETE /catalog/datasets
+
+Endpoints (deprecated):
+    POST /datasets/import/csv          — import CSV → Parquet (deprecated: use catalog)
+    GET  /datasets                     — list stored datasets (deprecated: use catalog)
+    GET  /datasets/{dataset_id}/ohlcv  — read candle data (deprecated: use catalog)
 """
 import logging
 from pathlib import Path
@@ -22,12 +30,14 @@ from backend.api.services.dataset_service import (
     DatasetNotFoundError,
     parse_dataset_id,
 )
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.core.config import settings
 from backend.data_providers.csv_adapter import CSVColumnMap
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/datasets", tags=["datasets"])
+router = APIRouter(prefix="/datasets", tags=["datasets-deprecated"])
 
 
 def get_storage_path() -> Path:
@@ -50,6 +60,7 @@ async def import_csv(
     close_col: str = Form("close"),
     volume_col: str = Form("volume"),
     storage_path: Path = Depends(get_storage_path),
+    current_user: User = Depends(require_active_subscription),
 ) -> ImportCSVResponse:
     file_bytes = await file.read()
     column_map = CSVColumnMap(
@@ -78,6 +89,7 @@ async def import_csv(
 @router.get("", response_model=DatasetListResponse)
 def list_datasets(
     storage_path: Path = Depends(get_storage_path),
+    current_user: User = Depends(require_active_subscription),
 ) -> DatasetListResponse:
     return dataset_service.list_datasets(storage_path)
 
@@ -86,6 +98,7 @@ def list_datasets(
 def get_ohlcv(
     dataset_id: str,
     storage_path: Path = Depends(get_storage_path),
+    current_user: User = Depends(require_active_subscription),
 ) -> DatasetOHLCVResponse:
     try:
         asset_class, symbol, timeframe = parse_dataset_id(dataset_id)

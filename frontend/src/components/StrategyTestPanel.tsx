@@ -18,16 +18,19 @@ import type { BacktestReport, BacktestRunConfig } from '../types/backtestRuns'
 import { DEFAULT_BACKTEST_CONFIG } from '../types/backtestRuns'
 import type { StrategyDraftData } from '../types/drafts'
 import type { OHLCVCandle } from '../api/marketData'
+import type { ResearchSession } from '../types/researchSession'
 
 interface Props {
-  candles:          OHLCVCandle[]
-  symbol:           string
-  timeframe:        string
-  onResult:         (result: CompositionRunResponse) => void
-  onBacktestResult: (report: BacktestReport) => void
+  candles:               OHLCVCandle[]
+  symbol:                string
+  timeframe:             string
+  sessionContext?:       ResearchSession
+  onResult:              (result: CompositionRunResponse) => void
+  onBacktestResult:      (report: BacktestReport) => void
+  onNavigateToComposer?: () => void
 }
 
-export function StrategyTestPanel({ candles, symbol, timeframe, onResult, onBacktestResult }: Props) {
+export function StrategyTestPanel({ candles, symbol, timeframe, sessionContext, onResult, onBacktestResult, onNavigateToComposer }: Props) {
   const { logout } = useAuth()
   const [drafts,       setDrafts]       = useState<StrategyDraftData[]>([])
   const [listLoading,  setListLoading]  = useState(true)
@@ -103,7 +106,11 @@ export function StrategyTestPanel({ candles, symbol, timeframe, onResult, onBack
     setBtRunning(true)
     setBtError(null)
     try {
-      const response = await runBacktest(selectedId, symbol, timeframe, candles, btConfig)
+      const response = await runBacktest(selectedId, symbol, timeframe, candles, btConfig, {
+        source_mode:   sessionContext?.sourceMode ?? undefined,
+        provider_name: sessionContext?.providerName ?? undefined,
+        catalog_id:    sessionContext?.catalogId ?? undefined,
+      })
       onBacktestResult(response.report)
     } catch (e) {
       if (isAuthError(e)) { logout(); return }
@@ -126,7 +133,37 @@ export function StrategyTestPanel({ candles, symbol, timeframe, onResult, onBack
   return (
     <div style={s.panel}>
       {/* ── Section title ── */}
-      <div style={s.sectionTitle}>Strategy Test</div>
+      <div style={s.sectionTitle}>
+        <span>Strategy Test</span>
+        {onNavigateToComposer && (
+          <button
+            data-testid="goto-composer-btn"
+            style={s.composerShortcut}
+            onClick={onNavigateToComposer}
+            title="Open Composer"
+          >
+            + Composer
+          </button>
+        )}
+      </div>
+
+      {/* ── Data source context ── */}
+      {sessionContext?.sourceMode && (
+        <div data-testid="data-source-context" style={s.sourceCtx}>
+          <span style={s.sourceKey}>data</span>
+          <span style={s.sourceVal}>
+            {sessionContext.sourceMode === 'catalog'
+              ? `catalog · ${sessionContext.catalogDisplayName ?? sessionContext.catalogId?.slice(0, 8) ?? '?'}`
+              : sessionContext.providerName ?? 'provider'}
+          </span>
+          <span style={s.sourceSep}>·</span>
+          <span style={s.sourceVal}>{sessionContext.symbol}</span>
+          <span style={s.sourceSep}>·</span>
+          <span style={s.sourceVal}>{sessionContext.timeframe}</span>
+          <span style={s.sourceSep}>·</span>
+          <span style={s.sourceVal}>{sessionContext.candleCount.toLocaleString()} bars</span>
+        </div>
+      )}
 
       {/* ── Draft selector ── */}
       <div style={s.group}>
@@ -165,7 +202,7 @@ export function StrategyTestPanel({ candles, symbol, timeframe, onResult, onBack
         )}
 
         {hasDraft && !hasData && (
-          <div style={s.hint}>Load chart data first.</div>
+          <div style={s.hint}>Fetch data from Chart or load a dataset from Datasets to continue.</div>
         )}
         {!hasDraft && !listLoading && drafts.length > 0 && (
           <div style={s.hint}>Select a strategy to begin.</div>
@@ -348,6 +385,43 @@ const s: Record<string, React.CSSProperties> = {
     letterSpacing: '0.09em',
     padding:       '14px 14px 8px',
     borderBottom:  '1px solid #1e1e30',
+    display:       'flex',
+    alignItems:    'center',
+    justifyContent: 'space-between',
+  },
+  composerShortcut: {
+    background:    'transparent',
+    border:        '1px solid #1e2a3a',
+    borderRadius:  3,
+    color:         '#3a6080',
+    cursor:        'pointer',
+    fontFamily:    'monospace',
+    fontSize:      9,
+    letterSpacing: '0.04em',
+    padding:       '2px 7px',
+  },
+  sourceCtx: {
+    display:      'flex',
+    alignItems:   'center',
+    gap:          5,
+    padding:      '5px 14px',
+    borderBottom: '1px solid #0f0f20',
+    flexWrap:     'wrap' as const,
+  },
+  sourceKey: {
+    fontSize:      9,
+    color:         '#2a3040',
+    fontFamily:    'monospace',
+    letterSpacing: '0.04em',
+  },
+  sourceVal: {
+    fontSize:   9,
+    color:      '#3a4a5a',
+    fontFamily: 'monospace',
+  },
+  sourceSep: {
+    fontSize: 9,
+    color:    '#1a1a28',
   },
   group: {
     display:       'flex',

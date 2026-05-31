@@ -18,6 +18,7 @@ export default defineConfig({
       '/auth': 'http://localhost:8000',
       '/provider-credentials': 'http://localhost:8000',
       '/catalog': 'http://localhost:8000',
+      '/admin': 'http://localhost:8000',
     },
   },
   test: {

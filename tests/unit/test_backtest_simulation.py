@@ -55,12 +55,24 @@ from backend.backtesting.models import (
 )
 from backend.backtesting.position_tracker import PositionState, process_intent
 from backend.backtesting.simulator import run_simulation
+from backend.auth.entitlement import require_active_subscription
+from backend.auth.models import User
 from backend.strategy_registry.trade_intents import (
     TradeIntent,
     TradeIntentAction,
     TradeIntentBatch,
     TradeIntentSource,
     TradeIntentSummary,
+)
+
+_TEST_USER = User(
+    user_id="test-user",
+    username="testuser",
+    email="test@example.com",
+    password_hash="x",
+    created_at="2024-01-01T00:00:00Z",
+    role="user",
+    subscription_status="active",
 )
 
 client = TestClient(app)
@@ -871,6 +883,12 @@ class TestPeakTroughEquity:
 # ---------------------------------------------------------------------------
 
 class TestBacktestSimulationAPI:
+    def setup_method(self):
+        app.dependency_overrides[require_active_subscription] = lambda: _TEST_USER
+
+    def teardown_method(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
+
     def _build_request(
         self,
         intents: list[TradeIntent] | None = None,

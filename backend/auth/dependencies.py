@@ -20,13 +20,14 @@ from backend.core.config import settings
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def _get_user_repository() -> UserRepository:
+def get_user_repository() -> UserRepository:
+    """FastAPI dependency: returns a UserRepository backed by the configured users file."""
     return UserRepository(settings.users_file_path)
 
 
 def get_optional_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-    repository: UserRepository = Depends(_get_user_repository),
+    repository: UserRepository = Depends(get_user_repository),
 ) -> User | None:
     """
     FastAPI dependency. Returns the authenticated User or None.
@@ -47,7 +48,7 @@ def get_optional_current_user(
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-    repository: UserRepository = Depends(_get_user_repository),
+    repository: UserRepository = Depends(get_user_repository),
 ) -> User:
     """
     FastAPI dependency. Returns the authenticated User.

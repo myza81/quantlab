@@ -1,1106 +1,262 @@
 # TASKS.md
 
-## Purpose
-
-This document manages implementation coordination, execution sequencing, repository maturity progression, and active development priorities for QuantLab.
-
-This is not a simple TODO list.
-
-The purpose of this document is to:
-
-* coordinate implementation phases
-* preserve architectural sequencing
-* prevent premature implementation
-* manage repository maturity evolution
-* identify active priorities
-* track dependencies and blockers
-* maintain implementation continuity across AI sessions
-
-This document should remain:
-* operational
-* structured
-* high-signal
-* modular
-* current
-* flexible
-
-Avoid converting this file into:
-* long-form project documentation
-* architecture explanations
-* implementation logs
-* research notes
-* bloated historical status records
-
-TASKS.md is a living operational document.
-
-It should be updated when priorities, blockers, active work, or repository maturity changes.
-
-However, it must not become a full historical archive. Completed or obsolete details should be summarized, compressed, or moved out when they no longer help current execution.
+Active implementation coordination for QuantLab. Answers: what's next, what's active, what's blocked, what's deferred.
+Not a historical archive — completed phase detail lives in `agent/archive/HANDOFF_HISTORY.md`.
 
 ---
 
-# Current Repository Phase
+# Current Phase Status
 
-## Active Phase
+**Phase 4D — Paper Trading Architecture Review — COMPLETE**
+(no code changes; architecture-only phase)
+- `docs/PAPER_TRADING_IMPLEMENTATION_REVIEW.md` — 18 sections: purpose/scope, architecture docs reviewed, directly reusable components (10), missing components (18), account/order/fill/position/portfolio/session model recommendations, promotion lifecycle, audit taxonomy (29 PT_* events), storage assessment, workflow design (14 routes + UI), risks (6 risks + 2 open questions), implementation roadmap (4E.1–4E.6), readiness assessment, recommended next phase
+- Architecture documents reviewed: `PAPER_TRADING_ARCHITECTURE.md`, `EXECUTION_CONTRACT.md`, `EXECUTION_AUDIT_MODEL.md`, `STRATEGY_PROMOTION_LIFECYCLE.md`, `FORWARD_TESTING_IMPLEMENTATION_REVIEW.md`
+- Codebase surveyed: `backend/forward_testing/`, `backend/strategy_registry/`, `backend/execution/`, `backend/core/audit.py`, `backend/api/routes/forward_tests.py`
+- Readiness rating: **A−** — all architecture documents complete; implementation complexity manageable; `next_bar_open` cross-bar state concern requires explicit design before Phase 4E.3; `PAPER_TESTED` enum presence requires pre-start verification
 
-PHASE 3P-A — SUBSCRIPTION ELIGIBILITY & ADMIN APPROVAL FOUNDATION COMPLETE
-(backend: 3415 tests | frontend: 71 tests | tsc clean)
+**Phase 4C.6 — Integration Validation — COMPLETE**
+(backend: 4 188 tests | 65 new tests added)
+- `tests/integration/__init__.py` — new integration test package
+- `tests/integration/test_forward_testing_integration.py` — 65 tests across 10 sections (A: service E2E, B: signal idempotency, C: calendar gap detection, D: ownership isolation, E: lifecycle gate, F: entitlement gate, G: lifecycle transitions HTTP, H: audit event emission, I: API security invariants, J: full workflow HTTP)
+- All 13 validation objectives PASSED: end-to-end workflow, ownership isolation, lifecycle gate, entitlement gate, warmup bar correctness, signal generation, signal idempotency, calendar gap detection, audit taxonomy, API security, UUID validation, terminal state guards, resume pre-check
+- 4 test defects fixed: sessions missing `semantics=` in poll-path tests caused `_prepare_strategy()` early return; no production code defects
+- Forward testing integration readiness rating: **B** — all Phase 4C objectives met; known limitations: log-only audit, JSON-backed storage, no holiday calendar, no FT_SESSION_COMPLETED route in Phase 4C scope
 
-Previous completed phases: 3O (Credential-Aware Market Data UX), 3N (Frontend Credential Management UI), 3M.1 (Browser Auth Validation), 3M (Frontend Ownership Integration), 3L (User Ownership & Resource Scoping), 3J (Provider Credential Resolver), 3I (User Credential Vault), 3H (Auth & User Identity), 3G (Polygon Provider), 3F (Security Baseline), 3E (Dataset Catalog), 3D (Local CSV/Parquet Providers), 3C (Cache Architecture), 3B (Dataset Identity), 3A (Provider Layer)
+**Phase 4C.5 — Forward Testing API Routes + Frontend Panel — COMPLETE**
+(backend: 4 123 tests | 37 new tests added | frontend: 183 tests | 28 new tests added)
+- `backend/api/schemas/forward_testing.py` — 7 request/response schemas; no `strategy_json`, no `user_id` in list/summary responses; no `file_path`
+- `backend/api/routes/forward_testing.py` — 9 routes under `/forward-tests`; all require `require_active_subscription`; `user_id` always from JWT; wrong-owner→404; session creation: lifecycle gate (>=backtested) + snapshot seal + SHA-256 hash + warmup derivation; run-cycle: catalog rejection (422) + vault credential resolution + provider build + `DatasetIdentity` + `ForwardTestService.run_cycle()`; resume pre-check (PAUSED only); pause/terminate; signals; bars
+- `backend/api/dependencies.py` — `get_ohlcv_service()`, `get_tool_registry()`, `get_provider_factory()` added
+- `backend/forward_testing/models.py` — `ForwardTestSession` extended: `credential_id`, `exchange="NASDAQ"`, `asset_class="equity"` (defaulted, backward-compatible)
+- `tests/unit/test_forward_testing_routes.py` — 37 tests: create (7), list (5), get (3), run-cycle (4), pause (3), resume (3), terminate (4), signals (3), bars (3), auth (1)
+- `frontend/src/types/forwardTesting.ts` — TypeScript types mirror backend schemas
+- `frontend/src/api/forwardTests.ts` — 9 API functions; all use `authedFetch`; no `setInterval` auto-polling
+- `frontend/src/components/ForwardTestPanel.tsx` — session list + status badges + contextual action buttons + create form + signal history drill-in
+- `frontend/src/App.tsx` — "Forward Test" nav tab added; `ActiveView` type extended
+- `frontend/src/api/__tests__/forwardTests.test.ts` — 13 API client tests
+- `frontend/src/components/__tests__/ForwardTestPanel.test.tsx` — 15 component tests
 
-Current repository focus:
-* base scaffold established (backend, frontend, strategies, datasets)
-* normalization layer complete (`backend/data/`, `backend/data_providers/`)
-* storage layer hardened (`backend/storage/` — Parquet, DuckDB, provider-aware OHLCVStore, coverage registry)
-* data models layer added (`backend/data/models/` — `Instrument`, `DatasetIdentity`, `AdjustmentMode`)
-* strategy registry foundation complete (`backend/strategy_registry/`)
-* strategy runtime interface + contract hardening complete (`backend/strategy_runtime/`)
-* strategy runtime orchestration foundation complete (`backend/strategy_runtime/` — runner, context, forecast, result)
-* OHLCV retrieval orchestration complete (`backend/services/` — `OHLCVService`)
-* dataset API layer complete (`backend/api/routes/datasets.py`, `backend/api/services/dataset_service.py`, `backend/api/schemas/dataset.py`)
-* DEBUG config parsing hardened (`backend/core/config.py`)
-* dataset catalog complete (`backend/storage/dataset_catalog.py`, `backend/api/routes/catalog.py`, `backend/api/services/catalog_service.py`, `backend/api/schemas/catalog.py`) — file_path isolation enforced; 5 HTTP endpoints under `/catalog`
-* security baseline complete (`backend/core/credentials.py`, `backend/core/audit.py`, `backend/core/request_validation.py`) — CredentialSpec + EnvironmentCredentialResolver; AuditEvent + emit_audit_event; date range + provider_type validators; sanitized provider errors; audit hooks in catalog_service
-* Polygon.io provider complete (Phase 3G): `PolygonProviderAdapter` (all 15 canonical timeframes, pagination, sanitized errors, vwap/trade_count); `_build_polygon_adapter` factory builder (MissingCredentialError → ProviderBuildError); factory now len=4 (yahoo/csv/parquet/polygon); 85 new tests; 3125 total
-* authentication & user identity foundation complete (Phase 3H): `backend/auth/` (User, password bcrypt, JWT tokens, UserRepository JSON-backed, AuthService, get_current_user dependency); POST /auth/register + POST /auth/login + GET /auth/me; 5 new AuditEventKind values; bcrypt+PyJWT+email-validator deps; 83 new tests; 3208 total
-* user provider credential vault complete (Phase 3I): `backend/vault/` (ProviderCredential, Fernet crypto, CredentialRepository JSON-backed, VaultService with ownership enforcement, get_vault_service dep); POST/GET/PATCH/DELETE /provider-credentials; 7 new AuditEventKind values; cryptography dep; 88 new tests; 3296 total; Polygon backward compat confirmed
-* provider credential resolver refactor complete (Phase 3J): Polygon now supports user-owned vault credentials as primary path; `get_optional_current_user` dep added; `_build_polygon_adapter` accepts `api_key` kwarg; `_resolve_provider_api_key` service helper resolves vault credential before factory.build(); `/market-data/ohlcv` accepts optional `credential_id` + auth gate; ENV fallback preserved + documented; 33 new tests; 3329 total
-* user ownership & resource scoping complete (Phase 3L): drafts, catalog entries, backtest runs are now user-owned; `user_id` always from JWT; wrong-owner → HTTP 404 (information hiding, same exception as not-found); legacy resources (user_id=None) inaccessible to authenticated users; 14 modified route/service/schema files; 10 updated test files; `tests/unit/test_ownership.py` (50 tests, 9 classes); `docs/OWNERSHIP_SCOPING.md`; 50 new tests; 3379 total
-* frontend ownership integration complete (Phase 3M): `AuthError` class + `isAuthError` type guard + `authedFetch` throws on 401; drafts/semantics/planInspection/compositionRun/backtestRuns all use `authedFetch`; semantics `validateSemanticsPayload` stays on plain fetch (public); download functions converted from anchor-click to authenticated blob URL; `StrategyTestPanel` + `DraftWorkspace` call `logout()` on `AuthError`; 17 new frontend tests; `tsc --noEmit` clean; 32 total frontend tests passing
-* credential-aware market data workflow complete (Phase 3O): `fetchOHLCV` credential_id + authedFetch path; `Controls.tsx` polygon provider + credential selector (filtered by provider, active only, empty state); `App.tsx` `DatasetMetaBadge` + `fetchMetadata` state + isAuthError in handleFetch; `DatasetFetchMetadata` type; 12 new tests; 60 total frontend tests; `tsc --noEmit` clean
-* subscription eligibility & admin approval foundation complete (Phase 3P-A): `UserRole` + `SubscriptionStatus` enums + 7 new User fields; `User.create()` defaults to pending; `User.from_dict()` backward-compat defaults to active for legacy users; `require_active_subscription` + `require_admin_role` entitlement deps (admin does NOT depend on subscription so admins can manage users after expiry); `AdminService` + 5 admin routes (`GET/POST /admin/users/*`); `admin_bootstrap_email` config-driven bootstrap (no hardcoded superuser); 5 new AuditEventKind values; `SubscriptionGate.tsx` blocking overlay for pending/expired/suspended; `User` type + `SubscriptionStatus` + `UserRole` in frontend; `fetchOHLCV` always uses `authedFetch`; 33 new backend tests; 11 new frontend tests; 3415 backend total; 71 frontend total
-* provider credential management UI complete (Phase 3N): `CredentialManager` component (list/add/disable/delete); `credentials.ts` API client (all via `authedFetch`); `credentials.ts` types (no secret fields); "Credentials" nav tab in `App.tsx`; 16 new tests; 48 total frontend tests; `tsc --noEmit` clean; secret cleared from state immediately after API call
-* browser-level authentication & ownership validation complete (Phase 3M.1): 4 integration bugs found and fixed (AuthGuard blank screen, `/catalog` missing from Vite proxy, composition run returns 422 instead of 404 for wrong-owner draft, backtest run returns 422 instead of 404 for wrong-owner draft); `TestCompositionAndBacktestRunOwnership` (3 tests) added to `test_ownership.py`; 53 total ownership tests; `docs/VALIDATION_3M1.md` written
-* provider registry foundation complete (`backend/data_providers/provider_registry.py`)
-* provider symbol mapping foundation complete (`backend/data_providers/provider_symbol_map.py`)
-* Yahoo Finance provider adapter complete (`backend/data_providers/yahoo/` — adapter + metadata)
-* OHLCVService extended with registry integration method
-* market data API route added (`GET /market-data/ohlcv`)
-* tool registry foundation complete (`backend/tools/`)
-* tool discovery API complete (`GET /tools`)
-* frontend dynamic tool discovery complete (ToolPanel, tools.ts, vite proxy)
-* tool configuration contracts complete (ToolConfiguration, validate_tool_configuration, ConfiguredToolList)
-* strategy toolset contracts complete (StrategyToolSet, ToolSetPanel, duplicate protection, ordered collection)
-* registry-backed toolset validation complete (ToolSetValidationResult, validate_strategy_toolset_against_registry)
-* toolset validation API complete (`POST /tools/validate-toolset`, ToolSetValidationResponse, validate_toolset service)
-* strategy draft contracts complete (StrategyDraft model, validate_against_registry, StrategyDraftCard component, StrategyDraftData type)
-* strategy draft persistence complete (DraftRepository, draft service, /drafts REST API with CRUD + archive)
-* strategy draft composition complete (add/remove/reorder/patch tool, validate endpoint, typed errors, immutable updates)
-* frontend draft workspace complete (DraftWorkspace, DraftListPanel, DraftDetailView, ToolCompositionPanel, AddToolForm, drafts API client)
-* browser-level Draft Workspace validation complete (startup, create, add tool, edit, reorder, toggle, validate, delete, archive, refresh, restart persistence)
-* runtime stabilization complete for draft list synchronization and per-draft UI state reset
-* frontend npm install confirmed, `tsc && vite build` passes
-* semantic foundation complete (StrategySemantics, ConditionGroup recursive, EntryRule, ExitRule, validator, 3 API endpoints, TypeScript types)
-* semantic authoring UI complete (SemanticEditorPanel — entry/exit rules, nested AND/OR groups, operand editor, validate/save workflow)
-* semantic identity stable (condition_id, group_id, rule_id; inject_ids; duplicate detection; backward compat)
-* semantic compilation architecture complete (EvaluationPlan, compiler, dependency extraction, compilation API endpoints)
-* semantic-to-toolset binding validation complete (BindingDiagnostic, DependencySummary, validate_semantic_bindings, validate-bindings endpoint, frontend autocomplete datalist)
-* evaluator contract architecture complete (EvaluationContext ABC, OperandResolver, OperatorEvaluator, ConditionEvaluator, GroupEvaluator, RuleEvaluator, EvaluationEngineContract, result models, plan visitor, context satisfaction, architecture docs)
-* evaluation plan inspection complete (PlanNodeVisitor inspector, topology/dependency/diagnostics summaries, GET /drafts/{id}/semantics/plan, POST /semantics/plan, TypeScript types)
-* plan inspection UI complete (PlanInspectionPanel — read-only topology/dependency/rule/diagnostics/binding display; wired into DraftWorkspace; auto-refresh on save/switch/manual)
-* evaluation readiness layer complete (check_readiness, 12 lint rules, GET /drafts/{id}/semantics/readiness, POST /semantics/readiness, readiness badge in PlanInspectionPanel)
-* concrete scalar evaluator complete (ScalarEvaluationContext, ScalarEvaluationEngine, 6 scalar operators, condition/group/rule evaluation, POST /semantics/evaluate-scalar, 118 new tests)
-* historical evaluation iterator complete (HistoricalBarContext, evaluate_history, BarEvaluationResult, HistoricalEvaluationResult, POST /semantics/evaluate-history, 81 new tests)
-* crossover operator support complete (TwoBarEvaluationContext, CrossoverConditionEvaluator, TwoBarScalarEngine, crosses_above/crosses_below, first-bar None determinism, 87 new tests)
-* signal event contracts complete (SignalEventKind, SignalEventSource, SignalEvent, SignalEventBatch, SignalEventSummary, extract_signal_events, POST /semantics/extract-signal-events, 88 new tests)
-* trade intent contracts complete (TradeIntentAction open_long/close_long only, TradeIntentSource, TradeIntent, TradeIntentBatch, extract_trade_intents, POST /semantics/extract-trade-intents, 86 new tests)
-* backtest simulation foundation complete (BacktestSimulationConfig, SimulationPriceBar, SimulatedTrade, BacktestEquityPoint, BacktestRejection, BacktestSimulationResult, long-only position tracker, run_simulation, POST /backtests/simulate, 95 new tests)
-* backtest cost model complete (CommissionMode, SlippageMode, TradeCostBreakdown, compute helpers, direction-aware slippage, all-in net realized PnL, cost-aware position tracker + simulator, aggregate summary, 86 new tests)
-* backtest position sizing complete (PositionSizeMode EQUITY_FRACTION, equity_fraction config field, resolve_position_quantity helper, ZERO_QUANTITY rejection, SimulatedTrade audit fields, 83 new tests)
-* historical tool computation pipeline complete (ToolOutputPoint/Series/Result contracts, ToolComputationBarInput, compute_tool_outputs_for_history, build_bar_tool_outputs, SMA dispatch with running-sum no-lookahead, HistoricalEvaluationRequest.toolset field, ambiguity rejection, backward-compatible manual path, 52 new tests)
-* EMA tool + multi-tool computation proof complete (EMA_METADATA, compute_ema, _compute_ema_series with SMA-seed + recursive formula, _TOOL_DISPATCHERS registration, SMA+EMA coexistence, crossover semantics, 71 new tests)
-* warmup/lookahead enforcement complete (configured `warmup_bars_required` exposure, canonical ascending bar replay, duplicate/timestamp validation, simulator intent timestamp matching, report outputs based on canonical historical order)
-* RSI tool complete (rsi.py, Wilder's smoothing, period warmup, oscillator pane, bounded [0,100], ~80 tests)
-* MACD tool complete (macd.py, 3 outputs: macd_line/signal_line/histogram, SMA-seeded EMAs, separate warmup counts per series, oscillator pane, ~80 tests)
-* IndicatorPane.oscillator added to visualization.py for RSI/MACD separate-pane rendering
-* historical computation pipeline extended: _compute_rsi_series, _compute_macd_series, _TOOL_DISPATCHERS updated, derive_warmup_bars_required extended for rsi/macd
-* tool registry expanded to 4 stable tools: SMA, EMA, RSI, MACD
-* frontend DraftWorkspace toolOutputSuggestions now uses actual output_feature_names from registry (multi-output MACD correctly generates 3 suggestions per instance)
-* tool output visualization complete (Phase 2T): IndicatorSeriesKind.histogram added; composition_run_service pane/kind routing via registry metadata; Chart.tsx oscillator pane with two-chart architecture; HistogramSeries for MACD histogram; sign-colored bars; time-scale sync; 28 new tests
-* ToolVisualizationSeries stable frontend contract type (extensible for Bollinger Bands, ATR, VWAP, etc.)
-* browser-level visualization validation complete (Phase 2T.1): API confirmed 6-series response (sma/ema → price/line; rsi → oscillator/line; macd_line/signal_line → oscillator/line; histogram → oscillator/histogram); type chain verified (CompositionRunResponse → App.tsx → StrategyOverlay → Chart.tsx); tsc --noEmit clean; 2543 tests passing unchanged
-* oscillator reference lines complete (Phase 2T.2): Chart.tsx renders subtle RSI 70/50/30 guides only when RSI oscillator series exists; guide lifecycle cleanup prevents duplication/leaks on rerun/unmount; frontend-only visualization change
-* chart run reset/overlay cleanup complete (Phase 2T.3): App owns clear/reset overlay state; Chart header has Clear Strategy Results button; marker lifecycle fixed with retained marker plugin + setMarkers([]); overlay rerenders remove stale price overlays, oscillator series, histogram series, RSI guides, forecast line, counters
-* ATR tool complete (Phase 2U): Wilder's smoothing, TR = max(H-L, |H-C_prev|, |L-C_prev|), oscillator pane, warmup=period, 41 tests
-* Bollinger Bands tool complete (Phase 2U): rolling SMA + population stddev, 3 price-pane overlays (middle/upper/lower), warmup=period-1, 44 tests
-* 6-tool registry (Phase 2U): SMA, EMA, RSI, MACD, ATR, Bollinger Bands — standard indicator layer finalized
-* 14 new integration tests (Phase 2U): ATR pane/kind routing, Bollinger 3-series routing, all-6-tools combined routing; existing routing tests all pass
-* Standard indicator expansion COMPLETE — next direction: custom research tools, pivot/swing framework, divergence systems
-* provider abstraction layer complete (Phase 3A): ProviderFetchError + ProviderCapabilities in base.py; YahooAdapterError subclasses ProviderFetchError; YahooFinanceAdapter implements capabilities(); ProviderAdapterFactory with register/build/capabilities; create_default_factory_registry() with Yahoo; market_data_service.py routes via factory (no direct Yahoo import); GET /market-data/providers endpoint; 55 new tests; 2697 total
-* Correct provider flow: API route → factory.build(provider) → adapter → OHLCVService — future providers register in create_default_factory_registry() only
-* dataset fetch identity complete (Phase 3B): DatasetFetchParameters (frozen, UTC enforcement, non-empty validation); compute_fetch_fingerprint (SHA-256 canonical, case-insensitive, timezone-normalized); DatasetFetchIdentity (parameters + fingerprint + dataset_id + schema_version); build_fetch_identity() builder; DatasetFetchMetadataResponse API schema; MarketDataOHLCVResponse.fetch_metadata (backward-compatible, defaults to None); market_data_service populates fetch_metadata on every fetch; 65 new tests; 2762 total
-* Correct provider traceability flow: fetch_ohlcv() → build_fetch_identity() → DatasetFetchIdentity → MarketDataOHLCVResponse.fetch_metadata → client
-* Architecture boundary: fetch_identity.py imports only stdlib + pydantic + backend.data.models.instrument (no yahoo, no api, no factory)
-* dataset cache & storage architecture complete (Phase 3C): DatasetCachePolicy (4 policies: FETCH_AND_STORE/READ_ONLY/FORCE_REFRESH/BYPASS_CACHE); DatasetCacheState constants; DatasetCacheEntry + DatasetCacheLookupResult frozen dataclasses; DatasetCacheRegistry reads/writes cache_metadata.json with rolling fingerprint history (max 10, deduped); OHLCVService.get_ohlcv() extended with cache_policy + fetch_fingerprint params (backward-compatible defaults); DATASET_STORAGE_LAYOUT.md canonical doc; 64 new tests; 2826 total
-* Correct cache flow: OHLCVService dispatches on policy → CoverageRegistry for gap detection (FETCH_AND_STORE) → DatasetCacheRegistry for lineage metadata → cache_metadata.json alongside data.parquet
-* Architecture boundary: dataset_cache.py and cache_policy.py import no yahoo/api/provider-factory modules; providers remain unaware of storage
-* local dataset providers complete (Phase 3D): LocalColumnMap + parse_timestamp_string shared utilities; LocalCSVProvider (file_path at construction, 15 timeframes, column map support); LocalParquetProvider (all pyarrow timestamp types resolved); LocalCSVProviderError + LocalParquetProviderError subclass ProviderFetchError; both registered in create_default_factory_registry() (factory now len=3: yahoo, csv, parquet); legacy CSVAdapter unchanged; 80 new tests; 2906 total
-* Architectural proof (Phase 3D): CSV, Parquet, Yahoo all route through identical ProviderAdapterFactory → RangeProviderAdapter → OHLCVService → cache/storage pipeline — provider architecture is truly provider-agnostic
-* Known limitation: file_path not surfaced in HTTP API (future dataset catalog phase); file_path not part of DatasetFetchIdentity fingerprint (identifies logical dataset, not physical file)
-* dataset catalog complete (Phase 3E): LocalDatasetEntry (frozen Pydantic, catalog_id UUID, file_path backend-only); DatasetCatalog (JSON-backed registry at {base_path}/catalog/datasets.json, register/get/list_all/list_enabled/disable/remove); error hierarchy (DatasetCatalogError, UnknownDatasetError, DatasetDisabledError, DuplicateDatasetError); catalog_service (register_dataset, list_datasets, get_dataset, remove_dataset, fetch_ohlcv — file_path resolved internally, never propagated); 5 HTTP endpoints (POST/GET/DELETE /catalog/datasets, GET /catalog/datasets/{id}, GET /catalog/datasets/{id}/ohlcv); CatalogEntryResponse + RegisterDatasetResponse + CatalogOHLCVResponse — all file_path-free; 72 new tests; 2978 total
-* File path isolation enforced (Phase 3E): file_path present only in LocalDatasetEntry (domain model) and RegisterDatasetRequest (input); absent from all response schemas (CatalogEntryResponse, RegisterDatasetResponse, CatalogOHLCVResponse, CatalogListResponse); AST-verified catalog_service.py imports no yahoo adapter
-* Correct catalog resolution flow (Phase 3E): POST /catalog/datasets → register with file_path → GET /catalog/datasets/{id}/ohlcv → catalog_service.fetch_ohlcv → DatasetCatalog.get(catalog_id) → entry.file_path (internal) → factory.build(provider_type, file_path=...) → OHLCVService → candles returned (no file_path in response)
-* Security baseline (Phase 3F): CredentialSpec (frozen Pydantic, provider_name + credential_key + CredentialSource.ENV_VAR); EnvironmentCredentialResolver.resolve() raises MissingCredentialError (no raw secret/key name in message); AuditEventKind (6 kinds: credential_resolution_attempt, credential_missing, dataset_registered, dataset_removed, provider_fetch_request, catalog_ohlcv_fetch); emit_audit_event() logs structured JSON to quantlab.audit logger; catalog_service emits audit events on register/remove/fetch; provider errors sanitized (file paths stripped from HTTP responses, full error logged internally); validate_date_range + validate_provider_type + validate_symbol + validate_catalog_id_format in request_validation.py; catalog route validates start < end (400); catalog_service validates provider_type before file check; 62 new tests; 3040 total
-* Architecture boundaries (Phase 3F): strategies/ imports no core.credentials (AST-verified); credentials.py imports no yahoo; audit.py imports no provider_factory; API response schemas contain no credential-like fields (AST+model_fields verified); LocalDatasetEntry stores no raw credentials
-* candlestick chart component (lightweight-charts v5)
-* provider/symbol/timeframe/date-range controls
-* strategy overlay type placeholders
+**Phase 4C.4 — ForwardTestService Single-Cycle Evaluation Engine — COMPLETE**
+(backend: 4 086 tests | 41 new tests added)
+- `backend/forward_testing/service.py` — `CycleResult` frozen dataclass (13 fields); `ForwardTestService` with `run_cycle(session_id, owner_id, identity, provider, *, now_utc)`; `_activate()` (warmup bars via `get_recent_bars()`, `is_warmup_bar=True`, cursor = last warmup ts or `now_utc`, PENDING→RUNNING transition, `FT_SESSION_ACTIVATED`); `_poll_cycle()` (`get_bars_since(cursor)`, gap detection via `_calendar_is_bar_expected`, full-window recomputation via `compute_tool_outputs_for_history()`, `evaluate_history()`, idempotent bar/signal persistence, cursor advance, `FT_POLL_COMPLETED` / `FT_GAP_DETECTED` / `FT_SIGNAL_GENERATED` / `FT_SIGNAL_SUPPRESSED`); `_prepare_strategy()` (`StrategyDraft.model_validate_json` + `compile_semantics`); PAUSED/terminal → no-op; `RangeProviderAdapter` under `TYPE_CHECKING` guard only (boundary: `forward_testing` ≠ `data_providers`)
+- `tests/unit/test_forward_test_service.py` — 41 tests: `TestActivation` (11), `TestPollCycle` (17), `TestStatusGuards` (6), `TestStrategyErrors` (2), `TestOwnership` (2), `TestSignalFields` (3)
 
-Real historical data ingestion and frontend chart visualization now possible end-to-end via Yahoo Finance adapter through ProviderRegistry → OHLCVService → API → React chart pipeline.
+**Phase 4C.3A — Exchange Calendar & Market Session Finalization Policy — COMPLETE**
+(backend: 4 045 tests | 60 new tests added)
+- `backend/market_calendar/base.py` — `TradingCalendar` ABC (UTC-only, `is_session_open`, `is_bar_expected`)
+- `backend/market_calendar/calendars.py` — `TwentyFourSevenCalendar` (24/7, crypto); `WeekdayMarketCalendar` (Mon–Fri, equity); `DefaultCalendar` (conservative fallback = weekday)
+- `backend/market_calendar/registry.py` — `get_calendar(asset_class, *, provider_name, exchange, symbol)` resolver; crypto→24/7; equity/stock/etf/fund→weekday; unknown→default; case-insensitive; reserved params for future exchange routing
+- `backend/market_calendar/policy.py` — `is_bar_expected(bar_timestamp, timeframe, calendar) → bool`; `is_bar_finalized(bar_timestamp, timeframe, now_utc, calendar, safety_buffer=60) → bool` (wraps Phase 4C.3 time-check + calendar gate; Saturday equity bar always False)
+- `backend/market_calendar/__init__.py` — public exports
+- `tests/unit/test_market_calendar.py` — 60 tests (24/7 + weekday + default calendars, registry routing, is_bar_expected, is_bar_finalized, UTC enforcement, safety buffer, no-false-gap architectural rule)
+- `docs/MARKET_CALENDAR.md` — minimal calendar architecture, limitations, UTC policy, future expansion path
+- Key constraint: `is_bar_finalized` in policy.py returns False for unexpected bars regardless of time; ForwardTestService uses this to distinguish market closure from provider failure
 
-Tool discovery metadata is now available to the frontend via a read-only backend endpoint, without introducing tool execution behavior.
+**Phase 4C.3 — OHLCVService Extensions for Forward Testing — COMPLETE**
+(backend: 3 985 tests | 44 new tests added)
+- `backend/services/ohlcv_service.py` — `timeframe_to_timedelta()` (all 15 canonical TFs; "1M"=30d); `is_bar_finalized()` (UTC-aware, buffer_seconds=60, raises on naive dt); `OHLCVService.get_recent_bars()` (limit, reference_time, lookback_multiplier=2, BYPASS_CACHE); `OHLCVService.get_bars_since()` (strict `>` cursor, BYPASS_CACHE); no session coupling; no storage writes
+- `backend/core/config.py` — `forward_test_bar_finalization_buffer_seconds = 60`
+- `tests/unit/test_ohlcv_forward_test_extensions.py` — 44 tests (timeframe utilities, finalization logic, get_recent_bars, get_bars_since, UTC safety, BYPASS_CACHE verification)
+- Key constraint: DataNormalizer enforces monotonic ascending timestamps; stub providers must return bars in ascending order
 
-Draft Workspace browser behavior is now validated end-to-end with backend authority preserved and no execution-layer expansion.
+**Phase 4C.2 — Forward Testing Lifecycle & Audit Taxonomy Integration — COMPLETE**
+(backend: 3 941 tests | 95 new tests added)
+- `backend/strategy_registry/lifecycle.py` — `StrategyLifecycleStatus.FORWARD_TESTED` added; canonical path `backtested→forward_tested→paper_tested`; `backtested→paper_tested` retained (deprecated transitional); `forward_tested→backtested` rollback; invalid shortcuts rejected; docstring updated
+- `backend/core/audit.py` — 19 FT_* event kinds added (FT_SESSION_CREATED through FT_SESSION_REVIEWED); 9 GOV_* event kinds added (GOV_PROMOTION_REQUESTED through GOV_LIFECYCLE_TRANSITION_DENIED); `AuditEvent.correlation_id: str | None = None` (optional, backward-compat); `emit_audit_event()` serializes correlation_id when present
+- `tests/unit/test_strategy_lifecycle.py` — updated _VALID_TRANSITIONS + _INVALID_TRANSITIONS for forward_tested
+- `tests/unit/test_security_baseline.py` — updated `test_all_event_kinds_defined` with all new FT_* + GOV_* values
+- `tests/unit/test_forward_testing_lifecycle_audit.py` — new test file: lifecycle transitions, audit taxonomy, correlation_id, status vocabulary mapping
+
+**Phase 4C.1 — Forward Testing Foundation — COMPLETE**
+(backend: 3 846 tests | 125 new tests added)
+- `backend/forward_testing/__init__.py` — package established
+- `backend/forward_testing/exceptions.py` — `ForwardTestSessionNotFoundError`, `ForwardTestSessionAlreadyExistsError`, `ForwardTestPersistenceError`, `ForwardTestInvalidTransitionError`
+- `backend/forward_testing/models.py` — `ForwardTestSessionStatus` (6-state enum + transition table + terminal detection), `StrategySnapshot`, `ForwardTestSession` (frozen, UUID guards, UTC enforcement, source_mode consistency), `ForwardTestSignal` (immutable, no fills/P&L), `ForwardTestBar` (warmup flag, bar_index)
+- `backend/forward_testing/repository.py` — `ForwardTestRepository` (JSON-backed, ownership enforcement, UUID path guard, wrong-owner → same exception as not-found)
+- `backend/forward_testing/stores.py` — `ForwardTestSignalStore` (idempotency: bar_timestamp + signal_direction), `ForwardTestBarStore` (idempotency: bar_timestamp; last-timestamp queries; warmup/signal-eligible counts)
+- `backend/core/config.py` — `forward_test_sessions_storage_path` added
+- `backend/api/dependencies.py` — `get_forward_test_repository()`, `get_forward_test_signal_store()`, `get_forward_test_bar_store()`
+- `tests/unit/test_forward_test_models.py` — 51 tests
+- `tests/unit/test_forward_test_repository.py` — 30 tests
+- `tests/unit/test_forward_test_stores.py` — 29 tests (+ idempotency datetime fix: Pydantic `Z` vs `.isoformat()` `+00:00`)
+
+**Phase 4B — Forward Testing Runtime Architecture Review & Implementation Planning — COMPLETE**
+(`docs/FORWARD_TESTING_IMPLEMENTATION_REVIEW.md` created; no code changes; review and planning only)
+
+**Phase 4A.5 — STRATEGY_PROMOTION_LIFECYCLE.md — COMPLETE**
+(`docs/STRATEGY_PROMOTION_LIFECYCLE.md` established; no code changes; architecture-only)
+
+**Phase 4A.4 — EXECUTION_AUDIT_MODEL.md — COMPLETE**
+(`docs/EXECUTION_AUDIT_MODEL.md` established; no code changes; architecture-only)
+
+**Phase 4A.3 — PAPER_TRADING_ARCHITECTURE.md — COMPLETE**
+(`docs/PAPER_TRADING_ARCHITECTURE.md` established; no code changes; architecture-only)
+
+**Phase 4A.2 — FORWARD_TESTING_ARCHITECTURE.md — COMPLETE**
+(`docs/FORWARD_TESTING_ARCHITECTURE.md` established; no code changes; architecture-only)
+
+**Phase 4A.1 — EXECUTION_CONTRACT.md — COMPLETE**
+(`docs/EXECUTION_CONTRACT.md` established; no code changes; architecture-only)
+
+**Phase 3S-D — Legacy Route Decommissioning & Path Safety Hardening — COMPLETE**
+(backend: 3 721 tests | frontend: 155 tests | tsc clean)
+
+**Phase 3S-C — Research Provenance & Workflow Continuity — COMPLETE**
+
+**Phase 3S-B — Critical Security & Runtime Boundary Fixes — COMPLETE**
+
+Completed phases: 4D, 4C.6, 4C.5, 4C.4, 4C.3A, 4C.3, 4C.2, 4C.1, 4B, 4A.5, 4A.4, 4A.3, 4A.2, 4A.1, 3S-D, 3S-C, 3S-B, 3P-E, 3P-D, 3P-C, 3P-B.1, 3P-B, 3P-A.1, 3P-A, 3O, 3N, 3M.1, 3M, 3L, 3J, 3I, 3H, 3G, 3F, 3E, 3D, 3C, 3B, 3A, 2T–2U, 2N–2S, 2J–2M, 2D–2I, 2A–2C
 
 ---
 
-# Current Primary Objective
+# Immediate Active Roadmap
 
-Establish a scalable and disciplined AI-assisted engineering foundation for QuantLab before major system implementation begins.
+## Phase 4C — Forward Testing Runtime Implementation
 
-Priority focus:
-* modularity
-* architecture definition
-* repository governance
-* workflow structure
-* system boundaries
-* strategy portability
-* execution isolation
-* data abstraction
+**Status:** IN PROGRESS (4C.1 complete)
 
----
+**Implementation authority:** `docs/FORWARD_TESTING_IMPLEMENTATION_REVIEW.md`
 
-# Execution Domains
+### Phase 4C.1 — Foundation
 
-QuantLab currently operates through two separate execution domains:
+**Status:** COMPLETE (125 tests added; 3 846 total)
 
-ORCHESTRATION DOMAIN
-→ architecture
-→ governance
-→ planning
-→ blueprinting
-→ workflow design
-→ system decomposition
-→ AI coordination
+### Phase 4C.2 — Lifecycle and Audit Extension
 
-IMPLEMENTATION DOMAIN
-→ coding
-→ module implementation
-→ frontend/backend systems
-→ data pipelines
-→ charting
-→ strategy engine development
-→ infrastructure execution
+**Status:** COMPLETE (95 tests added; 3 941 total)
 
-The orchestration domain is currently handled primarily by:
+### Phase 4C.3 — OHLCVService Extension
 
-human operator
-+ ChatGPT orchestration layer
+**Status:** COMPLETE (44 tests added; 3 985 total)
 
-The implementation domain will later be handled primarily by:
+### Phase 4C.3A — Exchange Calendar & Market Session Finalization Policy
 
-Claude
-Codex
-other implementation agents
+**Status:** COMPLETE (60 tests added; 4 045 total)
 
-TASKS.md must preserve this separation.
+### Phase 4C.4 — ForwardTestService
+
+**Status:** COMPLETE (41 tests added; 4 086 total)
+
+### Phase 4C.5 — API Routes + Frontend
+
+**Status:** COMPLETE (37 backend + 28 frontend tests added)
+
+### Phase 4C.6 — Integration Validation
+
+**Status:** COMPLETE (65 tests added; 4 188 total)  
+**Scope:** End-to-end test (create → start → poll → signals); ownership isolation; update HANDOFF.md + TASKS.md
 
 ---
 
-# Orchestration Layer Tasks
+## Phase 2V — Custom Research Tools
 
-These tasks belong primarily to:
+**Status:** PENDING
 
-human operator
-+ orchestration AI
+**Objective:** First non-standard indicator — marks start of the QuantLab-specific research tool layer.
 
-These are architecture and governance activities — not implementation execution tasks.
-
----
-
-## Orchestration Priority 1 — Governance Foundation
-
-### Status
-
-IN PROGRESS
-
-### Objectives
-
-Establish core governance and orchestration documents.
-
-### Current Tasks
-
-* [x] ARCHITECTURE_GUARDRAILS.md
-* [x] WORKFLOW_GOVERNANCE.md
-* [x] WORKFLOW_AGENT.md
-* [x] PROMPT_RULES.md
-* [x] HANDOFF.md
-* [x] TASKS.md
-* [x] SYSTEM_OVERVIEW.md
-* [x] ARCHITECTURE.md
-* [x] REPOSITORY_STRUCTURE.md
-* [x] README.md (root)
-* [x] STRATEGY_DEFINITION_ARCHITECTURE.md — formal vocabulary and composition model for strategy definitions
-* [x] TOOL_REGISTRY_CONTRACT.md — governance and discovery contract for the Strategy Tools Builder ecosystem
-* [x] FRONTEND_COMPOSITION_INTERFACE_CONTRACT.md — architectural bridge between frontend composition and backend validation/execution
-* [x] BACKTESTING_ENGINE_CONTRACT.md — deterministic historical simulation architecture; reproducibility, audit, and lookahead-bias governance
-
-### Notes
-
-Governance quality currently takes priority over implementation speed.
-
-Repository scaffolding session (2026-05-08) completed:
-* README.md created at root
-* .gitignore refactored for FastAPI, React/TS, DuckDB, Parquet, Redis, Celery/RQ stack
-* Structural gap flagged: `directives/` folder is undocumented in `REPOSITORY_STRUCTURE.md` — recommend adding it to the structure doc under `agent/` or as a top-level entry
+**Expected scope:** Swing high/low detector, or divergence signal, or custom feature computation tool. Must register in `_TOOL_DISPATCHERS`, expose `output_feature_names`, respect warmup/lookahead enforcement.
 
 ---
 
-## Orchestration Priority 2 — Repository Structure Blueprint
+# Near-Term Roadmap
 
-### Status
-
-PENDING
-
-### Objectives
-
-Define scalable repository structure for:
-
-* backend
-* frontend
-* datasets
-* strategy modules
-* research modules
-* execution systems
-* infrastructure
-* AI orchestration layers
-
-### Key Requirements
-
-* modular boundaries
-* strategy portability
-* execution isolation
-* scalable research workflows
-* AI-friendly organization
-* low context fragmentation
+| Phase | Objective | Dependency |
+|-------|-----------|------------|
+| **Phase 4C.1 — FT Foundation** | ✓ COMPLETE — 125 tests; session model, repository, stores, settings path | 4B complete |
+| **Phase 4C.2 — Lifecycle + Audit** | ✓ COMPLETE — 95 tests; forward_tested state, FT_/GOV_ events, correlation_id | 4C.1 complete |
+| **Phase 4C.3 — OHLCVService** | ✓ COMPLETE — 44 tests; get_recent_bars, get_bars_since, bar finalization | 4C.1 complete |
+| **Phase 4C.3A — Market Calendar** | ✓ COMPLETE — 60 tests; TradingCalendar, 24/7 + weekday calendars, registry, is_bar_expected, is_bar_finalized (calendar-aware) | 4C.3 complete |
+| **Phase 4C.4 — ForwardTestService** | ✓ COMPLETE — 41 tests; single-cycle engine, PENDING activation, RUNNING poll, audit emission | 4C.2 + 4C.3 + 4C.3A complete |
+| **Phase 4C.5 — Routes + Frontend** | ✓ COMPLETE — 9 routes, ForwardTestPanel, nav tab | 4C.4 complete |
+| **Phase 4C.6 — Integration** | ✓ COMPLETE — 65 tests; all 13 objectives passed; readiness rating B | 4C.5 complete |
+| **Phase 4D — Paper Trading Review** | ✓ COMPLETE — `docs/PAPER_TRADING_IMPLEMENTATION_REVIEW.md`; 18 sections; readiness rating A− | 4C.6 complete |
+| **Phase 4E — Paper Trading Implementation** | PENDING — 4E.1 models → 4E.2 broker adapter → 4E.3 service → 4E.4 routes → 4E.5 frontend → 4E.6 integration | 4D complete |
+| 2V — Custom Research Tools | Swing high/low or divergence indicator | None |
+| Payment / Subscription | Webhook-driven approval, connect `approve_user` to payment provider | 3R complete |
+| PostgreSQL migration | Replace JSON-backed repositories (User, Credential, Draft, Catalog) | Durability need |
+| Bollinger Bands visualization | Wire 3-series band overlay to frontend chart (backend already complete) | None |
+| Provider expansion | Binance, IBKR adapters in `ProviderAdapterFactory` | 3A architecture ready |
 
 ---
 
-## Orchestration Priority 3 — System Architecture Blueprint
+# Planned Future Phases
 
-### Status
+## Phase 4H — Intraday Engine Optimization
 
-PENDING
+**Status:** PLANNED
+**Dependency:** After Paper Trading maturity (Phase 4D+)
 
-### Objectives
+**Objective:** Enable production-grade 5-minute strategy support.
 
-Define high-level QuantLab system architecture.
+Required: ToolStateSnapshot architecture; incremental indicator computation; incremental evaluator execution; session pagination; provider polling optimization; long-running session validation.
 
-### Expected Scope
+**Outcome:** 5m forward testing; 5m paper trading
 
-* backend domain structure
-* frontend architecture
-* strategy engine boundaries
-* data pipeline flow
-* execution layer separation
-* storage architecture
-* adapter architecture
-* orchestration flow
+## Phase 5A — Realtime Streaming Architecture
 
-### Deliverables
+**Status:** PLANNED
+**Dependency:** After Phase 4H
 
-* SYSTEM_OVERVIEW.md
-* ARCHITECTURE.md
-* module relationship mapping
+**Objective:** Enable production-grade 1-minute strategy support.
+
+Required: WebSocket ingestion layer; event-driven market data pipeline; reconnect/recovery logic; event deduplication; late-bar handling; persistent event storage; streaming audit integration.
+
+**Outcome:** 1m forward testing; 1m paper trading; foundation for live execution
 
 ---
 
-# Implementation Layer Tasks
+# Deferred / Long-Term Infrastructure
 
-These tasks belong primarily to implementation agents.
-
-Implementation work should begin only after sufficient architectural clarity exists.
-
-However, controlled validation-oriented detours are allowed earlier if they support foundational verification.
-
----
-
-## Implementation Priority 0 — Base Scaffold
-
-### Status
-
-COMPLETED (2026-05-08)
-
-### Deliverables
-
-* `pyproject.toml` — Python project with FastAPI, uvicorn, pydantic-settings
-* `backend/api/main.py` — FastAPI app
-* `backend/api/routes/health.py` — GET /health endpoint
-* `backend/core/config.py` — Pydantic settings
-* `backend/core/logging.py` — structured logging setup
-* `backend/data/`, `data_providers/`, `strategy_registry/`, `strategy_runtime/`, `backtesting/`, `forward_testing/`, `execution/`, `storage/`, `jobs/` — empty module stubs
-* `frontend/` — Vite + React + TypeScript skeleton with health status display
-* `strategies/example_strategy/` — placeholder strategy (parameters, features, signals, risk, validate_config)
-* `datasets/` — folder structure (raw, normalized, processed, features, alternative, astronomical, metadata, cache)
-* `.env.example` — updated with environment variable template
+- **Live trading**: WebSocket streaming, tick-to-candle aggregation, broker execution, risk layer — **NOT current priority**
+- **Distributed execution**: microservices, Celery/RQ workers, cloud orchestration — deferred until multi-strategy / live trading need
+- **Per-candle gap detection**: `OHLCVService` currently uses coverage windows; intra-window gaps not detected
+- **Instrument master database**: no centralized symbol/exchange registry; each provider resolves symbols independently
+- **Alternative / astronomical datasets**: research layer deferred until core strategy loop is stable
+- **Audit persistence**: `emit_audit_event()` is log-only; no DB or audit store yet
+- **Credential rotation**: `EnvironmentCredentialResolver` reads env var statically per request; no rotation detection
 
 ---
 
-## Implementation Priority 1 — Data Architecture Layer
+# Architectural Constraints (non-negotiable)
 
-### Status
-
-COMPLETED (2026-05-08)
-
-### Objectives
-
-Define normalized market and research data architecture.
-
-### Deliverables
-
-* `backend/data/schemas.py` — `NormalizedOHLCV` (immutable Pydantic model, UTC enforcement, canonical timeframes)
-* `backend/data/validators.py` — `validate_ohlcv_record`, `validate_ohlcv_series` (numerical + time-series integrity)
-* Validation sweep completed on 2026-05-08:
-  `backend/data/` + `backend/data_providers/` reviewed against `docs/DATA_CONTRACT.md`
-* Hardening applied:
-  `NormalizedOHLCV` rejects unexpected extra fields; CSV Unix timestamp parsing handles out-of-range numeric values consistently
-* Current verification status:
-  backend unit suite in `.venv` passing at `59 tests`
+| Constraint | Why |
+|------------|-----|
+| `user_id` always from JWT | No client-controlled ownership |
+| Wrong-owner → HTTP 404 | Information hiding (same as not-found) |
+| `require_admin_role` never depends on `require_active_subscription` | Admins must manage users even after own expiry |
+| `file_path` never in any API response | Prevents filesystem path leakage |
+| `encrypted_secret` never in any API response | Defense-in-depth on vault responses |
+| `password_hash` never in any API response | Auth schema invariant |
+| Strategies import nothing from api/provider/storage/frontend | Portability across all runtime modes |
+| `resolve_secret()` internal to VaultService only | Route layer never handles raw secrets |
+| Backtest results must be reproducible | Deterministic candle+config inputs required |
 
 ---
 
-## Implementation Priority 2 — Storage Layer
+# Governance Foundation Status
 
-### Status
+All governance documents established:
 
-COMPLETED (2026-05-08)
+| Document | Status |
+|----------|--------|
+| `ARCHITECTURE_GUARDRAILS.md` | ✓ complete |
+| `WORKFLOW_GOVERNANCE.md` | ✓ complete |
+| `WORKFLOW_AGENT.md` | ✓ complete |
+| `PROMPT_RULES.md` | ✓ complete |
+| `ARCHITECTURE.md` | ✓ complete |
+| `docs/ADMIN_GOVERNANCE.md` | ✓ complete |
+| `docs/OWNERSHIP_SCOPING.md` | ✓ complete |
+| `docs/ADMIN_ENTITLEMENT_SEPARATION.md` | ✓ complete |
+| `docs/SUBSCRIPTION_EXPIRY_ENFORCEMENT.md` | ✓ complete |
+| `docs/BACKTESTING_ENGINE_CONTRACT.md` | ✓ complete |
 
-### Deliverables
-
-* `backend/storage/parquet_store.py` — canonical Parquet persistence for `NormalizedOHLCV`
-* `backend/storage/duckdb_query.py` — DuckDB analytical query helpers returning dict rows or validated `NormalizedOHLCV`
-* Dependencies added and recorded in `pyproject.toml`:
-  `pyarrow`, `duckdb`
-* Validation sweep completed on 2026-05-08:
-  `backend/storage/` reviewed against `docs/DATA_CONTRACT.md` and architecture guardrails
-* Hardening applied:
-  `write()` now enforces venue consistency; `query_ohlcv()` now rejects naive `start`/`end` datetimes
-* Current verification status:
-  backend unit suite in `.venv` passing at `98 tests`
-  `backend/data/` + `backend/data_providers/` + `tests/unit/` reviewed against `docs/DATA_CONTRACT.md`
-* Hardening applied:
-  `NormalizedOHLCV` rejects unexpected extra fields; CSV Unix timestamp parsing now handles out-of-range numeric values consistently
-* Current verification status:
-  backend unit suite in `.venv` passing at `59 tests`
-* `backend/data/normalizer.py` — `DataNormalizer` + `NormalizationError`
-* `backend/data_providers/base.py` — `BaseDataAdapter` abstract class
-* `backend/data_providers/csv_adapter.py` — `CSVAdapter` with configurable column map + timestamp parsing
-* `tests/unit/test_data_schemas.py`, `test_validators.py`, `test_csv_adapter.py`, `test_normalizer.py` — 56 tests, all passing
-* `tests/fixtures/` — 5 CSV fixture files (valid, naive timestamps, unix timestamps, duplicate, malformed)
-
-### Phase 2C additions (2026-05-08)
-
-* `backend/storage/parquet_store.py` — `write`, `read`, `dataset_path`, `StorageError`
-* `backend/storage/duckdb_query.py` — `query_parquet`, `query_ohlcv`
-* `tests/unit/test_parquet_store.py` — 19 tests
-* `tests/unit/test_duckdb_query.py` — 16 tests
-* `pyproject.toml` updated: `pyarrow>=15.0.0`, `duckdb>=0.10.0`
-
-### Deferred from Phase 2 data layer
-
-* feature engineering pipeline
-* alternative dataset support
-* metadata storage (PostgreSQL)
-
-### Important Constraints
-
-Strategies must never directly consume raw provider schemas.
+Minor outstanding note: `directives/` folder not yet documented in `REPOSITORY_STRUCTURE.md` (non-blocking).
 
 ---
 
-## Implementation Priority 2 — Minimal Validation Tooling
+# Execution Domain Notes
 
-### Status
+**Orchestration domain** (human + ChatGPT): architecture decisions, governance, phase planning, scope definition.
+**Implementation domain** (Claude, Codex): coding, module implementation, testing, documentation updates.
 
-OPTIONAL / VALIDATION-DRIVEN
-
-### Objectives
-
-Allow early validation of foundational assumptions before major platform development.
-
-### Possible Scope
-
-* minimal OHLCV chart viewer
-* temporary data inspection UI
-* lightweight API validation endpoint
-* normalization verification tooling
-* dataset inspection utilities
-
-### Notes
-
-This work is allowed early when it helps validate:
-
-* data correctness
-* normalization quality
-* ingestion flow
-* frontend/backend contracts
-* candlestick rendering assumptions
-
-This does NOT imply that the full frontend research terminal is prioritized ahead of the core architecture.
-
----
-
-## Implementation Priority 2D — Strategy Registry Foundation
-
-### Status
-
-COMPLETED (2026-05-08)
-
-### Deliverables
-
-* `backend/strategy_registry/models.py` — `StrategyLifecycleStage`, `RuntimeMode`, `StrategyManifest`
-* `backend/strategy_registry/manifest.py` — `load_manifest`, `ManifestLoadError`
-* `backend/strategy_registry/validator.py` — `validate_strategy_files`, `StrategyValidationError`, `REQUIRED_STRATEGY_FILES`
-* `backend/strategy_registry/registry.py` — `StrategyRegistry`, `StrategyRegistryEntry`, `StrategyRegistryError`
-* `strategies/example_strategy/strategy.yaml` — updated to conform to `StrategyManifest` contract
-* `tests/unit/test_strategy_registry.py` — 49 tests, all passing
-* `tests/fixtures/strategies/` — 5 fixture strategy folders
-* `pyproject.toml` — added `pyyaml>=6.0`
-* Current verification: `147 tests` passing
-
----
-
-## Implementation Priority 2E — Strategy Runtime Interface
-
-### Status
-
-COMPLETED (2026-05-08)
-
-### Deliverables
-
-* `backend/strategy_runtime/models.py` — `SignalType`, `StrategySignal` (frozen Pydantic v2, UTC-enforced)
-* `backend/strategy_runtime/interface.py` — `REQUIRED_CALLABLES`, `CALLABLE_MODULE_MAP`, `RuntimeInterfaceError`, `validate_strategy_interface()`
-* `backend/strategy_runtime/loader.py` — `StrategyLoadError`, `StrategyRuntimeReference`, `load_strategy_runtime()`
-* `strategies/example_strategy/` — `validate_config` moved to `validators.py`, `risk.py` contains only `apply_risk_rules`
-* `tests/fixtures/strategies/missing_callable_strategy/` — new fixture
-* `tests/unit/test_strategy_runtime.py` — 38 tests, all passing
-* Current verification: `187 tests` passing
-
----
-
-## Implementation Priority 2K — Minimal OHLCV + Strategy Visualization Foundation
-
-### Status
-
-COMPLETED (2026-05-09)
-
-### Deliverables
-
-* `backend/api/schemas/market_data.py` — `OHLCVCandleResponse`, `MarketDataOHLCVResponse`
-* `backend/api/services/market_data_service.py` — `fetch_ohlcv`, `MarketDataError`, `UnsupportedProviderError`
-* `backend/api/routes/market_data.py` — `GET /market-data/ohlcv`
-* `backend/api/main.py` — market_data router registered
-* `frontend/package.json` — `lightweight-charts@^5.2.0` added
-* `frontend/vite.config.ts` — proxy extended to `/market-data`, `/datasets`
-* `frontend/src/api/marketData.ts` — `fetchOHLCV()` typed API client
-* `frontend/src/types/strategy.ts` — `StrategySignalOverlay`, `StrategyForecastOverlay` placeholder interfaces
-* `frontend/src/components/Chart.tsx` — candlestick chart via lightweight-charts v5 `CandlestickSeries`
-* `frontend/src/components/Controls.tsx` — provider/symbol/asset_class/exchange/timeframe/start/end controls + Fetch button
-* `frontend/src/App.tsx` — updated with Controls + Chart + idle/loading/error/empty states
-* `tests/unit/test_market_data_api.py` — 11 tests: happy path, field values, empty result, validation errors, 422 missing params, default values
-* Current verification: `537 tests` passing (backend); `tsc && vite build` passes (frontend)
-
-### Key Behaviour
-
-* `GET /market-data/ohlcv` accepts provider, symbol, timeframe, start, end (required) + asset_class, exchange, adjustment_mode, currency (optional)
-* Naive datetime query params treated as UTC at the route boundary
-* Currently only `yahoo` provider supported; extend by registering new adapter factory in `create_default_factory_registry()` (no API/service/route changes required — Phase 3A completed provider abstraction)
-* Frontend chart uses `UTCTimestamp` (epoch seconds) for all timeframes including intraday
-* Strategy overlay types are placeholders only — no rendering wired yet
-
-### Deferred
-
-* Manual end-to-end validation (backend + frontend running simultaneously)
-* Volume panel on chart
-* Strategy signal/forecast overlay rendering
-* Additional provider support (Polygon, IBKR, Binance)
-* Frontend component unit tests (no Vitest setup yet)
-
----
-
-## Implementation Priority 2J — First Real Historical Provider + Provider Registry Foundation
-
-### Status
-
-COMPLETED (2026-05-09)
-
-### Deliverables
-
-* `backend/data_providers/provider_registry.py` — `ProviderRegistry`, `ProviderNotFoundError`, `DuplicateProviderError`
-* `backend/data_providers/provider_symbol_map.py` — `ProviderSymbolMapping`, `SymbolMapService`, `ProviderSymbolMapError`; lookup/remove/filter normalization hardened
-* `backend/data_providers/yahoo/adapter.py` — `YahooFinanceAdapter`, `YahooAdapterError`, `SUPPORTED_TIMEFRAMES`; intraday fetch-bounds precision hardened
-* `backend/data_providers/yahoo/metadata.py` — `YahooInstrumentMetadata`, `resolve_yahoo_metadata`, `YahooMetadataError`
-* `backend/data_providers/yahoo/__init__.py` — package exports
-* `backend/data_providers/__init__.py` — updated with registry + symbol map exports
-* `backend/services/ohlcv_service.py` — `get_ohlcv_by_provider_name()` registry integration method added
-* `pyproject.toml` — `yfinance>=0.2.0` added (1.3.0 installed)
-* `tests/unit/test_provider_registry.py` — 21 tests
-* `tests/unit/test_provider_symbol_map.py` — 24 tests
-* `tests/unit/test_yahoo_adapter.py` — 26 tests (all mocked, no network calls)
-* `tests/unit/test_ohlcv_service_registry.py` — 9 tests
-* Current verification: `526 tests` passing
-
-### Key Behaviour
-
-* yfinance isolated to `backend/data_providers/yahoo/adapter.py` — no SDK objects escape the adapter layer
-* `ProviderRegistry` resolves adapters by lowercase name; existing `OHLCVService.get_ohlcv()` unchanged
-* `SymbolMapService` defaults to identity when no explicit mapping — zero-config for providers using same symbol format; lookup paths now normalize surrounding whitespace consistently
-* Yahoo adapter adds 1 day to `end` for daily/weekly/monthly (yfinance end is exclusive) and preserves intraday hour/minute precision
-* `YahooFinanceAdapter.load()` raises `NotImplementedError` — network providers are range-only
-
-### Deferred
-
-* Polygon, IBKR, Binance, Bursa provider adapters
-* Per-candle gap detection within coverage window
-* Known-empty-range marker
-* Provider arbitration / automatic fallback
-* Full instrument master database
-
----
-
-## Implementation Priority 2I — Strategy Runtime Orchestration Foundation
-
-### Status
-
-COMPLETED (2026-05-09)
-
-### Deliverables
-
-* `backend/strategy_runtime/execution_context.py` — `StrategyExecutionContext` (frozen Pydantic v2; UTC-enforced datetimes; optional placeholders for future portfolio/research context)
-* `backend/strategy_runtime/forecast.py` — `ForecastDirection`, `StrategyForecast` (frozen Pydantic v2; confidence ∈ [0,1]; future frontend annotation model)
-* `backend/strategy_runtime/run_result.py` — `RunStatus`, `StrategyRunResult` (frozen Pydantic v2; reusable across all execution modes)
-* `backend/strategy_runtime/runner.py` — `StrategyRuntimeRunner`; full-window `run()` + bar-by-bar skeleton (`NotImplementedError`); failed-stage diagnostics + malformed reserved-payload warnings hardened in validation pass
-* `backend/strategy_runtime/__init__.py` — updated with all new exports
-* `tests/unit/test_strategy_runtime_runner.py` — 78 tests: context, forecast, result, runner success/empty/failure, call order, signal extraction, forecast extraction, validate_config warning, bar-by-bar skeleton, example_strategy integration
-* Current verification: `446 tests` passing
-
-### Key Behaviour
-
-* `run()` always returns `StrategyRunResult` — never raises to caller; callable exceptions → `RunStatus.failed`
-* Forecast support is optional — strategies with plain dict returns produce `forecasts=[]` without error
-* Malformed reserved `"signals"` / `"forecasts"` payloads do not fail the run but now emit warnings for traceability
-* `validate_config(False)` adds a warning but does not abort execution
-* Empty candle input → `RunStatus.empty` without invoking any callables
-* `run_bar_by_bar()` raises `NotImplementedError` — reserved for backtesting integration
-
-### Deferred
-
-* Bar-by-bar execution (backtesting integration)
-* Portfolio context (initial_capital, instrument_id propagation) — placeholder fields present
-* Result persistence / run log storage
-
----
-
-## Implementation Priority 2H — OHLCV Retrieval Orchestration
-
-### Status
-
-COMPLETED (2026-05-09)
-
-### Deliverables
-
-* `backend/data_providers/range_provider.py` — `RangeProviderAdapter` ABC
-* `backend/data_providers/csv_adapter.py` — `CSVAdapter` now implements `RangeProviderAdapter`; `fetch()` added
-* `backend/services/ohlcv_service.py` — `OHLCVService`, `OHLCVIngestionError`
-* `tests/unit/test_ohlcv_service.py` — 34 tests: full miss, full overlap, partial overlap ×2, empty provider, dedup, provider isolation, coverage sync, normalization error, input validation, missing-range calc, CSVAdapter.fetch()
-* Current verification: `368 tests` passing
-
-### Key Behaviour
-
-* Provider called only for missing ranges — not for already-covered windows
-* Incremental merge: new records merged with existing via `ohlcv_store.write(merge=True)`
-* Coverage updated from full stored dataset after each successful ingestion batch
-* Returned slice is bounded to requested `[start, end]` window only
-
-### Deferred
-
-* Per-candle gap detection
-* Network-backed provider adapters
-* Known-empty-range marker (avoid re-fetching confirmed-empty windows)
-
----
-
-## Implementation Priority 2G.5 — Data Storage Architecture Hardening
-
-### Status
-
-COMPLETED (2026-05-09)
-
-### Deliverables
-
-* `backend/data/models/instrument.py` — `Instrument` (provider-independent), `AdjustmentMode`
-* `backend/data/models/dataset.py` — `DatasetIdentity` (provider-specific, separation enforced)
-* `backend/storage/ohlcv_store.py` — provider-aware path builder + write with dedup/merge + read/read_range; now rejects venue/provider mismatches before write
-* `backend/storage/coverage_registry.py` — file-based coverage metadata (JSON per dataset); now rejects venue/provider mismatches before coverage update
-* `backend/storage/parquet_store.py` — `SCHEMA`, `records_to_table`, `table_to_records` made public
-* `tests/unit/test_instrument_models.py` — 22 tests
-* `tests/unit/test_ohlcv_store.py` — 28 tests
-* `tests/unit/test_coverage_registry.py` — 20 tests
-* Current targeted verification: `109 tests` passing across Phase 2G.5 storage modules (`instrument_models`, `ohlcv_store`, `coverage_registry`, `parquet_store`, `duckdb_query`)
-
-### Deferred
-
-* Per-candle gap detection within coverage window
-* PostgreSQL-backed coverage registry
-* Updating `dataset_service.py` to use `ohlcv_store` (API layer change, out of phase scope)
-* Provider reconciliation / arbitration
-
----
-
-## Implementation Priority 2G — Dataset API Layer
-
-### Status
-
-COMPLETED (2026-05-08)
-
-### Deliverables
-
-* `backend/core/config.py` — added `storage_base_path: Path` (default `datasets/normalized`)
-* `backend/api/schemas/dataset.py` — `DatasetInfo`, `DatasetListResponse`, `ImportCSVResponse`, `OHLCVCandle`, `DatasetOHLCVResponse`
-* `backend/api/services/dataset_service.py` — `import_csv`, `list_datasets`, `read_ohlcv`, `make_dataset_id`, `parse_dataset_id`, `DatasetImportError`, `DatasetNotFoundError`
-* `backend/api/routes/datasets.py` — `POST /datasets/import/csv`, `GET /datasets`, `GET /datasets/{dataset_id}/ohlcv`; `get_storage_path` Depends for testability
-* `backend/api/main.py` — datasets router registered
-* `pyproject.toml` — `python-multipart>=0.0.9` added
-* `tests/unit/test_api_datasets.py` — 29 tests, all passing
-* Current verification: `264 tests` passing
-
----
-
-## Implementation Priority 2F — Strategy Runtime Contract Hardening
-
-### Status
-
-COMPLETED (2026-05-08)
-
-### Deliverables
-
-* `backend/strategy_runtime/signature_validator.py` — `CALLABLE_EXPECTED_PARAM_COUNTS`, `CALLABLE_EXPECTED_RETURN_TYPES`, `IMPORT_SAFETY_RULES`, `CallableSignatureError`, `validate_callable_signatures()`, `validate_return_annotations()`
-* `backend/strategy_runtime/loader.py` — updated to call `validate_callable_signatures` and `validate_return_annotations` after interface check
-* `backend/strategy_runtime/__init__.py` — all new symbols exported
-* `tests/fixtures/strategies/wrong_signature_strategy/` — new fixture (wrong `build_features` param count)
-* `tests/unit/test_strategy_runtime.py` — 32 new tests (72 total); full suite `221 tests` passing
-
----
-
-## Implementation Priority 3 — Strategy Engine Foundation
-
-### Status
-
-PENDING
-
-### Objectives
-
-Define portable strategy architecture.
-
-### Expected Scope
-
-* strategy interfaces
-* signal contracts
-* feature contracts
-* strategy lifecycle
-* runtime isolation
-* execution independence
-* research workflow integration
-
-### Important Constraints
-
-Strategies must remain portable across:
-
-* research
-* backtesting
-* forward testing
-* paper trading
-* future live trading
-
----
-
-## Implementation Priority 4 — Research Environment Layer
-
-### Status
-
-PENDING
-
-### Objectives
-
-Design research-first workflows and experimentation infrastructure.
-
-### Expected Scope
-
-* feature experimentation
-* cycle analysis workflows
-* planetary/astronomical research support
-* hypothesis testing workflows
-* strategy comparison workflows
-* research artifact management
-* manual intervention support
-
-### Important Constraints
-
-Experimental research logic must remain isolated from production-grade execution systems.
-
----
-
-## Implementation Priority 5 — Frontend Research Terminal
-
-### Status
-
-DEFERRED / INCREMENTAL
-
-### Objectives
-
-Design advanced research visualization environment.
-
-### Expected Scope
-
-* charting platform
-* multi-pane synchronization
-* drawing tools
-* overlays
-* signal inspection
-* waveform-style rendering concepts
-* annotation systems
-* high-performance rendering
-* research workflow UX
-
-### Notes
-
-Frontend capabilities may evolve incrementally.
-
-Minimal validation-oriented charting work may occur much earlier.
-
-### Important Constraints
-
-Frontend must remain free from core business logic.
-
----
-
-## Implementation Priority 5B — Strategy Tools Builder Layer (Permanent Evolving Capability)
-
-### Status
-
-PENDING — FOUNDATIONAL DIRECTION
-
-### Context
-
-The Strategy Tools Builder Layer is a permanent architectural direction formally established in Phase 2M documentation.
-
-It is not a one-time feature. It is the evolving ecosystem through which users compose strategies from reusable tools.
-
-### Objectives
-
-Establish the foundational infrastructure for the Strategy Tools Builder Layer:
-
-* reusable indicator and analytical tool modules (backend)
-* tool registry and discovery
-* parameterized tool contracts
-* frontend composition interface for tool selection, configuration, and strategy authoring
-* strategy definition schema that captures tool orchestration
-* backend validation of tool-assembled strategy definitions
-
-### Expected Tool Categories (Phase 1 foundation)
-
-* classical indicators: MA, EMA, RSI, MACD, ATR
-* volatility modules
-* harmonic formula modules (later)
-* planetary/astronomical cycle modules (later)
-
-### Important Constraints
-
-* All tools must be modular, reusable, and independently testable
-* Frontend must orchestrate — backend must validate and execute
-* No one-off tightly-coupled indicators
-* Tools must be portable across all runtime modes
-
----
-
-## Implementation Priority 6 — Backtesting Framework
-
-### Status
-DEFERRED
-
-
-### Objectives
-
-Develop deterministic and reproducible backtesting systems.
-
-### Important Requirements
-
-* deterministic results
-* reproducibility
-* parameter traceability
-* dataset versioning
-* execution assumptions
-* slippage modeling
-* auditability
-
----
-
-## Implementation Priority 7 — Forward Testing & Paper Trading
-
-### Status
-DEFERRED
-
-### Objectives
-
-Establish runtime evaluation environments using real-time or near-real-time market data.
-
-### Important Constraints
-
-Forward testing and paper trading must use the same core strategy logic as backtesting.
-
----
-
-## Implementation Priority 8 — Execution & Broker Layer
-
-### Status
-DEFERRED
-
-### Objectives
-
-Design isolated execution infrastructure.
-
-### Expected Scope
-
-* execution engine
-* broker adapters
-* portfolio constraints
-* risk layer
-* routing systems
-* execution lifecycle
-
-### Important Constraints
-
-Execution systems must remain isolated from strategies.
-
----
-
-## Implementation Priority 9 — Live Trading Infrastructure
-
-### Status
-LONG-TERM DEFERRED
-
-### Objectives
-
-Support future controlled live trading capability.
-
-### Important Constraints
-
-Live trading is NOT current priority.
-
-No uncontrolled execution behavior should exist.
-
----
-
-# Current Architectural Constraints
-
-The following principles currently take highest priority:
-
-* strategy portability
-* modular boundaries
-* data abstraction
-* execution isolation
-* AI orchestration discipline
-* low token waste
-* deterministic workflows
-* incremental evolution
-
-Avoid premature optimization and speculative infrastructure.
-
----
-
-# Controlled Detour Rules
-
-QuantLab development must remain flexible.
-
-The task sequence is a recommended execution path, not a rigid waterfall plan.
-
-Controlled detours are allowed when they support current learning, validation, or architectural confidence.
-
-Examples of valid detours:
-early charting canvas to validate OHLCV normalization
-temporary data viewer to inspect ingestion quality
-minimal API endpoint to test frontend/backend integration
-prototype research screen to validate workflow assumptions
-small visualization tool to expose data contract issues
-
-A detour is valid only if it has a clear purpose and does not violate architecture guardrails.
-
-Before starting a detour, agents should record:
-why the detour is needed
-what phase it supports
-which modules are affected
-what must remain out of scope
-whether the work is prototype, temporary, or production-intended
-
-Detours must not become uncontrolled scope expansion.
-
-A minimal frontend chart may be introduced early to validate OHLCV data and normalization quality, even if the full research terminal and drawing tools remain deferred.
-
-Such work should be treated as:
-validation-supporting implementation
-
-not as full frontend platform completion.
-
----
-
-# Current Known Risks
-
-## Governance Drift
-
-As repository complexity increases, governance structures may require refactoring.
-
-Agents should monitor:
-
-* document scope quality
-* operational clarity
-* duplicated governance responsibilities
-* oversized context documents
-* stale workflows
-* architecture fragmentation
-
----
-
-## Premature Complexity
-
-There is significant risk of:
-
-* overengineering
-* unnecessary abstractions
-* speculative infrastructure
-* infrastructure-first development
-
-Current priority is:
-small deterministic foundations
-
----
-
-## AI Context Explosion
-
-Large uncontrolled prompts and oversized documentation can degrade:
-* reasoning quality
-* implementation quality
-* token efficiency
-* operational consistency
-
-Repository structure should remain modular and retrievable.
-
----
-
-# Current Recommended Workflow
-
-Preferred implementation flow:
-
-architecture definition
-→ repository structure
-→ data contracts
-→ strategy contracts
-→ core engines
-→ visualization systems
-→ execution systems
-→ runtime environments
-→ future live infrastructure
-
-Avoid skipping architectural sequencing.
-
-However, tactical validation work may occur earlier when it helps prove or inspect foundational assumptions.
-
-Example:
-minimal OHLCV charting view
-
-may be built early to validate:
-* data ingestion
-* normalization correctness
-* timeframe handling
-* candlestick rendering
-* frontend/backend contract clarity
-
-This does not mean the full frontend research terminal is promoted ahead of the data and strategy layers.
-
----
-
-# Deferred Systems
-
-The following systems are intentionally deferred until earlier architectural layers stabilize:
-* live trading
-* broker-specific optimization
-* multi-user infrastructure
-* distributed execution
-* microservices architecture
-* cloud orchestration
-* advanced deployment automation
-* high-frequency execution systems
-
-QuantLab should evolve incrementally.
-
----
-
-# Repository Maturity Direction
-
-QuantLab is expected to evolve through increasing architectural maturity.
-
-Governance structures, workflows, repository organization, and documentation boundaries are expected to evolve together with repository complexity.
-
-Agents should recommend governance evolution and operational refactoring when repository maturity significantly increases.
-
----
-
-# TASKS.md Maintenance Rules
-
-TASKS.md must be actively maintained, but not endlessly expanded.
-
-Agents should update TASKS.md when:
-* new active work starts
-* priority changes
-* controlled detours are introduced
-* blockers appear
-* major tasks are completed
-* maturity phase changes
-* scope is intentionally deferred
-
-Agents should avoid adding excessive historical details.
-
-Completed work should be summarized under completed milestones or compressed into a short state note.
-
-Detailed implementation history should live in:
-* HANDOFF.md for recent session continuity
-* commit messages for code-level history
-* module documentation for durable design decisions
-
-TASKS.md should answer:
-* what should happen next?
-* what is active now?
-* what is blocked?
-* what is intentionally deferred?
-* what maturity phase are we in?
-
-TASKS.md should not attempt to answer:
-* everything that has ever happened
-* all implementation details
-* all design explanations
-* all historical decisions
-
----
-
-# Current Immediate Next Recommended Actions
-
-Current state: Phase 3P-A complete. Backend 3415 tests passing. Frontend 71 tests passing.
-Platform is now a governed multi-user system: new users register as `pending`, admin approves, `SubscriptionGate` blocks non-active users in the frontend.
-All auth/vault/credential/ownership/entitlement infrastructure is in place (Phases 3A–3P-A).
-All standard indicators complete (SMA, EMA, RSI, MACD, ATR, Bollinger Bands).
-Full backtest pipeline complete (simulation, cost model, position sizing, report, exports).
-
-Recommended next sequence:
-1. Phase 3P — Commit accumulated work: all changes from Phases 2T, 3A–3P-A are uncommitted; create a single commit capturing this implementation milestone
-2. Phase 3P-B — Admin UI: browser-based user management panel so admins can approve/suspend/reactivate users without using the API directly; requires admin-role-aware frontend (show/hide admin tab based on `user.role === 'admin'`)
-3. Phase 2V — Custom research tools / pivot-swing framework: first non-standard indicator (e.g. swing high/low detection, divergence signal, custom feature tool) marking the start of the QuantLab-specific research layer
-4. Phase 3Q — Backtest workflow UX: allow users to select an owned dataset from the catalog and run a full backtest directly from the browser (end-to-end workflow: credential → fetch → compose strategy → backtest → report)
+Implementation work originates from structured directives only. Do not invent scope.

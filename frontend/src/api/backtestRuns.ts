@@ -1,8 +1,9 @@
 /**
- * API client for backtest runs: execute, retrieve, and export.
+ * API client for backtest runs: execute, retrieve, list history, and export.
  *
  * Endpoints:
  *   POST /backtests/runs                        — run backtest pipeline
+ *   GET  /backtests/runs                        — list run history (Phase 3S-C)
  *   GET  /backtests/runs/{id}/report            — retrieve persisted report
  *   GET  /backtests/runs/{id}/export/trades     — download trade ledger CSV
  *   GET  /backtests/runs/{id}/export/equity     — download equity curve CSV
@@ -11,19 +12,21 @@
 import type { OHLCVCandle } from './marketData'
 import type {
   BacktestRunConfig,
+  BacktestRunListItem,
   BacktestRunResponse,
   BacktestReport,
 } from '../types/backtestRuns'
 import { authedFetch } from './client'
 
-export type { BacktestRunConfig, BacktestRunResponse, BacktestReport }
+export type { BacktestRunConfig, BacktestRunListItem, BacktestRunResponse, BacktestReport }
 
 export async function runBacktest(
-  draftId:   string,
-  symbol:    string,
-  timeframe: string,
-  candles:   OHLCVCandle[],
-  config:    BacktestRunConfig,
+  draftId:      string,
+  symbol:       string,
+  timeframe:    string,
+  candles:      OHLCVCandle[],
+  config:       BacktestRunConfig,
+  provenance?:  { source_mode?: string; provider_name?: string; catalog_id?: string },
 ): Promise<BacktestRunResponse> {
   const bars = candles.map((c, i) => ({
     bar_index: i,
@@ -38,7 +41,16 @@ export async function runBacktest(
   const resp = await authedFetch('/backtests/runs', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ draft_id: draftId, symbol, timeframe, bars, config }),
+    body:    JSON.stringify({
+      draft_id:      draftId,
+      symbol,
+      timeframe,
+      bars,
+      config,
+      source_mode:   provenance?.source_mode   ?? null,
+      provider_name: provenance?.provider_name ?? null,
+      catalog_id:    provenance?.catalog_id    ?? null,
+    }),
   })
 
   const data = await resp.json().catch(() => ({ detail: resp.statusText }))
@@ -48,6 +60,17 @@ export async function runBacktest(
     throw new Error(msg)
   }
   return data as BacktestRunResponse
+}
+
+export async function listBacktestRuns(limit = 50): Promise<BacktestRunListItem[]> {
+  const resp = await authedFetch(`/backtests/runs?limit=${limit}`)
+  const data = await resp.json().catch(() => ({ detail: resp.statusText }))
+  if (!resp.ok) {
+    const detail = (data as { detail?: unknown }).detail
+    const msg = typeof detail === 'string' ? detail : JSON.stringify(detail ?? `HTTP ${resp.status}`)
+    throw new Error(msg)
+  }
+  return data as BacktestRunListItem[]
 }
 
 export async function fetchBacktestReport(runId: string): Promise<BacktestReport> {

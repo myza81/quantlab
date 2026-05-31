@@ -1,5 +1,6 @@
 /**
  * TypeScript types mirroring backend/api/schemas/backtest_runs.py
+ * Phase 3S-C: added DatasetProvenance, DraftProvenance, BacktestRunListItem
  */
 
 export interface BacktestRunConfig {
@@ -103,6 +104,27 @@ export interface BacktestMetrics {
   total_rejections: number
 }
 
+// ---------------------------------------------------------------------------
+// Provenance snapshots (Phase 3S-C)
+// ---------------------------------------------------------------------------
+
+export interface DatasetProvenance {
+  source_mode:      string | null   // 'provider' | 'catalog' | null
+  provider_name:    string | null
+  catalog_id:       string | null   // never file_path
+  bars_fingerprint: string          // SHA-256 computed server-side
+  bar_count:        number
+}
+
+export interface DraftProvenance {
+  draft_id:               string
+  display_name:           string
+  lifecycle_status_at_run: string   // snapshot at execution time
+  semantics_hash:         string | null
+}
+
+// ---------------------------------------------------------------------------
+
 export interface BacktestRunSummary {
   run_id:        string
   draft_id:      string
@@ -117,6 +139,9 @@ export interface BacktestRunSummary {
   dataset_start:  string | null
   dataset_end:    string | null
   engine_version: string
+  // Provenance snapshots
+  dataset_provenance: DatasetProvenance | null
+  draft_provenance:   DraftProvenance   | null
 }
 
 export interface BacktestReport {
@@ -133,4 +158,29 @@ export interface BacktestRunResponse {
   run_id:  string
   status:  string
   report:  BacktestReport
+}
+
+// ---------------------------------------------------------------------------
+// History list item — mirrors BacktestRunListItem (Phase 3S-C)
+// ---------------------------------------------------------------------------
+
+export interface BacktestRunListItem {
+  run_id:           string
+  draft_id:         string
+  draft_name:       string
+  symbol:           string
+  timeframe:        string
+  bars_count:       number
+  run_timestamp:    string
+  status:           string
+  dataset_start:    string | null
+  dataset_end:      string | null
+  engine_version:   string
+  dataset_provenance: DatasetProvenance | null
+  draft_provenance:   DraftProvenance   | null
+  // Key metrics
+  total_return_pct:   number | null
+  trade_count:        number | null
+  max_drawdown_pct:   number | null
+  win_rate:           number | null
 }

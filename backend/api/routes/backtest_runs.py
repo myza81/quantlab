@@ -2,6 +2,7 @@
 Backtest runs API routes.
 
 POST /backtests/runs                          — full pipeline: draft + bars → report
+GET  /backtests/runs                          — list user's run history, newest-first
 GET  /backtests/runs/{run_id}/report          — retrieve persisted report
 GET  /backtests/runs/{run_id}/export/trades   — trade ledger CSV download
 GET  /backtests/runs/{run_id}/export/equity   — equity+drawdown CSV download
@@ -15,8 +16,10 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 
+from backend.api.dependencies import get_backtest_storage_path, get_draft_repository
 from backend.api.schemas.backtest_runs import (
     BacktestReport,
+    BacktestRunListItem,
     BacktestRunRequest,
     BacktestRunResponse,
 )
@@ -24,6 +27,7 @@ from backend.api.services.backtest_run_service import (
     BacktestAccessDeniedError,
     BacktestRunError,
     create_backtest_run,
+    list_backtest_runs,
     load_backtest_report,
 )
 from backend.api.services.export_service import (
@@ -33,23 +37,21 @@ from backend.api.services.export_service import (
 )
 from backend.auth.entitlement import require_active_subscription
 from backend.auth.models import User
+from backend.core.audit import AuditEvent, AuditEventKind, emit_audit_event
+from backend.core.config import settings
+from backend.core.request_validation import validate_bar_count, validate_uuid_id
 from backend.strategy_registry.draft_repository import DraftNotFoundError, DraftRepository
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
 
-_DEFAULT_DRAFT_STORAGE = Path("storage/strategy_drafts")
-
-
-def get_draft_repository() -> DraftRepository:
-    return DraftRepository(_DEFAULT_DRAFT_STORAGE)
-
 
 @router.post("/runs", response_model=BacktestRunResponse)
 def create_run(
     request:      BacktestRunRequest,
     repository:   DraftRepository = Depends(get_draft_repository),
+    storage:      Path = Depends(get_backtest_storage_path),
     current_user: User = Depends(require_active_subscription),
 ) -> BacktestRunResponse:
     """
@@ -58,22 +60,56 @@ def create_run(
     Accepts OHLCV bars (already loaded by the chart page) + draft_id + simulation config.
     Returns the full backtest report including metrics, equity curve, and trade ledger.
     """
+    bar_count = len(request.bars)
     try:
-        return create_backtest_run(request, repository, user_id=current_user.user_id)
+        validate_bar_count(bar_count, settings.max_backtest_bars)
+    except ValueError as exc:
+        emit_audit_event(AuditEvent(
+            event_kind=AuditEventKind.OVERSIZED_PAYLOAD_REJECTED,
+            details={"bar_count": bar_count, "max_bars": settings.max_backtest_bars, "endpoint": "/backtests/runs"},
+        ))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        return create_backtest_run(request, repository, storage=storage, user_id=current_user.user_id)
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BacktestRunError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.get("/runs", response_model=list[BacktestRunListItem])
+def list_runs(
+    limit:        int  = 50,
+    storage:      Path = Depends(get_backtest_storage_path),
+    current_user: User = Depends(require_active_subscription),
+) -> list[BacktestRunListItem]:
+    """
+    List all backtest runs owned by the authenticated user, newest-first.
+
+    Returns lightweight metadata only — no equity curves, trade ledgers, or
+    drawdown series.  Clients use run_id from each item to reopen the full
+    report via GET /backtests/runs/{run_id}/report.
+
+    limit: maximum number of results (default 50, max 200).
+    """
+    capped_limit = min(max(1, limit), 200)
+    return list_backtest_runs(storage, owner_user_id=current_user.user_id, limit=capped_limit)
+
+
 @router.get("/runs/{run_id}/report", response_model=BacktestReport)
 def get_report(
     run_id: str,
+    storage: Path = Depends(get_backtest_storage_path),
     current_user: User = Depends(require_active_subscription),
 ) -> BacktestReport:
     """Retrieve a previously persisted backtest report by run_id."""
     try:
-        return load_backtest_report(run_id, owner_user_id=current_user.user_id)
+        validate_uuid_id(run_id, "run_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        return load_backtest_report(run_id, storage=storage, owner_user_id=current_user.user_id)
     except BacktestAccessDeniedError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BacktestRunError as exc:
@@ -87,11 +123,16 @@ def get_report(
 @router.get("/runs/{run_id}/export/trades")
 def export_trades_csv(
     run_id: str,
+    storage: Path = Depends(get_backtest_storage_path),
     current_user: User = Depends(require_active_subscription),
 ) -> PlainTextResponse:
     """Download trade ledger (all closed + open positions) as CSV."""
     try:
-        report = load_backtest_report(run_id, owner_user_id=current_user.user_id)
+        validate_uuid_id(run_id, "run_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        report = load_backtest_report(run_id, storage=storage, owner_user_id=current_user.user_id)
     except BacktestAccessDeniedError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BacktestRunError as exc:
@@ -109,11 +150,16 @@ def export_trades_csv(
 @router.get("/runs/{run_id}/export/equity")
 def export_equity_csv(
     run_id: str,
+    storage: Path = Depends(get_backtest_storage_path),
     current_user: User = Depends(require_active_subscription),
 ) -> PlainTextResponse:
     """Download per-bar equity curve with drawdown percentage as CSV."""
     try:
-        report = load_backtest_report(run_id, owner_user_id=current_user.user_id)
+        validate_uuid_id(run_id, "run_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        report = load_backtest_report(run_id, storage=storage, owner_user_id=current_user.user_id)
     except BacktestAccessDeniedError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BacktestRunError as exc:
@@ -131,11 +177,16 @@ def export_equity_csv(
 @router.get("/runs/{run_id}/export/report")
 def export_report(
     run_id: str,
+    storage: Path = Depends(get_backtest_storage_path),
     current_user: User = Depends(require_active_subscription),
 ) -> Response:
     """Download the full backtest report as JSON."""
     try:
-        report = load_backtest_report(run_id, owner_user_id=current_user.user_id)
+        validate_uuid_id(run_id, "run_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        report = load_backtest_report(run_id, storage=storage, owner_user_id=current_user.user_id)
     except BacktestAccessDeniedError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BacktestRunError as exc:

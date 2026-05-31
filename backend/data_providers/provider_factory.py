@@ -29,6 +29,8 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from backend.core.audit import AuditEvent, AuditEventKind, emit_audit_event
+from backend.core.config import settings
 from backend.data_providers.base import ProviderCapabilities, ProviderFetchError
 from backend.data_providers.range_provider import RangeProviderAdapter
 
@@ -290,17 +292,22 @@ def _build_polygon_adapter(
       1. Primary path (Phase 3J+): *api_key* kwarg pre-resolved by the service
          layer via VaultService.resolve_secret().  Caller is responsible for
          ownership/active/provider-match checks before passing the key here.
-      2. Transitional ENV fallback: when *api_key* is None or empty, reads
-         POLYGON_API_KEY from the environment via EnvironmentCredentialResolver.
-         Preserved for backward compatibility and headless/server deployments;
-         will be removed once all integrations are migrated to the vault.
+      2. ENV fallback (gated): when *api_key* is None and
+         settings.polygon_allow_env_fallback is True, reads POLYGON_API_KEY
+         from the environment. Disabled by default; enable only in controlled
+         environments where the vault is not available.
 
     INVARIANT: the resolved key is never logged or included in error messages.
     """
     if api_key:
         resolved_key = api_key
-    else:
-        # Transitional fallback — ENV-based resolver.
+    elif settings.polygon_allow_env_fallback:
+        # ENV fallback — only active when explicitly enabled in settings.
+        emit_audit_event(AuditEvent(
+            event_kind=AuditEventKind.POLYGON_ENV_FALLBACK_USED,
+            provider_name="polygon",
+            details={"symbol": symbol, "timeframe": timeframe},
+        ))
         from backend.core.credentials import (
             CredentialSpec,
             EnvironmentCredentialResolver,
@@ -309,12 +316,17 @@ def _build_polygon_adapter(
         _spec = CredentialSpec(
             provider_name="polygon",
             credential_key="POLYGON_API_KEY",
-            description="Polygon.io API key — transitional ENV path (migrate to vault)",
+            description="Polygon.io API key — ENV fallback path (gated by polygon_allow_env_fallback)",
         )
         try:
             resolved_key = EnvironmentCredentialResolver().resolve(_spec)
         except MissingCredentialError as exc:
             raise ProviderBuildError(str(exc)) from exc
+    else:
+        raise ProviderBuildError(
+            "Polygon provider requires an api_key — resolve it via the vault "
+            "and pass as api_key kwarg. ENV fallback is disabled."
+        )
 
     from backend.data_providers.polygon.adapter import PolygonProviderAdapter
 
@@ -337,8 +349,8 @@ def create_default_factory_registry() -> ProviderAdapterFactory:
         csv     — Local CSV file (requires file_path kwarg at build time)
         parquet — Local Parquet file (requires file_path kwarg at build time)
         polygon — Polygon.io REST API
-                    Pass api_key kwarg (pre-resolved via VaultService) for primary path.
-                    Falls back to POLYGON_API_KEY env var if api_key is absent.
+                    Pass api_key kwarg (pre-resolved via VaultService).
+                    ENV fallback only active when settings.polygon_allow_env_fallback=True.
 
     Future providers (Binance, IBKR) can be registered here without
     touching any API service or route code.

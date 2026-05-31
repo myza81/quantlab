@@ -75,6 +75,54 @@ class AuditEventKind(str, Enum):
     SUBSCRIPTION_EXPIRED = "subscription_expired"
     SUBSCRIPTION_SUSPENDED = "subscription_suspended"
     ENTITLEMENT_DENIED = "entitlement_denied"
+    # Phase 3P-B.1 — governance safety
+    EXPIRY_UPDATED = "expiry_updated"
+    ADMIN_SELF_SUSPENSION_DENIED = "admin_self_suspension_denied"
+    LAST_ADMIN_SUSPENSION_DENIED = "last_admin_suspension_denied"
+    # Phase 3P-D — superadmin & role management
+    ROLE_PROMOTED = "role_promoted"
+    ROLE_DEMOTED = "role_demoted"
+    LAST_SUPERADMIN_PROTECTION_DENIED = "last_superadmin_protection_denied"
+    UNAUTHORIZED_ROLE_CHANGE_ATTEMPT = "unauthorized_role_change_attempt"
+    # Phase 3S-B — hardening
+    OVERSIZED_PAYLOAD_REJECTED = "oversized_payload_rejected"
+    LIFECYCLE_TRANSITION_DENIED = "lifecycle_transition_denied"
+    POLYGON_ENV_FALLBACK_USED = "polygon_env_fallback_used"
+    # Phase 4C.2 — Forward Testing session lifecycle events (FT_)
+    # Taxonomy defined in docs/EXECUTION_AUDIT_MODEL.md §5.
+    # Events are defined here for taxonomy completeness; emission is Phase 4C.4.
+    FT_SESSION_CREATED              = "ft_session_created"
+    FT_SESSION_ACTIVATED            = "ft_session_activated"
+    FT_ACTIVATION_DENIED            = "ft_activation_denied"
+    FT_SESSION_PAUSED               = "ft_session_paused"
+    FT_SESSION_PAUSED_PROVIDER_FAILURE = "ft_session_paused_provider_failure"
+    FT_SESSION_RESUMED              = "ft_session_resumed"
+    FT_SESSION_COMPLETED            = "ft_session_completed"
+    FT_SESSION_FAILED               = "ft_session_failed"
+    FT_SESSION_TERMINATED           = "ft_session_terminated"
+    FT_INVALID_TRANSITION_DENIED    = "ft_invalid_transition_denied"
+    FT_SIGNAL_GENERATED             = "ft_signal_generated"
+    FT_SIGNAL_SUPPRESSED            = "ft_signal_suppressed"
+    FT_POLL_COMPLETED               = "ft_poll_completed"
+    FT_PROVIDER_FAILURE             = "ft_provider_failure"
+    FT_GAP_DETECTED                 = "ft_gap_detected"
+    FT_CATCHUP_STARTED              = "ft_catchup_started"
+    FT_CATCHUP_THRESHOLD_EXCEEDED   = "ft_catchup_threshold_exceeded"
+    FT_SESSION_EXPORTED             = "ft_session_exported"
+    FT_SESSION_REVIEWED             = "ft_session_reviewed"
+    # Phase 4C.2 — Governance promotion events (GOV_)
+    # Taxonomy defined in docs/EXECUTION_AUDIT_MODEL.md §8.
+    # Note: GOV_LIFECYCLE_TRANSITION_DENIED is the taxonomy-correct name for
+    #       LIFECYCLE_TRANSITION_DENIED (kept above for backward compatibility).
+    GOV_PROMOTION_REQUESTED         = "gov_promotion_requested"
+    GOV_PROMOTION_REVIEW_STARTED    = "gov_promotion_review_started"
+    GOV_PROMOTION_APPROVED          = "gov_promotion_approved"
+    GOV_PROMOTION_REJECTED          = "gov_promotion_rejected"
+    GOV_PROMOTION_REVOKED           = "gov_promotion_revoked"
+    GOV_SESSION_REVIEWED            = "gov_session_reviewed"
+    GOV_STRATEGY_APPROVED_FOR_PAPER = "gov_strategy_approved_for_paper"
+    GOV_STRATEGY_APPROVED_FOR_LIVE  = "gov_strategy_approved_for_live"
+    GOV_LIFECYCLE_TRANSITION_DENIED = "gov_lifecycle_transition_denied"
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +136,9 @@ class AuditEvent:
 
     `details` must contain only safe metadata — no paths, secrets, or tokens.
     `provider_name` is safe (it is a registered provider id like "csv", "yahoo").
+    `correlation_id` links related execution events (signal → order → fill →
+    position → account update).  Optional; safe to omit for non-execution events.
+    Must not contain secrets or filesystem paths.
     """
     event_kind: AuditEventKind
     provider_name: str = ""
@@ -95,6 +146,7 @@ class AuditEvent:
     timestamp: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+    correlation_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -113,5 +165,7 @@ def emit_audit_event(event: AuditEvent) -> None:
         "provider": event.provider_name,
         "timestamp": event.timestamp.isoformat(),
     }
+    if event.correlation_id is not None:
+        record["correlation_id"] = event.correlation_id
     record.update(event.details)
     _AUDIT_LOGGER.info(json.dumps(record))

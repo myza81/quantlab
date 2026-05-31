@@ -1,12 +1,12 @@
 /**
  * Typed API client for semantic endpoints.
  *
- * Draft-scoped endpoints (require auth — Phase 3L):
+ * Draft-scoped endpoints (require auth):
  *   GET  /drafts/{id}/semantics
  *   PUT  /drafts/{id}/semantics
  *   POST /drafts/{id}/semantics/validate
  *
- * Stateless payload endpoints (public — no draft ownership):
+ * Stateless payload endpoints (require auth — Phase 3S-D):
  *   POST /semantics/validate
  */
 import { authedFetch } from './client'
@@ -22,28 +22,6 @@ import type {
 
 async function _authedReq<T>(method: string, path: string, body?: unknown): Promise<T> {
   const resp = await authedFetch(path, {
-    method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
-  const data = await resp.json().catch(() => ({ detail: resp.statusText }))
-  if (!resp.ok) {
-    const detail = (data as { detail?: unknown }).detail
-    const msg =
-      typeof detail === 'string'
-        ? detail
-        : JSON.stringify(detail ?? `HTTP ${resp.status}`)
-    throw new Error(msg)
-  }
-  return data as T
-}
-
-// ---------------------------------------------------------------------------
-// Public helper — stateless payload routes
-// ---------------------------------------------------------------------------
-
-async function _publicReq<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const resp = await fetch(path, {
     method,
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -85,12 +63,12 @@ export function validateDraftSemantics(
 }
 
 // ---------------------------------------------------------------------------
-// Stateless payload (public)
+// Stateless payload (authenticated — Phase 3S-D)
 // ---------------------------------------------------------------------------
 
 /** POST /semantics/validate — validate payload without persisting */
 export function validateSemanticsPayload(
   semantics: StrategySemantics,
 ): Promise<SemanticsValidationResponse> {
-  return _publicReq('POST', '/semantics/validate', { semantics })
+  return _authedReq('POST', '/semantics/validate', { semantics })
 }

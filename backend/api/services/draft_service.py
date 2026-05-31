@@ -18,6 +18,7 @@ from backend.api.schemas.drafts import (
 from backend.core.audit import AuditEvent, AuditEventKind, emit_audit_event
 from backend.strategy_registry.draft_repository import DraftRepository
 from backend.strategy_registry.drafts import StrategyDraft
+from backend.strategy_registry.lifecycle import validate_lifecycle_transition
 
 _UTC = timezone.utc
 
@@ -45,6 +46,7 @@ def create_draft(
         tags=tuple(request.tags),
         notes=request.notes,
         user_id=user_id,
+        lifecycle_status=request.lifecycle_status,
     )
     repository.save(draft)
     emit_audit_event(AuditEvent(
@@ -93,6 +95,24 @@ def update_draft(
     existing_data = existing.model_dump()
 
     updates = request.model_dump(exclude_unset=True)
+
+    if "lifecycle_status" in updates:
+        try:
+            validate_lifecycle_transition(existing.lifecycle_status, updates["lifecycle_status"])
+        except ValueError as exc:
+            emit_audit_event(AuditEvent(
+                event_kind=AuditEventKind.LIFECYCLE_TRANSITION_DENIED,
+                details={
+                    "draft_id": draft_id,
+                    "from_status": existing.lifecycle_status.value,
+                    "to_status": updates["lifecycle_status"].value
+                    if hasattr(updates["lifecycle_status"], "value")
+                    else str(updates["lifecycle_status"]),
+                    "user_id": owner_id,
+                },
+            ))
+            raise
+
     if "tags" in updates and isinstance(updates["tags"], list):
         updates["tags"] = tuple(updates["tags"])
     existing_data.update(updates)

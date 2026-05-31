@@ -30,3 +30,10 @@ class SuspendUserRequest(BaseModel):
 
 class ReactivateUserRequest(BaseModel):
     subscription_expires_at: Optional[str] = None
+
+
+class UpdateExpiryRequest(BaseModel):
+    # Required for this endpoint: admin must explicitly provide a future date.
+    # Future: payment/renewal webhooks write to the same subscription_expires_at
+    # field via SubscriptionService → UserRepository.update(), not this endpoint.
+    subscription_expires_at: str

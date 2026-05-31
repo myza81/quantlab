@@ -23,10 +23,16 @@ Cache policy governs provider fetch behavior:
     FORCE_REFRESH              — fetch full range, overwrite local storage
     BYPASS_CACHE               — fetch, normalize, return without storing
 
+Phase 4C.3 additions — forward-testing data-access primitives:
+    timeframe_to_timedelta()   — canonical timeframe string → timedelta
+    is_bar_finalized()         — checks whether a bar's period has fully elapsed
+    OHLCVService.get_recent_bars()  — latest N finalized bars (BYPASS_CACHE)
+    OHLCVService.get_bars_since()   — finalized bars strictly after a cursor (BYPASS_CACHE)
+
 NOT a live-streaming system.  Historical / research-grade ingestion only.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +48,103 @@ from backend.storage.dataset_cache import DatasetCacheRegistry, DatasetCacheStat
 from backend.storage.parquet_store import StorageError
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Timeframe utilities — Phase 4C.3 forward-testing primitives
+# ---------------------------------------------------------------------------
+
+# Maps canonical timeframe identifiers to their exact duration as timedelta.
+# "1M" uses 30 days as an approximation; actual month length varies by calendar.
+# Forward testing uses these durations only for bar-finalization detection, not
+# for scheduling or statistical calculations, so the approximation is acceptable.
+_TIMEFRAME_DURATIONS: dict[str, timedelta] = {
+    "1m":  timedelta(minutes=1),
+    "3m":  timedelta(minutes=3),
+    "5m":  timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "30m": timedelta(minutes=30),
+    "1h":  timedelta(hours=1),
+    "2h":  timedelta(hours=2),
+    "4h":  timedelta(hours=4),
+    "6h":  timedelta(hours=6),
+    "8h":  timedelta(hours=8),
+    "12h": timedelta(hours=12),
+    "1d":  timedelta(days=1),
+    "3d":  timedelta(days=3),
+    "1w":  timedelta(weeks=1),
+    "1M":  timedelta(days=30),
+}
+
+
+def timeframe_to_timedelta(timeframe: str) -> timedelta:
+    """
+    Convert a canonical QuantLab timeframe string to a Python timedelta.
+
+    Args:
+        timeframe: Canonical timeframe identifier (e.g. "1d", "1h", "15m").
+
+    Returns:
+        Corresponding timedelta representing one candle period.
+
+    Raises:
+        ValueError: if the timeframe is not in the canonical set.
+
+    Note:
+        "1M" returns timedelta(days=30) — an approximation.  The exact
+        calendar month length varies but this is adequate for bar-finalization
+        detection, which only needs to know when the candle period has elapsed.
+    """
+    try:
+        return _TIMEFRAME_DURATIONS[timeframe]
+    except KeyError:
+        from backend.data.schemas import ALLOWED_TIMEFRAMES
+        raise ValueError(
+            f"Unsupported timeframe {timeframe!r}. "
+            f"Allowed values: {sorted(ALLOWED_TIMEFRAMES)}"
+        )
+
+
+def is_bar_finalized(
+    bar_timestamp: datetime,
+    timeframe: str,
+    *,
+    current_time: datetime,
+    buffer_seconds: int = 60,
+) -> bool:
+    """
+    Return True when a bar's candle period has fully elapsed plus the safety buffer.
+
+    A bar with open-time `bar_timestamp` and period `timeframe` is considered
+    finalized when:
+
+        current_time >= bar_timestamp + timeframe_duration + timedelta(seconds=buffer_seconds)
+
+    The safety buffer accounts for provider data lag: a bar that just closed
+    may not yet be available from the provider.  A 60-second buffer is the
+    conservative default; tune via the caller (ForwardTestService passes
+    ``settings.forward_test_bar_finalization_buffer_seconds``).
+
+    Args:
+        bar_timestamp:   Candle open-time.  Must be UTC-aware.
+        timeframe:       Canonical timeframe string (e.g. "1d", "1h").
+        current_time:    Reference "now".  Must be UTC-aware.
+        buffer_seconds:  Seconds added to candle close time before the bar is
+                         considered safe to evaluate.  Default 60.
+
+    Returns:
+        True if the candle period + buffer has elapsed; False otherwise.
+
+    Raises:
+        ValueError: if either datetime argument is naive (timezone-unaware).
+        ValueError: if timeframe is not in the canonical set.
+    """
+    if bar_timestamp.tzinfo is None:
+        raise ValueError("bar_timestamp must be UTC-aware; got naive datetime")
+    if current_time.tzinfo is None:
+        raise ValueError("current_time must be UTC-aware; got naive datetime")
+    close_time = bar_timestamp + timeframe_to_timedelta(timeframe)
+    return current_time >= close_time + timedelta(seconds=buffer_seconds)
 
 
 class OHLCVIngestionError(Exception):
@@ -199,6 +302,157 @@ class OHLCVService:
         (e.g. after a manual file operation or migration).
         """
         self._refresh_coverage(identity)
+
+    # ------------------------------------------------------------------
+    # Phase 4C.3 — forward-testing data-access primitives
+    # ------------------------------------------------------------------
+
+    def get_recent_bars(
+        self,
+        identity: DatasetIdentity,
+        limit: int,
+        provider: RangeProviderAdapter,
+        *,
+        reference_time: Optional[datetime] = None,
+        bar_finalization_buffer_seconds: int = 60,
+        lookback_multiplier: int = 2,
+    ) -> list[NormalizedOHLCV]:
+        """
+        Return the latest ``limit`` finalized bars for the given identity.
+
+        Intended use cases:
+        - Warmup context at forward-test session activation
+        - Initial strategy seed data
+        - Latest-bar acquisition without polluting historical storage
+
+        Behavior:
+        - Fetches using BYPASS_CACHE (no storage read/write)
+        - Excludes any bar whose candle period has not fully elapsed plus
+          ``bar_finalization_buffer_seconds``
+        - Returns bars in ascending timestamp order
+        - Returns fewer than ``limit`` bars if fewer finalized bars are available
+
+        Look-back window:
+        - Requests ``limit * lookback_multiplier`` timeframe periods of history
+        - The multiplier (default 2) accommodates weekends, market closures,
+          and provider gaps without fetching an excessively large window
+
+        Args:
+            identity:                      Provider-specific dataset identity;
+                                           must have a canonical timeframe.
+            limit:                         Maximum number of finalized bars to return.
+            provider:                      RangeProviderAdapter to call.
+            reference_time:                "Now" reference for finalization check.
+                                           Defaults to ``datetime.now(timezone.utc)``.
+                                           Pass explicitly in tests for determinism.
+            bar_finalization_buffer_seconds: Safety buffer added to candle close time.
+                                           Default 60 s.  Pass
+                                           ``settings.forward_test_bar_finalization_buffer_seconds``
+                                           in production.
+            lookback_multiplier:           Factor applied to the look-back window.
+                                           Default 2.
+
+        Returns:
+            List of NormalizedOHLCV finalized bars, ascending, len <= limit.
+
+        Raises:
+            ValueError: if limit <= 0 or reference_time is naive.
+            ValueError: if identity.timeframe is not in the canonical set.
+        """
+        if limit <= 0:
+            raise ValueError(f"limit must be a positive integer; got {limit!r}")
+        if reference_time is None:
+            reference_time = datetime.now(timezone.utc)
+        if reference_time.tzinfo is None:
+            raise ValueError("reference_time must be UTC-aware; got naive datetime")
+
+        tf_delta = timeframe_to_timedelta(identity.timeframe)
+        lookback = tf_delta * limit * lookback_multiplier
+        start = reference_time - lookback
+
+        bars = self.get_ohlcv(
+            identity, start, reference_time, provider,
+            cache_policy=DatasetCachePolicy.BYPASS_CACHE,
+        )
+
+        finalized = [
+            b for b in bars
+            if is_bar_finalized(
+                b.timestamp, identity.timeframe,
+                current_time=reference_time,
+                buffer_seconds=bar_finalization_buffer_seconds,
+            )
+        ]
+
+        # bars from get_ohlcv are ascending; take the most recent `limit`
+        return finalized[-limit:] if len(finalized) > limit else finalized
+
+    def get_bars_since(
+        self,
+        identity: DatasetIdentity,
+        since_timestamp: datetime,
+        provider: RangeProviderAdapter,
+        *,
+        reference_time: Optional[datetime] = None,
+        bar_finalization_buffer_seconds: int = 60,
+    ) -> list[NormalizedOHLCV]:
+        """
+        Return finalized bars with timestamp **strictly after** ``since_timestamp``.
+
+        Intended use cases:
+        - Forward-test poll cycle: fetch bars the session hasn't seen yet
+        - Catch-up after pause/resume
+        - Session restart with cursor recovery
+
+        Behavior:
+        - Fetches using BYPASS_CACHE (no storage read/write)
+        - Strict comparison: ``bar.timestamp > since_timestamp``
+        - Excludes any bar whose candle period has not fully elapsed plus
+          ``bar_finalization_buffer_seconds``
+        - Returns bars in ascending timestamp order
+        - Duplicate bars are not returned (provider guarantees uniqueness
+          within a fetch window; this layer adds no deduplication)
+        - Never mutates session state — this is a pure read primitive
+
+        Args:
+            identity:                      Provider-specific dataset identity.
+            since_timestamp:               Cursor.  Must be UTC-aware.
+                                           Bars at exactly this timestamp are excluded.
+            provider:                      RangeProviderAdapter to call.
+            reference_time:                "Now" reference for finalization check.
+                                           Defaults to ``datetime.now(timezone.utc)``.
+            bar_finalization_buffer_seconds: Safety buffer for candle close time.
+                                           Default 60 s.
+
+        Returns:
+            List of NormalizedOHLCV finalized bars strictly after since_timestamp,
+            ascending by timestamp.
+
+        Raises:
+            ValueError: if since_timestamp or reference_time is naive.
+            ValueError: if identity.timeframe is not in the canonical set.
+        """
+        if since_timestamp.tzinfo is None:
+            raise ValueError("since_timestamp must be UTC-aware; got naive datetime")
+        if reference_time is None:
+            reference_time = datetime.now(timezone.utc)
+        if reference_time.tzinfo is None:
+            raise ValueError("reference_time must be UTC-aware; got naive datetime")
+
+        bars = self.get_ohlcv(
+            identity, since_timestamp, reference_time, provider,
+            cache_policy=DatasetCachePolicy.BYPASS_CACHE,
+        )
+
+        return [
+            b for b in bars
+            if b.timestamp > since_timestamp
+            and is_bar_finalized(
+                b.timestamp, identity.timeframe,
+                current_time=reference_time,
+                buffer_seconds=bar_finalization_buffer_seconds,
+            )
+        ]
 
     # ------------------------------------------------------------------
     # Policy-specific internal methods

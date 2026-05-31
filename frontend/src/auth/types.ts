@@ -1,5 +1,5 @@
 export type SubscriptionStatus = 'pending' | 'active' | 'expired' | 'suspended'
-export type UserRole = 'user' | 'admin'
+export type UserRole = 'user' | 'admin' | 'superadmin'
 
 export interface User {
   user_id: string

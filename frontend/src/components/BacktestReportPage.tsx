@@ -14,8 +14,10 @@ import { EquityCurveChart } from './EquityCurveChart'
 import { TradeLedgerTable } from './TradeLedgerTable'
 
 interface Props {
-  report:  BacktestReport
-  onBack:  () => void
+  report:                BacktestReport
+  onBack:                () => void
+  sourceLabel?:          string | null
+  onNavigateToComposer?: () => void
 }
 
 const $ = (v: number | null | undefined, dp = 2) =>
@@ -52,7 +54,17 @@ function MetricCard({ label, value, color, sub }: MetricCardProps) {
   )
 }
 
-export function BacktestReportPage({ report, onBack }: Props) {
+interface ProvenanceRowProps { label: string; value: string; mono?: boolean }
+function ProvenanceRow({ label, value, mono }: ProvenanceRowProps) {
+  return (
+    <div style={s.provRow}>
+      <span style={s.provKey}>{label}</span>
+      <span style={mono ? s.provValMono : s.provVal}>{value}</span>
+    </div>
+  )
+}
+
+export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToComposer }: Props) {
   const { run, metrics } = report
 
   const cfgLabel = (() => {
@@ -75,9 +87,21 @@ export function BacktestReportPage({ report, onBack }: Props) {
       {/* ── Header ── */}
       <div style={s.header}>
         <button style={s.backBtn} onClick={onBack}>← Back to Chart</button>
+        {onNavigateToComposer && (
+          <button
+            data-testid="edit-strategy-btn"
+            style={s.editStrategyBtn}
+            onClick={onNavigateToComposer}
+          >
+            Edit Strategy
+          </button>
+        )}
         <div style={s.headerMeta}>
           <span style={s.headerSymbol}>{run.symbol} · {run.timeframe}</span>
           <span style={s.headerStrategy}>{run.draft_name}</span>
+          {sourceLabel && (
+            <span data-testid="report-source-label" style={s.headerSource}>{sourceLabel}</span>
+          )}
           <span style={s.headerTs}>{fmtDateTime(run.run_timestamp)}</span>
           <span style={s.headerBars}>{run.bars_count} bars · {cfgLabel}</span>
         </div>
@@ -156,6 +180,44 @@ export function BacktestReportPage({ report, onBack }: Props) {
             openPosition={report.open_position}
           />
         </div>
+
+        {/* ── Run Provenance ── */}
+        {(run.dataset_provenance || run.draft_provenance) && (
+          <div style={s.section}>
+            <div style={s.sectionTitle}>Run Provenance</div>
+            <div style={s.provenanceGrid}>
+              {run.dataset_provenance && (
+                <div style={s.provenanceBlock}>
+                  <div style={s.provenanceBlockTitle}>Dataset</div>
+                  {run.dataset_provenance.source_mode && (
+                    <ProvenanceRow label="source"      value={run.dataset_provenance.source_mode} />
+                  )}
+                  {run.dataset_provenance.provider_name && (
+                    <ProvenanceRow label="provider"    value={run.dataset_provenance.provider_name} />
+                  )}
+                  {run.dataset_provenance.catalog_id && (
+                    <ProvenanceRow label="catalog_id"  value={run.dataset_provenance.catalog_id.slice(0, 8)} mono />
+                  )}
+                  <ProvenanceRow label="bars"          value={`${run.dataset_provenance.bar_count.toLocaleString()}`} />
+                  {run.dataset_provenance.bars_fingerprint && (
+                    <ProvenanceRow label="fingerprint" value={run.dataset_provenance.bars_fingerprint.slice(0, 12)} mono />
+                  )}
+                </div>
+              )}
+              {run.draft_provenance && (
+                <div style={s.provenanceBlock}>
+                  <div style={s.provenanceBlockTitle}>Strategy</div>
+                  <ProvenanceRow label="draft_id"   value={run.draft_provenance.draft_id.slice(0, 8)} mono />
+                  <ProvenanceRow label="name"        value={run.draft_provenance.display_name} />
+                  <ProvenanceRow label="lifecycle"   value={run.draft_provenance.lifecycle_status_at_run} />
+                  {run.draft_provenance.semantics_hash && (
+                    <ProvenanceRow label="logic_hash" value={run.draft_provenance.semantics_hash.slice(0, 12)} mono />
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ── Rejections / Rule Audit ── */}
         <div style={s.section}>
@@ -236,6 +298,23 @@ const s: Record<string, React.CSSProperties> = {
     fontSize:     11,
     padding:      '4px 10px',
     flexShrink:   0,
+  },
+  editStrategyBtn: {
+    background:   'transparent',
+    border:       '1px solid #2a3a2a',
+    borderRadius: 4,
+    color:        '#66bb6a',
+    cursor:       'pointer',
+    fontFamily:   'monospace',
+    fontSize:     11,
+    padding:      '4px 10px',
+    flexShrink:   0,
+  },
+  headerSource: {
+    fontSize:      11,
+    color:         '#3a5568',
+    fontFamily:    'monospace',
+    letterSpacing: '0.03em',
   },
   headerMeta: {
     display: 'flex',
@@ -402,5 +481,52 @@ const s: Record<string, React.CSSProperties> = {
   ruleAuditId: {
     color:     '#7eb8f7',
     letterSpacing: '0.02em',
+  },
+  provenanceGrid: {
+    display:   'flex',
+    gap:       16,
+    flexWrap:  'wrap' as const,
+  },
+  provenanceBlock: {
+    background:    '#0a0a14',
+    border:        '1px solid #1a1a28',
+    borderRadius:  5,
+    padding:       '8px 12px',
+    display:       'flex',
+    flexDirection: 'column' as const,
+    gap:           4,
+    minWidth:      200,
+  },
+  provenanceBlockTitle: {
+    fontSize:      9,
+    color:         '#2a3040',
+    fontFamily:    'monospace',
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase' as const,
+    marginBottom:  4,
+  },
+  provRow: {
+    display: 'flex',
+    gap:     8,
+    alignItems: 'baseline',
+  },
+  provKey: {
+    fontSize:      10,
+    color:         '#2a3040',
+    fontFamily:    'monospace',
+    letterSpacing: '0.04em',
+    flexShrink:    0,
+    width:         80,
+  },
+  provVal: {
+    fontSize:   10,
+    color:      '#4a5568',
+    fontFamily: 'monospace',
+  },
+  provValMono: {
+    fontSize:      10,
+    color:         '#3a5068',
+    fontFamily:    'monospace',
+    letterSpacing: '0.06em',
   },
 }

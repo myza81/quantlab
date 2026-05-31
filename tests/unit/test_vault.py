@@ -37,6 +37,8 @@ from backend.vault.service import (
     CredentialRegistrationError,
     VaultService,
 )
+from backend.api.main import app
+from backend.auth.entitlement import require_active_subscription
 from backend.core.audit import AuditEventKind
 
 
@@ -621,6 +623,12 @@ def authed_client(tmp_path: Path):
 
 
 class TestVaultRoutes:
+    def setup_method(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
+
+    def teardown_method(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
+
     def _headers(self, token: str) -> dict:
         return {"Authorization": f"Bearer {token}"}
 
@@ -756,6 +764,12 @@ class TestVaultRoutes:
 # ---------------------------------------------------------------------------
 
 class TestCrossUserIsolation:
+    def setup_method(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
+
+    def teardown_method(self):
+        app.dependency_overrides.pop(require_active_subscription, None)
+
     @pytest.fixture
     def two_user_client(self, tmp_path: Path):
         from backend.api.main import app

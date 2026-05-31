@@ -81,6 +81,7 @@ def post_validate_draft_semantics(
 @payload_router.post("/validate", response_model=SemanticsValidationResponse)
 def post_validate_semantics_payload(
     request: SemanticsValidateRequest,
+    current_user: User = Depends(require_active_subscription),
 ) -> SemanticsValidationResponse:
     """Validate an arbitrary semantics payload without loading or persisting a draft."""
     return validate_semantics_payload(request.semantics)
