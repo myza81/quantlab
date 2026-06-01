@@ -9,6 +9,8 @@ import { AdminConsole } from './components/AdminConsole'
 import { CredentialManager } from './components/CredentialManager'
 import { CatalogManager } from './components/CatalogManager'
 import { ForwardTestPanel } from './components/ForwardTestPanel'
+import { PaperTradingPanel } from './components/PaperTradingPanel'
+import { StrategyLifecycleDashboard } from './components/StrategyLifecycleDashboard'
 import { SessionProvenanceStrip } from './components/SessionProvenanceStrip'
 import { LoginPage } from './components/LoginPage'
 import { RegisterPage } from './components/RegisterPage'
@@ -18,16 +20,17 @@ import { useAuth } from './auth/AuthContext'
 import { useSessionPersistence } from './hooks/useSessionPersistence'
 import { isAuthError, isSubscriptionExpiredError } from './api/client'
 import { fetchOHLCV } from './api/marketData'
-import { fetchBacktestReport } from './api/backtestRuns'
+import { fetchBacktestReport, promoteDraftToBacktested } from './api/backtestRuns'
 import type { OHLCVCandle, MarketDataParams, DatasetFetchMetadata } from './api/marketData'
 import type { CompositionRunResponse } from './api/compositionRun'
 import type { BacktestReport } from './types/backtestRuns'
 import type { StrategyOverlay, SignalType } from './types/strategy'
 import type { CatalogOHLCVResponse, CatalogEntry } from './types/catalog'
 import type { ResearchSession } from './types/researchSession'
+import type { ForwardTestPrefill } from './types/forwardTesting'
 
 type Status     = 'idle' | 'loading' | 'success' | 'error'
-type ActiveView = 'chart' | 'composer' | 'credentials' | 'report' | 'admin' | 'datasets' | 'history' | 'forward-test'
+type ActiveView = 'chart' | 'composer' | 'credentials' | 'report' | 'admin' | 'datasets' | 'history' | 'forward-test' | 'paper-trading' | 'lifecycle'
 type AuthView   = 'login' | 'register'
 
 export default function App() {
@@ -43,10 +46,11 @@ export default function App() {
   const [overlay,       setOverlay]       = useState<StrategyOverlay | null>(null)
   const [fetchMetadata, setFetchMetadata] = useState<DatasetFetchMetadata | null>(null)
 
-  const [backtestReport,  setBacktestReport]  = useState<BacktestReport | null>(null)
-  const [catalogMeta,     setCatalogMeta]     = useState<{ response: CatalogOHLCVResponse; entry: CatalogEntry } | null>(null)
-  const [resumableRunId,  setResumableRunId]  = useState<string | null>(null)
-  const [resuming,        setResuming]        = useState(false)
+  const [backtestReport,     setBacktestReport]     = useState<BacktestReport | null>(null)
+  const [catalogMeta,        setCatalogMeta]        = useState<{ response: CatalogOHLCVResponse; entry: CatalogEntry } | null>(null)
+  const [resumableRunId,     setResumableRunId]     = useState<string | null>(null)
+  const [resuming,           setResuming]           = useState(false)
+  const [forwardTestPrefill, setForwardTestPrefill] = useState<ForwardTestPrefill | null>(null)
 
   // Restore lightweight session context on mount
   useEffect(() => {
@@ -151,6 +155,21 @@ export default function App() {
     setActiveView('report')
   }
 
+  async function handlePromoteDraft(runId: string, draftId: string): Promise<void> {
+    await promoteDraftToBacktested(runId, draftId)
+    // BacktestReportPage owns its own promotion UI state;
+    // no App-level state update required.
+  }
+
+  function handleStartForwardTest(prefill: ForwardTestPrefill): void {
+    setForwardTestPrefill(prefill)
+    setActiveView('forward-test')
+  }
+
+  function handlePrefillConsumed(): void {
+    setForwardTestPrefill(null)
+  }
+
   async function handleResumeReport() {
     if (!resumableRunId) return
     setResuming(true)
@@ -193,11 +212,13 @@ export default function App() {
           <span style={st.tagline}>Research-first strategy platform</span>
           <div style={st.nav}>
             <NavTab label="Chart"       active={activeView === 'chart'}       onClick={() => setActiveView('chart')} />
-            <NavTab label="Composer"    active={activeView === 'composer'}    onClick={() => setActiveView('composer')} />
+            <NavTab label="Strategy Builder" active={activeView === 'composer'}    onClick={() => setActiveView('composer')} />
             <NavTab label="Credentials" active={activeView === 'credentials'} onClick={() => setActiveView('credentials')} />
             <NavTab label="Datasets"    active={activeView === 'datasets'}    onClick={() => setActiveView('datasets')} />
-            <NavTab label="History" active={activeView === 'history'} onClick={() => setActiveView('history')} />
-            <NavTab label="Forward Test" active={activeView === 'forward-test'} onClick={() => setActiveView('forward-test')} />
+            <NavTab label="Backtest History" active={activeView === 'history'} onClick={() => setActiveView('history')} />
+            <NavTab label="Forward Testing" active={activeView === 'forward-test'} onClick={() => setActiveView('forward-test')} />
+            <NavTab label="Paper Trading" active={activeView === 'paper-trading'} onClick={() => setActiveView('paper-trading')} />
+            <NavTab label="Lifecycle Dashboard" active={activeView === 'lifecycle'} onClick={() => setActiveView('lifecycle')} />
             {backtestReport && (
               <NavTab label="Report" active={activeView === 'report'} onClick={() => setActiveView('report')} />
             )}
@@ -233,7 +254,29 @@ export default function App() {
         {/* ── Forward Testing ── */}
         {activeView === 'forward-test' && (
           <div style={{ ...st.fill, overflowY: 'auto' }}>
-            <ForwardTestPanel />
+            <ForwardTestPanel
+              prefill={forwardTestPrefill}
+              onPrefillConsumed={handlePrefillConsumed}
+            />
+          </div>
+        )}
+
+        {/* ── Paper Trading ── */}
+        {activeView === 'paper-trading' && (
+          <div style={{ ...st.fill, overflowY: 'auto' }}>
+            <PaperTradingPanel />
+          </div>
+        )}
+
+        {/* ── Strategy Lifecycle Dashboard ── */}
+        {activeView === 'lifecycle' && (
+          <div style={{ ...st.fill, overflowY: 'auto' }}>
+            <StrategyLifecycleDashboard
+              onNavigateToComposer={() => setActiveView('composer')}
+              onNavigateToHistory={() => setActiveView('history')}
+              onNavigateToForwardTest={() => setActiveView('forward-test')}
+              onNavigateToPaperTrading={() => setActiveView('paper-trading')}
+            />
           </div>
         )}
 
@@ -273,6 +316,8 @@ export default function App() {
               onBack={() => setActiveView('chart')}
               sourceLabel={sourceLabel}
               onNavigateToComposer={() => setActiveView('composer')}
+              onPromoteDraft={handlePromoteDraft}
+              onStartForwardTest={handleStartForwardTest}
             />
           </div>
         )}

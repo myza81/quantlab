@@ -1,5 +1,5 @@
 """
-Draft service — Phase 2N.9.
+Draft service — Phase 2N.9 / Phase R3.
 
 Thin orchestration layer between the /drafts routes and DraftRepository.
 Responsibilities: timestamp injection, schema conversion, repository delegation.
@@ -8,6 +8,7 @@ No business logic beyond coordinating its dependencies.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from backend.api.schemas.drafts import (
     DraftCreateRequest,
@@ -18,7 +19,10 @@ from backend.api.schemas.drafts import (
 from backend.core.audit import AuditEvent, AuditEventKind, emit_audit_event
 from backend.strategy_registry.draft_repository import DraftRepository
 from backend.strategy_registry.drafts import StrategyDraft
-from backend.strategy_registry.lifecycle import validate_lifecycle_transition
+from backend.strategy_registry.lifecycle import (
+    StrategyLifecycleStatus,
+    validate_lifecycle_transition,
+)
 
 _UTC = timezone.utc
 
@@ -46,7 +50,7 @@ def create_draft(
         tags=tuple(request.tags),
         notes=request.notes,
         user_id=user_id,
-        lifecycle_status=request.lifecycle_status,
+        lifecycle_status=StrategyLifecycleStatus.DRAFT,
     )
     repository.save(draft)
     emit_audit_event(AuditEvent(
@@ -96,23 +100,6 @@ def update_draft(
 
     updates = request.model_dump(exclude_unset=True)
 
-    if "lifecycle_status" in updates:
-        try:
-            validate_lifecycle_transition(existing.lifecycle_status, updates["lifecycle_status"])
-        except ValueError as exc:
-            emit_audit_event(AuditEvent(
-                event_kind=AuditEventKind.LIFECYCLE_TRANSITION_DENIED,
-                details={
-                    "draft_id": draft_id,
-                    "from_status": existing.lifecycle_status.value,
-                    "to_status": updates["lifecycle_status"].value
-                    if hasattr(updates["lifecycle_status"], "value")
-                    else str(updates["lifecycle_status"]),
-                    "user_id": owner_id,
-                },
-            ))
-            raise
-
     if "tags" in updates and isinstance(updates["tags"], list):
         updates["tags"] = tuple(updates["tags"])
     existing_data.update(updates)
@@ -151,3 +138,324 @@ def delete_draft(
         event_kind=AuditEventKind.DRAFT_DELETED,
         details={"draft_id": draft_id, "user_id": owner_id},
     ))
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle promotion — Phase R3
+# ---------------------------------------------------------------------------
+
+class LifecyclePromotionError(Exception):
+    """Raised when backtest evidence fails to satisfy the promotion gate."""
+
+
+class ForwardTestPromotionError(Exception):
+    """Raised when forward-test evidence fails to satisfy the forward-test promotion gate."""
+
+
+
+
+def promote_draft_to_backtested(
+    draft_id: str,
+    run_id: str,
+    repository: DraftRepository,
+    storage: Path,
+    owner_id: str,
+    *,
+    notes: str | None = None,
+) -> DraftResponse:
+    """
+    Promote a draft to 'backtested' status, gated by valid backtest evidence.
+
+    Requirements (all must hold; any failure raises before mutating state):
+      - draft exists and is owned by owner_id
+      - backtest run exists and is owned by owner_id
+      - report.run.draft_id == draft_id  (run was produced from this exact draft)
+      - report.run.status == "completed" (not failed, not partial)
+      - validate_lifecycle_transition(current, BACKTESTED) succeeds
+
+    Raises:
+        DraftNotFoundError: draft absent or wrong owner.
+        BacktestRunError: run file missing.
+        BacktestAccessDeniedError: run owned by a different user.
+        LifecyclePromotionError: run/draft mismatch or run not completed.
+        ValueError: lifecycle transition not permitted from current status.
+    """
+    # Deferred import avoids a circular dependency at module parse time while
+    # keeping the call inside the service (not pushed up to the route layer).
+    from backend.api.services.backtest_run_service import (  # noqa: PLC0415
+        BacktestAccessDeniedError,
+        BacktestRunError,
+        load_backtest_report,
+    )
+
+    # 1 — load draft; raises DraftNotFoundError for missing/wrong-owner
+    draft = repository.load(draft_id, owner_id=owner_id)
+
+    # 2 — load report; raises BacktestRunError or BacktestAccessDeniedError
+    report = load_backtest_report(run_id, storage=storage, owner_user_id=owner_id)
+
+    # 3 — evidence: run must have been executed against THIS draft
+    if report.run.draft_id != draft_id:
+        raise LifecyclePromotionError(
+            f"Backtest run '{run_id}' was produced for draft "
+            f"'{report.run.draft_id}', not '{draft_id}'."
+        )
+
+    # 4 — evidence: run must have completed successfully
+    if report.run.status != "completed":
+        raise LifecyclePromotionError(
+            f"Backtest run '{run_id}' has status '{report.run.status}'; "
+            "only 'completed' runs qualify as promotion evidence."
+        )
+
+    # 5 — state machine: current → backtested must be allowed
+    validate_lifecycle_transition(draft.lifecycle_status, StrategyLifecycleStatus.BACKTESTED)
+
+    # 6 — mutate and persist
+    existing_data = draft.model_dump()
+    existing_data["lifecycle_status"] = StrategyLifecycleStatus.BACKTESTED
+    existing_data["updated_at"] = datetime.now(_UTC)
+    if notes is not None:
+        existing_data["notes"] = notes
+
+    updated = StrategyDraft.model_validate(existing_data)
+    repository.update(updated, owner_id=owner_id)
+
+    emit_audit_event(AuditEvent(
+        event_kind=AuditEventKind.GOV_PROMOTION_REQUESTED,
+        details={
+            "draft_id": draft_id,
+            "run_id": run_id,
+            "from_status": draft.lifecycle_status.value,
+            "to_status": StrategyLifecycleStatus.BACKTESTED.value,
+            "user_id": owner_id,
+        },
+    ))
+
+    return _to_response(updated)
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle promotion — Phase P1
+# ---------------------------------------------------------------------------
+
+def promote_draft_to_forward_tested(
+    session_id: str,
+    draft_id: str,
+    ft_repository,  # ForwardTestRepository — deferred to avoid circular imports
+    draft_repository: DraftRepository,
+    owner_id: str,
+    *,
+    notes: str | None = None,
+) -> DraftResponse:
+    """
+    Promote a draft to 'forward_tested' status, gated by forward-test evidence.
+
+    Evidence rule: the session must have processed at least one signal-eligible
+    bar (signal_eligible_bars_processed > 0).  This proves a real forward-test
+    evaluation cycle ran — warmup completed + at least one live bar was assessed —
+    regardless of whether any signals were generated.
+
+    Requirements (all must hold; any failure raises before mutating state):
+      - session exists and is owned by owner_id
+      - draft exists and is owned by owner_id
+      - session.draft_id == draft_id  (session was created for this exact draft)
+      - draft.lifecycle_status == BACKTESTED (only backtested drafts can advance)
+      - session.signal_eligible_bars_processed > 0 (real evaluation occurred)
+      - validate_lifecycle_transition(BACKTESTED, FORWARD_TESTED) succeeds
+
+    Raises:
+        ForwardTestSessionNotFoundError: session absent or wrong owner.
+        DraftNotFoundError: draft absent or wrong owner.
+        ForwardTestPromotionError: session/draft mismatch or no evidence.
+        ValueError: lifecycle transition not permitted from current status.
+    """
+    from backend.forward_testing.exceptions import (  # noqa: PLC0415
+        ForwardTestSessionNotFoundError as _ForwardTestSessionNotFoundError,  # noqa: F401
+    )
+
+    # 1 — load session; raises ForwardTestSessionNotFoundError for missing/wrong-owner
+    session = ft_repository.load(session_id, owner_id=owner_id)
+
+    # 2 — load draft; raises DraftNotFoundError for missing/wrong-owner
+    draft = draft_repository.load(draft_id, owner_id=owner_id)
+
+    # 3 — evidence: session must have been created against THIS draft
+    if session.draft_id != draft_id:
+        raise ForwardTestPromotionError(
+            f"Forward-test session '{session_id}' was created for draft "
+            f"'{session.draft_id}', not '{draft_id}'."
+        )
+
+    # 4 — gate: draft must currently be at BACKTESTED to advance to FORWARD_TESTED
+    if draft.lifecycle_status != StrategyLifecycleStatus.BACKTESTED:
+        raise ForwardTestPromotionError(
+            f"Draft '{draft_id}' is currently '{draft.lifecycle_status.value}'; "
+            "only 'backtested' drafts can be promoted to 'forward_tested'."
+        )
+
+    # 5 — evidence: at least one signal-eligible bar must have been evaluated.
+    #     This proves a real forward-test evaluation cycle ran — warmup completed
+    #     + at least one live bar assessed — even if no signals were generated.
+    if session.signal_eligible_bars_processed < 1:
+        raise ForwardTestPromotionError(
+            f"Session '{session_id}' has processed 0 signal-eligible bars. "
+            "Run at least one complete forward-test cycle before promotion."
+        )
+
+    # 6 — state machine: BACKTESTED → FORWARD_TESTED must be allowed
+    validate_lifecycle_transition(draft.lifecycle_status, StrategyLifecycleStatus.FORWARD_TESTED)
+
+    # 7 — mutate and persist
+    existing_data = draft.model_dump()
+    existing_data["lifecycle_status"] = StrategyLifecycleStatus.FORWARD_TESTED
+    existing_data["updated_at"] = datetime.now(_UTC)
+    if notes is not None:
+        existing_data["notes"] = notes
+
+    updated = StrategyDraft.model_validate(existing_data)
+    draft_repository.update(updated, owner_id=owner_id)
+
+    emit_audit_event(AuditEvent(
+        event_kind=AuditEventKind.GOV_PROMOTION_REQUESTED,
+        details={
+            "draft_id": draft_id,
+            "session_id": session_id,
+            "from_status": draft.lifecycle_status.value,
+            "to_status": StrategyLifecycleStatus.FORWARD_TESTED.value,
+            "bars_evaluated": session.signal_eligible_bars_processed,
+            "signals_recorded": session.signals_recorded,
+            "user_id": owner_id,
+        },
+    ))
+
+    return _to_response(updated)
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle promotion — Phase P7
+# ---------------------------------------------------------------------------
+
+class PaperTestPromotionError(Exception):
+    """Raised when paper-trading evidence fails to satisfy the paper-tested promotion gate."""
+
+
+def promote_draft_to_paper_tested(
+    session_id: str,
+    draft_id: str,
+    pt_repository,  # PaperTradingRepository — deferred to avoid circular imports
+    draft_repository: DraftRepository,
+    snapshot_store,  # AccountStateSnapshotStore — deferred to avoid circular imports
+    owner_id: str,
+    *,
+    notes: str | None = None,
+) -> DraftResponse:
+    """
+    Promote a draft to 'paper_tested' status, gated by hardened paper-trading evidence.
+
+    Evidence requirements (P8C — all must hold):
+      1. session.last_processed_bar_timestamp is not None — at least one bar was processed,
+         proving a real paper cycle ran (data fetched, signals evaluated, orders managed).
+      2. session.status in {TERMINATED, COMPLETED} — session is in a clean terminal state.
+         Promotes only finalized sessions; running/paused sessions are mid-cycle.
+         FAILED sessions are excluded (failed evidence is not promotion evidence).
+      3. At least one AccountStateSnapshot exists — equity evidence is recorded and
+         the paper runtime left an observable state trail.
+
+    These three gates together ensure promotion evidence reflects a complete,
+    committed paper-trading run rather than a partially-executed or failed session.
+
+    Structural requirements (also checked; any failure raises before mutating state):
+      - session exists and is owned by owner_id
+      - draft exists and is owned by owner_id
+      - session.draft_id == draft_id  (session was created for this exact draft)
+      - draft.lifecycle_status == FORWARD_TESTED (only forward-tested drafts can advance)
+      - validate_lifecycle_transition(FORWARD_TESTED, PAPER_TESTED) succeeds
+
+    Raises:
+        PaperTradingSessionNotFoundError: session absent or wrong owner.
+        DraftNotFoundError: draft absent or wrong owner.
+        PaperTestPromotionError: structural mismatch or any evidence gate failure.
+        ValueError: lifecycle transition not permitted from current status.
+    """
+    from backend.paper_trading.exceptions import (  # noqa: PLC0415
+        PaperTradingSessionNotFoundError as _PaperTradingSessionNotFoundError,  # noqa: F401
+    )
+    from backend.paper_trading.models import PaperTradingSessionStatus  # noqa: PLC0415
+
+    _PROMOTION_ELIGIBLE_STATUSES = frozenset({
+        PaperTradingSessionStatus.TERMINATED,
+        PaperTradingSessionStatus.COMPLETED,
+    })
+
+    # 1 — load session; raises PaperTradingSessionNotFoundError for missing/wrong-owner
+    session = pt_repository.load(session_id, owner_id=owner_id)
+
+    # 2 — load draft; raises DraftNotFoundError for missing/wrong-owner
+    draft = draft_repository.load(draft_id, owner_id=owner_id)
+
+    # 3 — structural: session must have been created against THIS draft
+    if session.draft_id != draft_id:
+        raise PaperTestPromotionError(
+            f"Paper-trading session '{session_id}' was created for draft "
+            f"'{session.draft_id}', not '{draft_id}'."
+        )
+
+    # 4 — structural: draft must currently be at FORWARD_TESTED to advance
+    if draft.lifecycle_status != StrategyLifecycleStatus.FORWARD_TESTED:
+        raise PaperTestPromotionError(
+            f"Draft '{draft_id}' is currently '{draft.lifecycle_status.value}'; "
+            "only 'forward_tested' drafts can be promoted to 'paper_tested'."
+        )
+
+    # 5 — evidence gate 1: at least one bar was processed
+    if session.last_processed_bar_timestamp is None:
+        raise PaperTestPromotionError(
+            f"Session '{session_id}' has not processed any bars. "
+            "Run at least one complete paper-trading cycle before promotion."
+        )
+
+    # 6 — evidence gate 2: session must be in a finalized terminal state
+    if session.status not in _PROMOTION_ELIGIBLE_STATUSES:
+        raise PaperTestPromotionError(
+            f"Session '{session_id}' has status '{session.status.value}'. "
+            "Only terminated or completed sessions can be promoted. "
+            "Terminate the session before requesting promotion."
+        )
+
+    # 7 — evidence gate 3: at least one equity snapshot must exist
+    snapshot_count = snapshot_store.count(session_id)
+    if snapshot_count < 1:
+        raise PaperTestPromotionError(
+            f"Session '{session_id}' has no equity snapshots. "
+            "At least one equity snapshot is required to prove observable paper runtime state."
+        )
+
+    # 8 — state machine: FORWARD_TESTED → PAPER_TESTED must be allowed
+    validate_lifecycle_transition(draft.lifecycle_status, StrategyLifecycleStatus.PAPER_TESTED)
+
+    # 9 — mutate and persist
+    existing_data = draft.model_dump()
+    existing_data["lifecycle_status"] = StrategyLifecycleStatus.PAPER_TESTED
+    existing_data["updated_at"] = datetime.now(_UTC)
+    if notes is not None:
+        existing_data["notes"] = notes
+
+    updated = StrategyDraft.model_validate(existing_data)
+    draft_repository.update(updated, owner_id=owner_id)
+
+    emit_audit_event(AuditEvent(
+        event_kind=AuditEventKind.GOV_PROMOTION_REQUESTED,
+        details={
+            "draft_id": draft_id,
+            "session_id": session_id,
+            "from_status": draft.lifecycle_status.value,
+            "to_status": StrategyLifecycleStatus.PAPER_TESTED.value,
+            "session_status": session.status.value,
+            "last_bar_timestamp": session.last_processed_bar_timestamp.isoformat(),
+            "equity_snapshot_count": snapshot_count,
+            "user_id": owner_id,
+        },
+    ))
+
+    return _to_response(updated)

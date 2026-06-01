@@ -33,6 +33,7 @@ export interface ForwardTestSessionSummary {
   updated_at: string
   last_processed_bar_timestamp: string | null
   bars_evaluated: number
+  signal_eligible_bars_processed: number
   signals_recorded: number
   strategy_snapshot: ForwardTestStrategySnapshot
 }
@@ -42,7 +43,6 @@ export interface ForwardTestSessionDetail extends ForwardTestSessionSummary {
   lifecycle_status_at_activation: string
   warmup_bars_required: number
   warmup_bars_processed: number
-  signal_eligible_bars_processed: number
   activation_timestamp: string | null
   failure_reason: string | null
   error_category: string | null
@@ -110,4 +110,15 @@ export interface CreateForwardTestSessionRequest {
   credential_id?: string | null
   exchange?: string
   asset_class?: string
+}
+
+/** Context extracted from a backtest report to prefill forward-test session creation. */
+export interface ForwardTestPrefill {
+  draft_id:       string
+  draft_name?:    string
+  symbol?:        string
+  timeframe?:     string
+  provider_name?: string
+  exchange?:      string
+  asset_class?:   string
 }

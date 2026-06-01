@@ -11,6 +11,7 @@ import { listBacktestRuns, fetchBacktestReport } from '../api/backtestRuns'
 import type { BacktestReport } from '../types/backtestRuns'
 import { isAuthError, isSubscriptionExpiredError } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { STAGE_LABELS } from '../lib/lifecycleGuidance'
 
 interface Props {
   onReportLoaded: (report: BacktestReport) => void
@@ -139,7 +140,7 @@ export function BacktestHistoryPanel({ onReportLoaded }: Props) {
                 <span style={s.badge}>{item.dataset_provenance.source_mode}</span>
               )}
               {item.draft_provenance?.lifecycle_status_at_run && (
-                <span style={s.badge}>{item.draft_provenance.lifecycle_status_at_run}</span>
+                <span style={s.badge}>{STAGE_LABELS[item.draft_provenance.lifecycle_status_at_run] ?? item.draft_provenance.lifecycle_status_at_run}</span>
               )}
               <span style={s.ts}>{fmtDate(item.run_timestamp)}</span>
             </div>

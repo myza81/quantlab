@@ -43,6 +43,20 @@ class CreateForwardTestSessionRequest(BaseModel):
     asset_class: str = "equity"        # needed to build Instrument / DatasetIdentity
 
 
+class PromoteDraftToForwardTestedRequest(BaseModel):
+    """
+    Request body for POST /forward-tests/{session_id}/promote-draft.
+
+    lifecycle_status is intentionally absent — the lifecycle transition is
+    evidence-gated through the service layer; the endpoint only accepts the
+    draft to promote and optional promotion notes.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    notes: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Strategy snapshot summary (no strategy_json — never expose in responses)
 # ---------------------------------------------------------------------------
@@ -80,6 +94,7 @@ class ForwardTestSessionSummaryResponse(BaseModel):
     updated_at: str
     last_processed_bar_timestamp: str | None
     bars_evaluated: int
+    signal_eligible_bars_processed: int
     signals_recorded: int
     strategy_snapshot: ForwardTestStrategySnapshotResponse
 
@@ -98,7 +113,6 @@ class ForwardTestSessionDetailResponse(ForwardTestSessionSummaryResponse):
     lifecycle_status_at_activation: str
     warmup_bars_required: int
     warmup_bars_processed: int
-    signal_eligible_bars_processed: int
     activation_timestamp: str | None
     failure_reason: str | None
     error_category: str | None

@@ -6,7 +6,7 @@
  *   - authedFetch throws SubscriptionExpiredError on 403 subscription_required (Phase 3P-C)
  *   - authedFetch returns the response for other 403s (admin_required etc.)
  *   - Protected clients (drafts, semantics, planInspection, compositionRun, backtestRuns) use authedFetch
- *   - Public clients (backtest, marketData, tools) do NOT require auth and do not throw AuthError on 401
+ *   - Public clients (marketData, tools) do NOT require auth and do not throw AuthError on 401
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthError, authedFetch, isAuthError, isSubscriptionExpiredError, SubscriptionExpiredError } from '../client'

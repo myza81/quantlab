@@ -188,8 +188,9 @@ class TestDraftResponseSchema:
         field = DraftResponse.model_fields["lifecycle_status"]
         assert field.default == S.DRAFT
 
-    def test_draft_update_request_lifecycle_status_is_optional(self):
+    def test_draft_update_request_lifecycle_status_is_absent(self):
+        # P0.2: lifecycle_status must NOT be a field on DraftUpdateRequest.
+        # Lifecycle transitions are evidence-gated and happen through dedicated
+        # service methods only — never through a free PUT body field.
         from backend.api.schemas.drafts import DraftUpdateRequest
-        field = DraftUpdateRequest.model_fields.get("lifecycle_status")
-        assert field is not None
-        assert field.default is None
+        assert "lifecycle_status" not in DraftUpdateRequest.model_fields

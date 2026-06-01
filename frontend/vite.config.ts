@@ -19,6 +19,8 @@ export default defineConfig({
       '/provider-credentials': 'http://localhost:8000',
       '/catalog': 'http://localhost:8000',
       '/admin': 'http://localhost:8000',
+      '/forward-tests': 'http://localhost:8000',
+      '/paper-trading': 'http://localhost:8000',
     },
   },
   test: {

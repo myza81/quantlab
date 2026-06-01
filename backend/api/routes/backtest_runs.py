@@ -1,12 +1,13 @@
 """
 Backtest runs API routes.
 
-POST /backtests/runs                          — full pipeline: draft + bars → report
-GET  /backtests/runs                          — list user's run history, newest-first
-GET  /backtests/runs/{run_id}/report          — retrieve persisted report
-GET  /backtests/runs/{run_id}/export/trades   — trade ledger CSV download
-GET  /backtests/runs/{run_id}/export/equity   — equity+drawdown CSV download
-GET  /backtests/runs/{run_id}/export/report   — full report JSON download
+POST /backtests/runs                              — full pipeline: draft + bars → report
+GET  /backtests/runs                              — list user's run history, newest-first
+GET  /backtests/runs/{run_id}/report              — retrieve persisted report
+POST /backtests/runs/{run_id}/promote-draft       — promote draft to 'backtested' (Phase R3)
+GET  /backtests/runs/{run_id}/export/trades       — trade ledger CSV download
+GET  /backtests/runs/{run_id}/export/equity       — equity+drawdown CSV download
+GET  /backtests/runs/{run_id}/export/report       — full report JSON download
 """
 from __future__ import annotations
 
@@ -22,13 +23,19 @@ from backend.api.schemas.backtest_runs import (
     BacktestRunListItem,
     BacktestRunRequest,
     BacktestRunResponse,
+    PromoteDraftRequest,
 )
+from backend.api.schemas.drafts import DraftResponse
 from backend.api.services.backtest_run_service import (
     BacktestAccessDeniedError,
     BacktestRunError,
     create_backtest_run,
     list_backtest_runs,
     load_backtest_report,
+)
+from backend.api.services.draft_service import (
+    LifecyclePromotionError,
+    promote_draft_to_backtested,
 )
 from backend.api.services.export_service import (
     export_equity_curve_csv,
@@ -114,6 +121,51 @@ def get_report(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BacktestRunError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/promote-draft", response_model=DraftResponse)
+def promote_draft(
+    run_id: str,
+    request: PromoteDraftRequest,
+    repository: DraftRepository = Depends(get_draft_repository),
+    storage: Path = Depends(get_backtest_storage_path),
+    current_user: User = Depends(require_active_subscription),
+) -> DraftResponse:
+    """
+    Promote a strategy draft to 'backtested' lifecycle status.
+
+    Requires a completed backtest run as evidence — the run must have been
+    executed against the specified draft by the same authenticated user.
+    This is the ONLY supported path for promoting a draft to 'backtested';
+    the general PATCH /drafts/{id} endpoint does not gate lifecycle changes
+    on backtest evidence.
+
+    Returns the updated DraftResponse with lifecycle_status='backtested'.
+    """
+    try:
+        validate_uuid_id(run_id, "run_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        return promote_draft_to_backtested(
+            draft_id=request.draft_id,
+            run_id=run_id,
+            repository=repository,
+            storage=storage,
+            owner_id=current_user.user_id,
+            notes=request.notes,
+        )
+    except DraftNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BacktestAccessDeniedError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BacktestRunError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except LifecyclePromotionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

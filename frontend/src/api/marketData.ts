@@ -48,7 +48,7 @@ export interface MarketDataParams {
   provider:         string
   symbol:           string
   asset_class:      string
-  exchange:         string
+  exchange?:        string  // optional — backend defaults to "unknown" when absent
   timeframe:        string
   start:            string
   end:              string
@@ -62,13 +62,16 @@ export async function fetchOHLCV(params: MarketDataParams): Promise<MarketDataOH
     provider:        params.provider,
     symbol:          params.symbol,
     asset_class:     params.asset_class,
-    exchange:        params.exchange,
     timeframe:       params.timeframe,
     start:           params.start,
     end:             params.end,
     adjustment_mode: params.adjustment_mode ?? 'adjusted',
     currency:        params.currency ?? 'USD',
   })
+
+  if (params.exchange) {
+    query.set('exchange', params.exchange)
+  }
 
   if (params.credential_id) {
     query.set('credential_id', params.credential_id)

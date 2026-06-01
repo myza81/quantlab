@@ -1,5 +1,5 @@
 /**
- * API client for forward testing — Phase 4C.5.
+ * API client for forward testing — Phase 4C.5 / Phase P1.
  *
  * All calls use authedFetch (injects Bearer token, throws AuthError on 401,
  * throws SubscriptionExpiredError on 403 with subscription_required).
@@ -8,15 +8,16 @@
  * Caller is responsible for triggering each cycle explicitly.
  *
  * Endpoints:
- *   POST   /forward-tests                               — create session
- *   GET    /forward-tests                               — list sessions
- *   GET    /forward-tests/{session_id}                  — session detail
- *   POST   /forward-tests/{session_id}/run-cycle        — one cycle
- *   POST   /forward-tests/{session_id}/pause            — pause
- *   POST   /forward-tests/{session_id}/resume           — resume
- *   POST   /forward-tests/{session_id}/terminate        — terminate
- *   GET    /forward-tests/{session_id}/signals          — signal history
- *   GET    /forward-tests/{session_id}/bars             — bar history
+ *   POST   /forward-tests                                    — create session
+ *   GET    /forward-tests                                    — list sessions
+ *   GET    /forward-tests/{session_id}                       — session detail
+ *   POST   /forward-tests/{session_id}/run-cycle             — one cycle
+ *   POST   /forward-tests/{session_id}/pause                 — pause
+ *   POST   /forward-tests/{session_id}/resume                — resume
+ *   POST   /forward-tests/{session_id}/terminate             — terminate
+ *   POST   /forward-tests/{session_id}/promote-draft (P1)   — promote to forward_tested
+ *   GET    /forward-tests/{session_id}/signals               — signal history
+ *   GET    /forward-tests/{session_id}/bars                  — bar history
  */
 import { authedFetch } from './client'
 import type {
@@ -27,6 +28,7 @@ import type {
   ForwardTestSessionSummary,
   ForwardTestSignal,
 } from '../types/forwardTesting'
+import type { StrategyDraftData } from '../types/drafts'
 
 export type {
   CreateForwardTestSessionRequest,
@@ -119,4 +121,26 @@ export async function listForwardTestBars(
 ): Promise<ForwardTestBar[]> {
   const resp = await authedFetch(`/forward-tests/${sessionId}/bars`)
   return _parseOrThrow<ForwardTestBar[]>(resp)
+}
+
+/**
+ * Promote a draft to 'forward_tested' lifecycle status using forward-test evidence.
+ *
+ * The session must have processed at least one signal-eligible bar.
+ * Backend validates all evidence requirements and ownership; this call will
+ * throw if evidence is insufficient or the draft is not in 'backtested' status.
+ *
+ * Returns the updated draft with lifecycle_status='forward_tested'.
+ */
+export async function promoteDraftToForwardTested(
+  sessionId: string,
+  draftId: string,
+  notes?: string,
+): Promise<StrategyDraftData> {
+  const resp = await authedFetch(`/forward-tests/${sessionId}/promote-draft`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draft_id: draftId, ...(notes != null ? { notes } : {}) }),
+  })
+  return _parseOrThrow<StrategyDraftData>(resp)
 }

@@ -6,6 +6,7 @@
  */
 import type { OHLCVCandle } from './marketData'
 import { authedFetch } from './client'
+import type { ToolOutputKind, ToolOutputPane } from '../types/toolVisualization'
 
 export interface CompositionSignal {
   timestamp: string | null
@@ -23,8 +24,8 @@ export interface CompositionIndicatorPoint {
 
 export interface CompositionIndicatorSeries {
   name:   string
-  kind:   string
-  pane:   string
+  kind:   ToolOutputKind
+  pane:   ToolOutputPane
   color:  string | null
   points: CompositionIndicatorPoint[]
 }

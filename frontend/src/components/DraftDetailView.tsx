@@ -9,6 +9,7 @@
  */
 import { useEffect, useState } from 'react'
 import type { StrategyDraftData, CompositionValidationResponse } from '../types/drafts'
+import { LifecycleBadge } from './LifecycleBadge'
 
 interface Props {
   draft: StrategyDraftData
@@ -77,6 +78,7 @@ export function DraftDetailView({ draft, onValidate, onDelete, onArchive }: Prop
         <div style={s.idBlock}>
           <span style={s.draftId}>{draft.draft_id}</span>
           {!draft.enabled && <span style={s.disabledBadge}>disabled</span>}
+          <LifecycleBadge status={draft.lifecycle_status ?? 'draft'} showNextStep />
         </div>
         <div style={s.actions}>
           <button

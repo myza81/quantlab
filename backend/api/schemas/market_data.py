@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class OHLCVCandleResponse(BaseModel):
@@ -54,7 +54,35 @@ class ProviderCapabilitiesResponse(BaseModel):
     display_name: str
     supported_timeframes: list[str]
     supported_asset_classes: list[str]
+    supports_search: bool = False
 
 
 class ProvidersListResponse(BaseModel):
     providers: list[ProviderCapabilitiesResponse]
+
+
+class AssetSearchResult(BaseModel):
+    """
+    One asset returned by the asset search endpoint.
+
+    Provides all metadata required to populate a subsequent OHLCV fetch
+    without the user manually entering exchange or asset_class.
+    """
+    symbol:      str
+    name:        str
+    exchange:    str
+    asset_class: str
+    currency:    str
+    type_label:  str
+
+
+class AssetSearchResponse(BaseModel):
+    """
+    Response envelope for GET /market-data/search.
+
+    Designed as a platform-wide reusable contract — Chart, Backtesting,
+    Strategy Composer, Forward Testing, and Paper Trading all share this schema.
+    """
+    query:    str
+    provider: str
+    results:  list[AssetSearchResult] = Field(default_factory=list)

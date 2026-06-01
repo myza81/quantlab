@@ -18,7 +18,7 @@ import type {
   SeriesMarker,
 } from 'lightweight-charts'
 import type { OHLCVCandle } from '../api/marketData'
-import type { IndicatorSeries } from '../api/strategyRuns'
+import type { ToolVisualizationSeries } from '../types/toolVisualization'
 import type { StrategyOverlay } from '../types/strategy'
 
 interface ChartProps {
@@ -63,7 +63,7 @@ type ReferenceGuideBinding = {
 
 type OscillatorReferenceGuide = {
   id: string
-  matches: (series: IndicatorSeries) => boolean
+  matches: (series: ToolVisualizationSeries) => boolean
   levels: { value: number; label: string; color: string }[]
 }
 
@@ -270,7 +270,7 @@ export default function Chart({ candles, symbol, timeframe, overlay, onClearStra
     }
 
     // ── Route indicators by pane ──
-    const indicators: IndicatorSeries[] = overlay.indicators ?? []
+    const indicators: ToolVisualizationSeries[] = overlay.indicators ?? []
     const priceIndicators = indicators.filter(ind => ind.pane !== 'oscillator')
     const oscIndicators   = indicators.filter(ind => ind.pane === 'oscillator')
 

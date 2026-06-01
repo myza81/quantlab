@@ -658,3 +658,193 @@ class TestAuthentication:
 def _raise_expired():
     from fastapi import HTTPException
     raise HTTPException(status_code=403, detail="subscription_required")
+
+
+# ---------------------------------------------------------------------------
+# 11. POST /forward-tests/{session_id}/promote-draft — Phase P1
+# ---------------------------------------------------------------------------
+
+def _make_session_with_evidence(
+    session_id: str = _SESSION_ID,
+    user_id: str = _OWNER_ID,
+    draft_id: str = _DRAFT_ID,
+    signal_eligible_bars_processed: int = 1,
+    signals_recorded: int = 0,
+    status: ForwardTestSessionStatus = ForwardTestSessionStatus.RUNNING,
+) -> ForwardTestSession:
+    """Session that has completed at least one evaluation cycle."""
+    draft = _make_draft(draft_id=draft_id, user_id=user_id)
+    snapshot = _make_snapshot(draft)
+    return ForwardTestSession(
+        session_id=session_id,
+        user_id=user_id,
+        draft_id=draft_id,
+        strategy_snapshot=snapshot,
+        lifecycle_status_at_activation="backtested",
+        source_mode="provider",
+        provider_name="yahoo",
+        symbol="AAPL",
+        timeframe="1d",
+        exchange="NASDAQ",
+        asset_class="equity",
+        warmup_bars_required=0,
+        status=status,
+        signal_eligible_bars_processed=signal_eligible_bars_processed,
+        signals_recorded=signals_recorded,
+        bars_evaluated=signal_eligible_bars_processed,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+class TestPromoteDraftToForwardTested:
+    """
+    Coverage (9 cases — Phase P1):
+
+    1.  Happy path: backtested draft + evidence → 200, lifecycle_status='forward_tested'
+    2.  Reject: 0 signal_eligible_bars_processed → 422
+    3.  Reject: draft in 'validated' (not backtested) → 422
+    4.  Reject: draft already 'forward_tested' → 422
+    5.  Reject: session owned by other user → 404
+    6.  Reject: session.draft_id != request draft_id → 422
+    7.  Confirm: PUT /drafts/{id} cannot set lifecycle_status to forward_tested
+    8.  Confirm: audit event emitted with evidence metadata
+    9.  Notes passed through to updated draft
+    """
+
+    def test_happy_path_promotes_to_forward_tested(self, client):
+        """Valid evidence + backtested draft → lifecycle_status updated to forward_tested."""
+        tc, draft_repo, ft_repo, *_ = client
+        draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
+        ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=3))
+
+        resp = tc.post(
+            f"/forward-tests/{_SESSION_ID}/promote-draft",
+            json={"draft_id": _DRAFT_ID},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["lifecycle_status"] == "forward_tested"
+        assert body["draft_id"] == _DRAFT_ID
+
+    def test_reject_no_evidence_zero_eligible_bars(self, client):
+        """Session with 0 signal_eligible_bars_processed → 422."""
+        tc, draft_repo, ft_repo, *_ = client
+        draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
+        ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=0))
+
+        resp = tc.post(
+            f"/forward-tests/{_SESSION_ID}/promote-draft",
+            json={"draft_id": _DRAFT_ID},
+        )
+
+        assert resp.status_code == 422
+        assert "signal-eligible" in resp.json()["detail"].lower() or "0" in resp.json()["detail"]
+
+    def test_reject_draft_not_backtested_validated(self, client):
+        """Draft in 'validated' status (not backtested) → 422."""
+        tc, draft_repo, ft_repo, *_ = client
+        draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.VALIDATED))
+        ft_repo.save(_make_session_with_evidence())
+
+        resp = tc.post(
+            f"/forward-tests/{_SESSION_ID}/promote-draft",
+            json={"draft_id": _DRAFT_ID},
+        )
+
+        assert resp.status_code == 422
+        assert "backtested" in resp.json()["detail"].lower()
+
+    def test_reject_draft_already_forward_tested(self, client):
+        """Draft already at 'forward_tested' → 422 (lifecycle transition not permitted)."""
+        tc, draft_repo, ft_repo, *_ = client
+        draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.FORWARD_TESTED))
+        ft_repo.save(_make_session_with_evidence())
+
+        resp = tc.post(
+            f"/forward-tests/{_SESSION_ID}/promote-draft",
+            json={"draft_id": _DRAFT_ID},
+        )
+
+        assert resp.status_code == 422
+
+    def test_reject_cross_user_session_404(self, client):
+        """Session owned by a different user → 404 (information hiding)."""
+        tc, draft_repo, ft_repo, *_ = client
+        draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
+        ft_repo.save(_make_session_with_evidence(user_id=_OTHER_ID))
+
+        resp = tc.post(
+            f"/forward-tests/{_SESSION_ID}/promote-draft",
+            json={"draft_id": _DRAFT_ID},
+        )
+
+        assert resp.status_code == 404
+
+    def test_reject_session_draft_id_mismatch(self, client):
+        """Session was created for a different draft → 422."""
+        tc, draft_repo, ft_repo, *_ = client
+        different_draft_id = str(uuid.uuid4())
+        # Save draft with _DRAFT_ID but session references a different draft
+        draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
+        ft_repo.save(_make_session_with_evidence(draft_id=different_draft_id))
+
+        resp = tc.post(
+            f"/forward-tests/{_SESSION_ID}/promote-draft",
+            json={"draft_id": _DRAFT_ID},
+        )
+
+        assert resp.status_code == 422
+        assert _DRAFT_ID in resp.json()["detail"] or different_draft_id in resp.json()["detail"]
+
+    def test_put_drafts_cannot_set_forward_tested(self, client):
+        """PUT /drafts/{id} body with lifecycle_status='forward_tested' → 422."""
+        tc, draft_repo, *_ = client
+        draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
+
+        resp = tc.put(
+            f"/drafts/{_DRAFT_ID}",
+            json={"lifecycle_status": "forward_tested"},
+        )
+
+        # Must be rejected at schema validation layer
+        assert resp.status_code == 422
+
+    def test_audit_event_emitted_with_evidence_metadata(self, client):
+        """Promotion emits a GOV_PROMOTION_REQUESTED audit event with evidence metadata."""
+        tc, draft_repo, ft_repo, *_ = client
+        draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
+        ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=5, signals_recorded=2))
+
+        captured: list = []
+        # Patch in the module that imported emit_audit_event by name
+        with patch("backend.api.services.draft_service.emit_audit_event", side_effect=captured.append):
+            resp = tc.post(
+                f"/forward-tests/{_SESSION_ID}/promote-draft",
+                json={"draft_id": _DRAFT_ID},
+            )
+
+        assert resp.status_code == 200
+        assert len(captured) == 1
+        evt = captured[0]
+        assert evt.details["from_status"] == "backtested"
+        assert evt.details["to_status"] == "forward_tested"
+        assert evt.details["bars_evaluated"] == 5
+        assert evt.details["signals_recorded"] == 2
+        assert evt.details["session_id"] == _SESSION_ID
+        assert evt.details["draft_id"] == _DRAFT_ID
+
+    def test_notes_passed_through_to_draft(self, client):
+        """Optional notes field is persisted to the updated draft."""
+        tc, draft_repo, ft_repo, *_ = client
+        draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
+        ft_repo.save(_make_session_with_evidence())
+
+        resp = tc.post(
+            f"/forward-tests/{_SESSION_ID}/promote-draft",
+            json={"draft_id": _DRAFT_ID, "notes": "forward test passed on 2026-05-31"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["notes"] == "forward test passed on 2026-05-31"

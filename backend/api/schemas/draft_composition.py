@@ -52,3 +52,4 @@ class CompositionValidationResponse(BaseModel):
 
     valid: bool
     errors: list[str]
+    lifecycle_promoted: bool = False

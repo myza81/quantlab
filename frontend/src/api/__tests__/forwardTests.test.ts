@@ -17,7 +17,6 @@
  * 13.  Authorization header is injected on all requests
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AuthError } from '../client'
 import * as session from '../../auth/session'
 
 // ---------------------------------------------------------------------------
@@ -36,6 +35,7 @@ const SESSION_SUMMARY = {
   updated_at: '2026-05-30T12:00:00+00:00',
   last_processed_bar_timestamp: null,
   bars_evaluated: 0,
+  signal_eligible_bars_processed: 0,
   signals_recorded: 0,
   strategy_snapshot: {
     draft_id: 'draft-001',
@@ -51,7 +51,6 @@ const SESSION_DETAIL = {
   lifecycle_status_at_activation: 'backtested',
   warmup_bars_required: 0,
   warmup_bars_processed: 0,
-  signal_eligible_bars_processed: 0,
   activation_timestamp: null,
   failure_reason: null,
   error_category: null,

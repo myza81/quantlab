@@ -54,13 +54,19 @@ class ProviderAdapterFactory:
     parameters — providers like Yahoo require per-request configuration
     (symbol, timeframe) that cannot be fixed at registration time.
 
+    Providers may optionally register a *searcher* via register_searcher().
+    Calling search() on a provider with no searcher returns [] gracefully,
+    so future providers (Binance, IBKR, Polygon) can add search support
+    without changing any route or service code.
+
     Thread-safety: registration is intended for single-threaded startup;
-    build() calls are read-only and safe for concurrent use after setup.
+    build() and search() calls are read-only and safe for concurrent use.
     """
 
     def __init__(self) -> None:
         self._capabilities: dict[str, ProviderCapabilities] = {}
         self._builders: dict[str, Callable[..., RangeProviderAdapter]] = {}
+        self._searchers: dict[str, Callable[..., list[dict[str, Any]]]] = {}
 
     def register(
         self,
@@ -91,6 +97,79 @@ class ProviderAdapterFactory:
         self._capabilities[key] = capabilities
         self._builders[key] = builder
         logger.debug("ProviderAdapterFactory: registered provider '%s'", key)
+
+    def register_searcher(
+        self,
+        provider_id: str,
+        searcher: Callable[..., list[dict[str, Any]]],
+    ) -> None:
+        """
+        Register an optional asset-search function for a provider.
+
+        The searcher must accept keyword arguments ``query: str``,
+        ``limit: int``, and ``api_key: str | None`` and return a list of
+        normalized asset dicts with keys:
+        symbol, name, exchange, asset_class, currency, type_label.
+
+        Registering a searcher also sets ``supports_search=True`` on the
+        provider's ProviderCapabilities descriptor.
+
+        Can be called at any time after register(); registering a second
+        searcher for the same provider_id overwrites the first.
+
+        Args:
+            provider_id: Canonical provider name (case-insensitive).
+            searcher:    Callable(**{query, limit, api_key}) → list[dict].
+        """
+        key = provider_id.strip().lower()
+        if key not in self._capabilities:
+            raise ValueError(
+                f"Provider '{key}' is not registered. Call register() first."
+            )
+        self._searchers[key] = searcher
+        # Reflect search support in the capabilities descriptor
+        self._capabilities[key] = self._capabilities[key].model_copy(
+            update={"supports_search": True}
+        )
+        logger.debug("ProviderAdapterFactory: registered searcher for '%s'", key)
+
+    def search(
+        self,
+        provider_id: str,
+        *,
+        query: str,
+        limit: int = 10,
+        api_key: "str | None" = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Search for assets via the named provider's registered searcher.
+
+        Returns [] when the provider has no searcher registered.
+        Raises whatever exception the searcher raises — callers are
+        responsible for catching and converting to user-facing errors.
+
+        Args:
+            provider_id: Provider name (case-insensitive).
+            query:       User search string (ticker or company name).
+            limit:       Maximum number of results requested.
+            api_key:     Optional pre-resolved API key forwarded to the
+                         searcher (needed by credentialed providers such as
+                         Polygon).  Ignored by providers that don't require it.
+
+        Returns:
+            List of normalized asset dicts, or [] if no searcher registered.
+
+        Raises:
+            Any exception raised by the underlying searcher callable.
+        """
+        key = provider_id.strip().lower()
+        searcher = self._searchers.get(key)
+        if searcher is None:
+            logger.debug(
+                "ProviderAdapterFactory: no searcher for '%s', returning []", key
+            )
+            return []
+        return searcher(query=query, limit=limit, api_key=api_key)
 
     def build(self, provider_id: str, **kwargs: Any) -> RangeProviderAdapter:
         """
@@ -340,24 +419,40 @@ def _build_polygon_adapter(
     )
 
 
+def _search_yahoo(
+    *, query: str, limit: int = 10, api_key: "str | None" = None
+) -> list[dict[str, Any]]:
+    """Search Yahoo Finance — lazy import preserves the architecture boundary."""
+    from backend.data_providers.yahoo.search import search_yahoo
+    return search_yahoo(query, limit)
+
+
+def _search_polygon(
+    *, query: str, limit: int = 10, api_key: "str | None" = None
+) -> list[dict[str, Any]]:
+    """Search Polygon.io — lazy import preserves the architecture boundary."""
+    from backend.data_providers.polygon.search import search_polygon
+    return search_polygon(query=query, limit=limit, api_key=api_key)
+
+
 def create_default_factory_registry() -> ProviderAdapterFactory:
     """
     Create and return a ProviderAdapterFactory with built-in providers registered.
 
-    Registered providers:
-        yahoo   — Yahoo Finance via yfinance
-        csv     — Local CSV file (requires file_path kwarg at build time)
-        parquet — Local Parquet file (requires file_path kwarg at build time)
-        polygon — Polygon.io REST API
-                    Pass api_key kwarg (pre-resolved via VaultService).
-                    ENV fallback only active when settings.polygon_allow_env_fallback=True.
+    Provider search capability matrix:
+        yahoo   — supports_search=True  (yfinance.Search)
+        csv     — supports_search=False (no symbol index)
+        parquet — supports_search=False (no symbol index)
+        polygon — supports_search=True  (Polygon /v3/reference/tickers)
 
-    Future providers (Binance, IBKR) can be registered here without
-    touching any API service or route code.
+    Future providers (Binance, IBKR) can register their own searchers here
+    without touching any API service or route code.
     """
     factory = ProviderAdapterFactory()
     factory.register("yahoo", _YAHOO_CAPABILITIES, _build_yahoo_adapter)
     factory.register("csv", _CSV_CAPABILITIES, _build_csv_provider)
     factory.register("parquet", _PARQUET_CAPABILITIES, _build_parquet_provider)
     factory.register("polygon", _POLYGON_CAPABILITIES, _build_polygon_adapter)
+    factory.register_searcher("yahoo", _search_yahoo)
+    factory.register_searcher("polygon", _search_polygon)
     return factory

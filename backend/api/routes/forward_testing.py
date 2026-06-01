@@ -43,6 +43,7 @@ from backend.api.dependencies import (
     get_provider_factory,
     get_tool_registry,
 )
+from backend.api.schemas.drafts import DraftResponse
 from backend.api.schemas.forward_testing import (
     CreateForwardTestSessionRequest,
     ForwardTestBarResponse,
@@ -51,6 +52,11 @@ from backend.api.schemas.forward_testing import (
     ForwardTestSessionSummaryResponse,
     ForwardTestSignalResponse,
     ForwardTestStrategySnapshotResponse,
+    PromoteDraftToForwardTestedRequest,
+)
+from backend.api.services.draft_service import (
+    ForwardTestPromotionError,
+    promote_draft_to_forward_tested,
 )
 from backend.auth.entitlement import require_active_subscription
 from backend.auth.models import User
@@ -126,6 +132,7 @@ def _session_to_summary(session: ForwardTestSession) -> ForwardTestSessionSummar
             if session.last_processed_bar_timestamp is not None else None
         ),
         bars_evaluated=session.bars_evaluated,
+        signal_eligible_bars_processed=session.signal_eligible_bars_processed,
         signals_recorded=session.signals_recorded,
         strategy_snapshot=_snapshot_to_response(session.strategy_snapshot),
     )
@@ -138,7 +145,6 @@ def _session_to_detail(session: ForwardTestSession) -> ForwardTestSessionDetailR
         lifecycle_status_at_activation=session.lifecycle_status_at_activation,
         warmup_bars_required=session.warmup_bars_required,
         warmup_bars_processed=session.warmup_bars_processed,
-        signal_eligible_bars_processed=session.signal_eligible_bars_processed,
         activation_timestamp=(
             session.activation_timestamp.isoformat()
             if session.activation_timestamp is not None else None
@@ -565,6 +571,53 @@ def terminate_session(
     ))
 
     return _session_to_detail(updated)
+
+
+# ---------------------------------------------------------------------------
+# POST /forward-tests/{session_id}/promote-draft — Phase P1
+# ---------------------------------------------------------------------------
+
+@router.post("/{session_id}/promote-draft", response_model=DraftResponse)
+def promote_draft(
+    session_id: str,
+    request: PromoteDraftToForwardTestedRequest,
+    ft_repository: ForwardTestRepository = Depends(get_forward_test_repository),
+    draft_repository: DraftRepository = Depends(get_draft_repository),
+    current_user: User = Depends(require_active_subscription),
+) -> DraftResponse:
+    """
+    Promote a strategy draft to 'forward_tested' lifecycle status.
+
+    Requires a forward-test session with genuine evaluation evidence — the session
+    must have processed at least one signal-eligible bar (warmup completed + at
+    least one live market bar evaluated), owned by the same authenticated user.
+    This is the ONLY supported path for promoting a draft to 'forward_tested';
+    the general PUT /drafts/{id} endpoint does not accept lifecycle_status.
+
+    Returns the updated DraftResponse with lifecycle_status='forward_tested'.
+    """
+    try:
+        validate_uuid_id(session_id, "session_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        return promote_draft_to_forward_tested(
+            session_id=session_id,
+            draft_id=request.draft_id,
+            ft_repository=ft_repository,
+            draft_repository=draft_repository,
+            owner_id=current_user.user_id,
+            notes=request.notes,
+        )
+    except ForwardTestSessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DraftNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ForwardTestPromotionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

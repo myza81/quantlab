@@ -123,6 +123,46 @@ class AuditEventKind(str, Enum):
     GOV_STRATEGY_APPROVED_FOR_PAPER = "gov_strategy_approved_for_paper"
     GOV_STRATEGY_APPROVED_FOR_LIVE  = "gov_strategy_approved_for_live"
     GOV_LIFECYCLE_TRANSITION_DENIED = "gov_lifecycle_transition_denied"
+    # Phase 4E.1 — Paper Trading session lifecycle events (PT_)
+    # Taxonomy defined in docs/PAPER_TRADING_IMPLEMENTATION_REVIEW.md §12.
+    # Session lifecycle (10)
+    PT_SESSION_CREATED                  = "pt_session_created"
+    PT_SESSION_ACTIVATED                = "pt_session_activated"
+    PT_SESSION_PAUSED                   = "pt_session_paused"
+    PT_SESSION_PAUSED_DRAWDOWN_STOP     = "pt_session_paused_drawdown_stop"
+    PT_SESSION_PAUSED_PROVIDER_FAILURE  = "pt_session_paused_provider_failure"
+    PT_SESSION_RESUMED                  = "pt_session_resumed"
+    PT_SESSION_COMPLETED                = "pt_session_completed"
+    PT_SESSION_FAILED                   = "pt_session_failed"
+    PT_SESSION_TERMINATED               = "pt_session_terminated"
+    PT_SESSION_INVALID_TRANSITION_DENIED = "pt_session_invalid_transition_denied"
+    # Activation gate (2)
+    PT_ACTIVATION_DENIED                = "pt_activation_denied"
+    PT_ACTIVATION_APPROVED              = "pt_activation_approved"
+    # Order lifecycle (3)
+    PT_ORDER_CREATED                    = "pt_order_created"
+    PT_ORDER_REJECTED                   = "pt_order_rejected"
+    PT_ORDER_CANCELLED                  = "pt_order_cancelled"
+    # Fill (1)
+    PT_FILL_GENERATED                   = "pt_fill_generated"
+    # Position (4)
+    PT_POSITION_OPENED                  = "pt_position_opened"
+    PT_POSITION_SCALED                  = "pt_position_scaled"
+    PT_POSITION_CLOSED                  = "pt_position_closed"
+    PT_POSITION_FORCE_CLOSED            = "pt_position_force_closed"
+    # Account (3)
+    PT_ACCOUNT_UPDATED                  = "pt_account_updated"
+    PT_DRAWDOWN_THRESHOLD_WARNING       = "pt_drawdown_threshold_warning"
+    PT_DRAWDOWN_STOP_TRIGGERED          = "pt_drawdown_stop_triggered"
+    # Data / polling (5)
+    PT_POLL_COMPLETED                   = "pt_poll_completed"
+    PT_PROVIDER_FAILURE                 = "pt_provider_failure"
+    PT_GAP_DETECTED                     = "pt_gap_detected"
+    PT_CATCHUP_STARTED                  = "pt_catchup_started"
+    PT_CATCHUP_THRESHOLD_EXCEEDED       = "pt_catchup_threshold_exceeded"
+    # Access / governance (2)
+    PT_SESSION_EXPORTED                 = "pt_session_exported"
+    PT_SESSION_REVIEWED                 = "pt_session_reviewed"
 
 
 # ---------------------------------------------------------------------------

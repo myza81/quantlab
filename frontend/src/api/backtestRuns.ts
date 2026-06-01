@@ -1,13 +1,14 @@
 /**
- * API client for backtest runs: execute, retrieve, list history, and export.
+ * API client for backtest runs: execute, retrieve, list history, export, and promote.
  *
  * Endpoints:
- *   POST /backtests/runs                        — run backtest pipeline
- *   GET  /backtests/runs                        — list run history (Phase 3S-C)
- *   GET  /backtests/runs/{id}/report            — retrieve persisted report
- *   GET  /backtests/runs/{id}/export/trades     — download trade ledger CSV
- *   GET  /backtests/runs/{id}/export/equity     — download equity curve CSV
- *   GET  /backtests/runs/{id}/export/report     — download full report JSON
+ *   POST /backtests/runs                            — run backtest pipeline
+ *   GET  /backtests/runs                            — list run history (Phase 3S-C)
+ *   GET  /backtests/runs/{id}/report                — retrieve persisted report
+ *   POST /backtests/runs/{id}/promote-draft         — promote draft to 'backtested' (Phase R3/R4)
+ *   GET  /backtests/runs/{id}/export/trades         — download trade ledger CSV
+ *   GET  /backtests/runs/{id}/export/equity         — download equity curve CSV
+ *   GET  /backtests/runs/{id}/export/report         — download full report JSON
  */
 import type { OHLCVCandle } from './marketData'
 import type {
@@ -16,6 +17,7 @@ import type {
   BacktestRunResponse,
   BacktestReport,
 } from '../types/backtestRuns'
+import type { StrategyDraftData } from '../types/drafts'
 import { authedFetch } from './client'
 
 export type { BacktestRunConfig, BacktestRunListItem, BacktestRunResponse, BacktestReport }
@@ -111,4 +113,43 @@ export function downloadEquityCSV(runId: string): Promise<void> {
 /** Download full backtest report as JSON. */
 export function downloadReportJSON(runId: string): Promise<void> {
   return _authedDownload(`/backtests/runs/${runId}/export/report`, `backtest_${runId.slice(0, 8)}.json`)
+}
+
+/**
+ * Promote a strategy draft to 'backtested' lifecycle status using a completed
+ * backtest run as evidence.
+ *
+ * POST /backtests/runs/{run_id}/promote-draft
+ *
+ * The backend validates:
+ *   - draft ownership
+ *   - run ownership
+ *   - run.draft_id === draft_id
+ *   - run.status === 'completed'
+ *   - lifecycle transition is permitted
+ *
+ * Returns the updated DraftResponse.
+ * Throws Error with backend detail message on failure.
+ */
+export async function promoteDraftToBacktested(
+  runId:   string,
+  draftId: string,
+  notes?:  string,
+): Promise<StrategyDraftData> {
+  const body: Record<string, unknown> = { draft_id: draftId }
+  if (notes != null) body.notes = notes
+
+  const resp = await authedFetch(`/backtests/runs/${runId}/promote-draft`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(body),
+  })
+
+  const data = await resp.json().catch(() => ({ detail: resp.statusText }))
+  if (!resp.ok) {
+    const detail = (data as { detail?: unknown }).detail
+    const msg = typeof detail === 'string' ? detail : JSON.stringify(detail ?? `HTTP ${resp.status}`)
+    throw new Error(msg)
+  }
+  return data as StrategyDraftData
 }

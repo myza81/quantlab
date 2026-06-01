@@ -19,6 +19,7 @@ export interface StrategyDraftData {
   enabled: boolean
   tags: string[]
   notes: string | null
+  lifecycle_status?: string  // e.g. 'draft' | 'validated' | 'backtested' | 'forward_tested' | ...
   semantics?: StrategySemantics | null
 }
 

@@ -125,7 +125,7 @@ def fetch_ohlcv(
     provider: str,
     symbol: str,
     asset_class: str,
-    exchange: str,
+    exchange: str = "",
     timeframe: str,
     start: datetime,
     end: datetime,
@@ -143,7 +143,10 @@ def fetch_ohlcv(
         provider:        Provider name (routed through factory, e.g. "yahoo").
         symbol:          Instrument symbol, e.g. "AAPL".
         asset_class:     e.g. "equity", "crypto".
-        exchange:        Exchange/venue, e.g. "NASDAQ".
+        exchange:        Exchange/venue, e.g. "NYSE". Optional — when omitted or
+                         empty the service defaults to "unknown" for fingerprinting
+                         and storage. Yahoo Finance does not require exchange to
+                         fetch data; it is used only as traceability metadata.
         timeframe:       e.g. "1d", "1h".
         start:           Inclusive start — must be UTC-aware.
         end:             Inclusive end — must be UTC-aware.
@@ -164,6 +167,12 @@ def fetch_ohlcv(
         MarketDataError:          invalid timeframe, provider fetch failure,
                                   or credential resolution failure.
     """
+    # Normalize exchange: empty/blank is valid (user did not supply it).
+    # Use "unknown" as the storage and fingerprint value so downstream
+    # validators (which require non-empty exchange) remain satisfied.
+    # Existing callers that supply a real exchange are unaffected.
+    effective_exchange = exchange.strip() or "unknown"
+
     # Resolve user-owned API key before building the adapter.
     # Returns None for non-vault providers → factory uses its own resolver.
     api_key = _resolve_provider_api_key(
@@ -177,7 +186,7 @@ def fetch_ohlcv(
             provider,
             symbol=symbol,
             asset_class=asset_class,
-            venue=exchange,
+            venue=effective_exchange,
             timeframe=timeframe,
             adjustment_mode=adjustment_mode,
             api_key=api_key,
@@ -195,7 +204,7 @@ def fetch_ohlcv(
     instrument = Instrument(
         symbol=symbol,
         asset_class=asset_class,
-        exchange=exchange,
+        exchange=effective_exchange,
         currency=currency,
     )
     identity = DatasetIdentity(
@@ -209,7 +218,7 @@ def fetch_ohlcv(
         provider=provider,
         symbol=symbol,
         asset_class=asset_class,
-        exchange=exchange,
+        exchange=effective_exchange,
         timeframe=timeframe,
         start=start,
         end=end,
@@ -246,7 +255,7 @@ def fetch_ohlcv(
         provider=provider,
         symbol=symbol,
         asset_class=asset_class,
-        exchange=exchange,
+        exchange=effective_exchange,
         timeframe=timeframe,
         start_utc=start.astimezone(timezone.utc).isoformat(),
         end_utc=end.astimezone(timezone.utc).isoformat(),
@@ -269,7 +278,7 @@ def fetch_ohlcv(
         provider=provider,
         symbol=symbol,
         asset_class=asset_class,
-        exchange=exchange,
+        exchange=effective_exchange,
         timeframe=timeframe,
         start=start,
         end=end,
@@ -297,6 +306,7 @@ def list_providers(factory: ProviderAdapterFactory) -> ProvidersListResponse:
                 display_name=c.display_name,
                 supported_timeframes=list(c.supported_timeframes),
                 supported_asset_classes=list(c.supported_asset_classes),
+                supports_search=c.supports_search,
             )
             for c in caps
         ]

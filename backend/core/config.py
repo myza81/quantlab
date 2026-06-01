@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # Override via FORWARD_TEST_SESSIONS_STORAGE_PATH env var.
     forward_test_sessions_storage_path: Path = _REPO_ROOT / "storage" / "forward_tests"
 
+    # Paper trading storage — absolute path so it is launch-directory-independent.
+    # Subdirectories sessions/, accounts/, equity/ are created on first write.
+    # Override via PAPER_TRADING_STORAGE_PATH env var.
+    paper_trading_storage_path: Path = _REPO_ROOT / "storage" / "paper_trading"
+
     # Forward testing — bar finalization safety buffer (Phase 4C.3).
     # A bar is treated as finalized when:
     #   current_time >= bar_open_time + timeframe_duration + buffer

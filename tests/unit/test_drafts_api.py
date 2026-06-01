@@ -460,3 +460,64 @@ class TestExecutionIndependence:
             assert response.status_code == 201
         finally:
             _cleanup()
+
+
+# ---------------------------------------------------------------------------
+# TestLifecycleIntegrity — Phase P0.2
+# ---------------------------------------------------------------------------
+
+class TestLifecycleIntegrity:
+    """POST /drafts and PUT /drafts/{id} must not accept lifecycle_status fields."""
+
+    def test_create_cannot_set_lifecycle_to_validated(self, tmp_path: Path) -> None:
+        client = _client(tmp_path)
+        try:
+            payload = _valid_payload(_DRAFT_ID)
+            payload["lifecycle_status"] = "validated"
+            response = client.post("/drafts", json=payload)
+            assert response.status_code == 422
+        finally:
+            _cleanup()
+
+    def test_create_cannot_set_lifecycle_to_backtested(self, tmp_path: Path) -> None:
+        client = _client(tmp_path)
+        try:
+            payload = _valid_payload(_DRAFT_ID)
+            payload["lifecycle_status"] = "backtested"
+            response = client.post("/drafts", json=payload)
+            assert response.status_code == 422
+        finally:
+            _cleanup()
+
+    def test_create_always_starts_at_draft_status(self, tmp_path: Path) -> None:
+        client = _client(tmp_path)
+        try:
+            response = client.post("/drafts", json=_valid_payload(_DRAFT_ID))
+            assert response.status_code == 201
+            assert response.json()["lifecycle_status"] == "draft"
+        finally:
+            _cleanup()
+
+    def test_update_cannot_move_lifecycle_via_put_body(self, tmp_path: Path) -> None:
+        client = _client(tmp_path)
+        try:
+            client.post("/drafts", json=_valid_payload(_DRAFT_ID))
+            response = client.put(
+                f"/drafts/{_DRAFT_ID}",
+                json={"lifecycle_status": "validated"},
+            )
+            assert response.status_code == 422
+        finally:
+            _cleanup()
+
+    def test_update_cannot_move_lifecycle_to_backtested_via_put_body(self, tmp_path: Path) -> None:
+        client = _client(tmp_path)
+        try:
+            client.post("/drafts", json=_valid_payload(_DRAFT_ID))
+            response = client.put(
+                f"/drafts/{_DRAFT_ID}",
+                json={"lifecycle_status": "backtested"},
+            )
+            assert response.status_code == 422
+        finally:
+            _cleanup()

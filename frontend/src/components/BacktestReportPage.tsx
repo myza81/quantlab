@@ -3,21 +3,43 @@
  *
  * Sections:
  *   1. Run header (symbol, strategy, config assumptions)
- *   2. Metrics summary cards
- *   3. Equity curve + drawdown charts
- *   4. Trade ledger table
- *   5. Rejections / audit
+ *   2. Lifecycle promotion panel (Phase R4 — shown when promotion is actionable)
+ *   3. Metrics summary cards
+ *   4. Equity curve + drawdown charts
+ *   5. Trade ledger table
+ *   6. Rejections / audit
  */
-import type { BacktestReport } from '../types/backtestRuns'
+import { useState } from 'react'
+import type { BacktestReport, BacktestRunSummary } from '../types/backtestRuns'
+import type { ForwardTestPrefill } from '../types/forwardTesting'
 import { downloadEquityCSV, downloadReportJSON, downloadTradesCSV } from '../api/backtestRuns'
 import { EquityCurveChart } from './EquityCurveChart'
 import { TradeLedgerTable } from './TradeLedgerTable'
+import { LifecycleBadge } from './LifecycleBadge'
+import { computeGuidance } from '../lib/lifecycleGuidance'
+import { LifecycleGuidanceCard } from './LifecycleGuidanceCard'
+import { EvidenceReadinessPanel } from './EvidenceReadinessPanel'
+import type { EvidenceItem } from './EvidenceReadinessPanel'
 
 interface Props {
   report:                BacktestReport
   onBack:                () => void
   sourceLabel?:          string | null
   onNavigateToComposer?: () => void
+  /** Called when the user requests promotion of the draft to 'backtested'. */
+  onPromoteDraft?: (runId: string, draftId: string) => Promise<void>
+  /** Called when the user wants to start a forward test from this report context. */
+  onStartForwardTest?: (prefill: ForwardTestPrefill) => void
+}
+
+function buildPrefillFromRun(run: BacktestRunSummary): ForwardTestPrefill {
+  return {
+    draft_id:      run.draft_id,
+    draft_name:    run.draft_name,
+    symbol:        run.symbol,
+    timeframe:     run.timeframe,
+    provider_name: run.dataset_provenance?.provider_name ?? undefined,
+  }
 }
 
 const $ = (v: number | null | undefined, dp = 2) =>
@@ -64,8 +86,49 @@ function ProvenanceRow({ label, value, mono }: ProvenanceRowProps) {
   )
 }
 
-export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToComposer }: Props) {
+const BACKTESTED_OR_BEYOND = new Set(['backtested', 'forward_tested', 'paper_tested', 'approved_for_live'])
+
+export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToComposer, onPromoteDraft, onStartForwardTest }: Props) {
   const { run, metrics } = report
+
+  // Promotion state — scoped to this report view
+  const [promotionState, setPromotionState] = useState<'idle' | 'promoting' | 'success' | 'error'>('idle')
+  const [promotionError, setPromotionError] = useState<string | null>(null)
+
+  const lifecycleAtRun = run.draft_provenance?.lifecycle_status_at_run ?? null
+
+  // Show promotion panel only when draft was 'validated' at run time — the
+  // minimum required lifecycle state for backtest evidence to count.
+  const showPromotionPanel =
+    run.status === 'completed' &&
+    lifecycleAtRun === 'validated' &&
+    promotionState !== 'success' &&
+    onPromoteDraft != null
+
+  // Show prerequisite notice when draft was still 'draft' at run time —
+  // the user needs to validate the draft before a backtest can count as evidence.
+  const showDraftPrerequisiteNotice =
+    run.status === 'completed' &&
+    lifecycleAtRun === 'draft'
+
+  // Show "already eligible" info when draft was already backtested+ at run time.
+  const alreadyEligible =
+    run.status === 'completed' &&
+    lifecycleAtRun != null &&
+    BACKTESTED_OR_BEYOND.has(lifecycleAtRun)
+
+  async function handlePromote() {
+    if (!onPromoteDraft) return
+    setPromotionState('promoting')
+    setPromotionError(null)
+    try {
+      await onPromoteDraft(run.run_id, run.draft_id)
+      setPromotionState('success')
+    } catch (err) {
+      setPromotionState('error')
+      setPromotionError(err instanceof Error ? err.message : 'Promotion failed')
+    }
+  }
 
   const cfgLabel = (() => {
     const parts: string[] = []
@@ -80,6 +143,31 @@ export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToCo
     if (parts.length === 0) parts.push('no commission · no slippage')
     return parts.join(' · ')
   })()
+
+  const btGuidance = run.status === 'completed' && lifecycleAtRun != null
+    ? computeGuidance({ lifecycleStatus: lifecycleAtRun })
+    : null
+  const btNavCallback = btGuidance?.navigateTarget === 'composer' ? onNavigateToComposer : undefined
+
+  // Evidence readiness panel — shown for draft/validated → Backtest Complete pathway
+  const showBtEvidencePanel = lifecycleAtRun === 'draft' || lifecycleAtRun === 'validated'
+  const btEvidenceItems: EvidenceItem[] = showBtEvidencePanel ? [
+    {
+      label:       'Strategy Draft Exists',
+      complete:    true,
+      explanation: 'A strategy draft is required before any evidence can be recorded.',
+    },
+    {
+      label:       'Draft Validated',
+      complete:    lifecycleAtRun !== 'draft',
+      explanation: 'Validated drafts confirm the strategy toolset and conditions are complete.',
+    },
+    {
+      label:       'Backtest Completed',
+      complete:    run.status === 'completed',
+      explanation: 'A completed backtest run provides historical performance evidence required for lifecycle promotion.',
+    },
+  ] : []
 
   return (
     <div style={s.page}>
@@ -115,6 +203,120 @@ export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToCo
 
       <div style={s.body}>
       <div style={s.bodyInner}>
+
+        {/* ── Draft Prerequisite Notice ── */}
+        {showDraftPrerequisiteNotice && (
+          <div data-testid="draft-prerequisite-notice" style={s.draftPrerequisiteNotice}>
+            <LifecycleBadge status="draft" />
+            <span style={s.draftPrerequisiteText}>
+              This backtest was run while the draft was still in <strong>draft</strong> status.
+              Validate the draft first, then re-run the backtest to unlock lifecycle promotion.
+            </span>
+          </div>
+        )}
+
+        {/* ── Lifecycle Promotion Panel ── */}
+        {showPromotionPanel && (
+          <div data-testid="promotion-panel" style={s.promotionPanel}>
+            <div style={s.promotionHeader}>
+              <span style={s.promotionTitle}>Lifecycle Promotion</span>
+              <LifecycleBadge status={lifecycleAtRun!} />
+              <span style={s.promotionArrow}>→</span>
+              <LifecycleBadge status="backtested" />
+            </div>
+            <p style={s.promotionBody}>
+              This backtest completed on a <strong style={{ color: '#7eb8f7' }}>validated</strong> draft.
+              Promote it to <strong style={{ color: '#66bb6a' }}>backtested</strong> to
+              unlock forward testing.
+            </p>
+            <div style={s.promotionActions}>
+              <button
+                data-testid="promote-to-backtested-btn"
+                style={{
+                  ...s.promotionBtn,
+                  opacity: promotionState === 'promoting' ? 0.5 : 1,
+                  cursor:  promotionState === 'promoting' ? 'not-allowed' : 'pointer',
+                }}
+                disabled={promotionState === 'promoting'}
+                onClick={handlePromote}
+              >
+                {promotionState === 'promoting' ? 'Promoting…' : 'Promote to Backtested'}
+              </button>
+              {promotionState === 'error' && promotionError && (
+                <span data-testid="promotion-error" style={s.promotionError}>
+                  {promotionError}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {promotionState === 'success' && (
+          <div data-testid="promotion-success" style={s.promotionSuccess}>
+            <span style={s.promotionSuccessIcon}>✓</span>
+            Draft promoted to <strong style={{ color: '#66bb6a' }}>Backtested</strong>.
+            Forward testing is now available.
+            {onStartForwardTest && (
+              <button
+                data-testid="start-forward-test-btn"
+                style={s.fwdTestBtn}
+                onClick={() => onStartForwardTest(buildPrefillFromRun(run))}
+              >
+                Start Forward Test ↗
+              </button>
+            )}
+          </div>
+        )}
+
+        {alreadyEligible && (
+          <div data-testid="already-eligible-notice" style={s.alreadyEligible}>
+            <LifecycleBadge status={lifecycleAtRun!} />
+            <span style={s.alreadyEligibleText}>
+              This draft was already <strong>{lifecycleAtRun}</strong> when this run was executed.
+              Forward testing is available from the Forward Test tab.
+            </span>
+            <button
+              data-testid="forward-test-hint-btn"
+              style={{
+                ...s.fwdTestHintBtn,
+                ...(onStartForwardTest ? {
+                  cursor:      'pointer',
+                  color:       '#63b3ed',
+                  borderColor: '#2a4a5e',
+                } : {}),
+              }}
+              disabled={!onStartForwardTest}
+              title={onStartForwardTest
+                ? 'Open Forward Test with this strategy context pre-filled'
+                : 'Go to the Forward Test tab to start a session'}
+              onClick={onStartForwardTest
+                ? () => onStartForwardTest(buildPrefillFromRun(run))
+                : undefined}
+            >
+              Start Forward Test ↗
+            </button>
+          </div>
+        )}
+
+        {btGuidance && (
+          <LifecycleGuidanceCard
+            currentStageLabel={btGuidance.currentStageLabel}
+            nextAction={btGuidance.nextAction}
+            whyItMatters={btGuidance.whyItMatters}
+            blockers={btGuidance.blockers}
+            onNavigate={btNavCallback}
+            navigateLocked={btGuidance.navigateLocked}
+          />
+        )}
+
+        {btEvidenceItems.length > 0 && (
+          <div data-testid="bt-evidence-panel">
+            <EvidenceReadinessPanel
+              title="Promotion Evidence — Validated → Backtest Complete"
+              items={btEvidenceItems}
+            />
+          </div>
+        )}
 
         {/* ── Metrics grid ── */}
         <div style={s.section}>
@@ -209,7 +411,10 @@ export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToCo
                   <div style={s.provenanceBlockTitle}>Strategy</div>
                   <ProvenanceRow label="draft_id"   value={run.draft_provenance.draft_id.slice(0, 8)} mono />
                   <ProvenanceRow label="name"        value={run.draft_provenance.display_name} />
-                  <ProvenanceRow label="lifecycle"   value={run.draft_provenance.lifecycle_status_at_run} />
+                  <div style={{ ...s.provRow, alignItems: 'center' }}>
+                    <span style={s.provKey}>lifecycle</span>
+                    <LifecycleBadge status={run.draft_provenance.lifecycle_status_at_run} />
+                  </div>
                   {run.draft_provenance.semantics_hash && (
                     <ProvenanceRow label="logic_hash" value={run.draft_provenance.semantics_hash.slice(0, 12)} mono />
                   )}
@@ -528,5 +733,128 @@ const s: Record<string, React.CSSProperties> = {
     color:         '#3a5068',
     fontFamily:    'monospace',
     letterSpacing: '0.06em',
+  },
+
+  // ── Lifecycle promotion panel ──
+  promotionPanel: {
+    background:    '#0a1a0a',
+    border:        '1px solid #1a3a1a',
+    borderRadius:  6,
+    padding:       '12px 16px',
+    display:       'flex',
+    flexDirection: 'column' as const,
+    gap:           8,
+  },
+  promotionHeader: {
+    display:    'flex',
+    alignItems: 'center',
+    gap:        8,
+  },
+  promotionTitle: {
+    fontSize:      10,
+    fontWeight:    700,
+    color:         '#4a5568',
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase' as const,
+    marginRight:   4,
+  },
+  promotionArrow: {
+    fontSize: 12,
+    color:    '#4a5568',
+  },
+  promotionBody: {
+    fontSize:  11,
+    color:     '#7a8598',
+    margin:    0,
+    lineHeight: 1.5,
+  },
+  promotionActions: {
+    display:    'flex',
+    alignItems: 'center',
+    gap:        12,
+    marginTop:  4,
+  },
+  promotionBtn: {
+    background:   '#0a2a0a',
+    border:       '1px solid #1a5a1a',
+    borderRadius: 4,
+    color:        '#66bb6a',
+    fontFamily:   'monospace',
+    fontSize:     11,
+    padding:      '5px 14px',
+    whiteSpace:   'nowrap' as const,
+  },
+  promotionError: {
+    fontSize:  11,
+    color:     '#ef5350',
+    fontFamily: 'monospace',
+  },
+  promotionSuccess: {
+    display:       'flex',
+    alignItems:    'center',
+    gap:           8,
+    background:    '#0a1e0a',
+    border:        '1px solid #1a4a1a',
+    borderRadius:  6,
+    padding:       '10px 14px',
+    fontSize:      12,
+    color:         '#7a8598',
+  },
+  promotionSuccessIcon: {
+    fontSize: 14,
+    color:    '#66bb6a',
+  },
+  draftPrerequisiteNotice: {
+    display:       'flex',
+    alignItems:    'center',
+    gap:           10,
+    background:    '#0e0a00',
+    border:        '1px solid #3a2800',
+    borderRadius:  6,
+    padding:       '8px 12px',
+    flexWrap:      'wrap' as const,
+  },
+  draftPrerequisiteText: {
+    fontSize:  11,
+    color:     '#8a7040',
+    flex:      1,
+  },
+  alreadyEligible: {
+    display:       'flex',
+    alignItems:    'center',
+    gap:           10,
+    background:    '#0a0a14',
+    border:        '1px solid #1a1a28',
+    borderRadius:  6,
+    padding:       '8px 12px',
+    flexWrap:      'wrap' as const,
+  },
+  alreadyEligibleText: {
+    fontSize:  11,
+    color:     '#4a5568',
+    flex:      1,
+  },
+  fwdTestHintBtn: {
+    background:   'transparent',
+    border:       '1px solid #2a2d3e',
+    borderRadius: 4,
+    color:        '#4a5568',
+    fontFamily:   'monospace',
+    fontSize:     10,
+    padding:      '3px 10px',
+    cursor:       'not-allowed',
+    whiteSpace:   'nowrap' as const,
+  },
+  fwdTestBtn: {
+    background:   'transparent',
+    border:       '1px solid #2a4a5e',
+    borderRadius: 4,
+    color:        '#63b3ed',
+    fontFamily:   'monospace',
+    fontSize:     10,
+    padding:      '3px 10px',
+    cursor:       'pointer',
+    whiteSpace:   'nowrap' as const,
+    marginLeft:   8,
   },
 }

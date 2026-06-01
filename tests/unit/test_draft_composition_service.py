@@ -38,6 +38,7 @@ from backend.api.services.draft_composition_service import (
 )
 from backend.strategy_registry.draft_repository import DraftNotFoundError, DraftRepository
 from backend.strategy_registry.drafts import StrategyDraft
+from backend.strategy_registry.lifecycle import StrategyLifecycleStatus
 from backend.tools import ToolRegistry, create_default_registry
 from backend.tools.configuration import ToolConfiguration
 from backend.tools.toolset import StrategyToolSet
@@ -66,6 +67,7 @@ def _toolset(*tools: ToolConfiguration) -> StrategyToolSet:
 def _draft(
     draft_id: str = "alpha",
     *tools: ToolConfiguration,
+    lifecycle_status: StrategyLifecycleStatus = StrategyLifecycleStatus.DRAFT,
 ) -> StrategyDraft:
     if not tools:
         tools = (_sma("sma_fast", 20),)
@@ -75,6 +77,7 @@ def _draft(
         toolset=_toolset(*tools),
         created_at=_NOW,
         updated_at=_NOW,
+        lifecycle_status=lifecycle_status,
     )
 
 
@@ -453,3 +456,68 @@ class TestImmutability:
         req = PatchToolRequest(parameters={"period": 99})
         patch_tool("alpha", "sma_fast", req, _registry(), repo)
         assert original.toolset.get_tool("sma_fast").parameters["period"] == 20
+
+
+# ---------------------------------------------------------------------------
+# TestValidateDraftLifecyclePromotion — Phase P0.1
+# ---------------------------------------------------------------------------
+
+class TestValidateDraftLifecyclePromotion:
+    """validate_draft() must promote DRAFT→VALIDATED on success; never on failure."""
+
+    def test_valid_draft_promotes_to_validated(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path)
+        repo.save(_draft("alpha", lifecycle_status=StrategyLifecycleStatus.DRAFT))
+        result = validate_draft("alpha", _registry(), repo)
+        assert result.valid is True
+        assert result.lifecycle_promoted is True
+        persisted = repo.load("alpha")
+        assert persisted.lifecycle_status == StrategyLifecycleStatus.VALIDATED
+
+    def test_promotion_updates_updated_at(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path)
+        repo.save(_draft("alpha", lifecycle_status=StrategyLifecycleStatus.DRAFT))
+        validate_draft("alpha", _registry(), repo)
+        assert repo.load("alpha").updated_at > _NOW
+
+    def test_failed_validation_does_not_promote(self, tmp_path: Path) -> None:
+        bad_tool = ToolConfiguration(
+            instance_id="bad", tool_id="nonexistent", parameters={}
+        )
+        draft = StrategyDraft(
+            draft_id="alpha",
+            display_name="Alpha",
+            toolset=_toolset(bad_tool),
+            created_at=_NOW,
+            updated_at=_NOW,
+            lifecycle_status=StrategyLifecycleStatus.DRAFT,
+        )
+        repo = _repo(tmp_path)
+        repo.save(draft)
+        result = validate_draft("alpha", _registry(), repo)
+        assert result.valid is False
+        assert result.lifecycle_promoted is False
+        assert repo.load("alpha").lifecycle_status == StrategyLifecycleStatus.DRAFT
+
+    def test_already_validated_stays_validated_not_downgraded(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path)
+        repo.save(_draft("alpha", lifecycle_status=StrategyLifecycleStatus.VALIDATED))
+        result = validate_draft("alpha", _registry(), repo)
+        assert result.valid is True
+        assert result.lifecycle_promoted is False
+        assert repo.load("alpha").lifecycle_status == StrategyLifecycleStatus.VALIDATED
+
+    def test_backtested_draft_not_downgraded(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path)
+        repo.save(_draft("alpha", lifecycle_status=StrategyLifecycleStatus.BACKTESTED))
+        result = validate_draft("alpha", _registry(), repo)
+        assert result.valid is True
+        assert result.lifecycle_promoted is False
+        assert repo.load("alpha").lifecycle_status == StrategyLifecycleStatus.BACKTESTED
+
+    def test_cross_user_isolation_respected(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path)
+        repo.save(_draft("alpha", lifecycle_status=StrategyLifecycleStatus.DRAFT))
+        from backend.strategy_registry.draft_repository import DraftNotFoundError
+        with pytest.raises(DraftNotFoundError):
+            validate_draft("alpha", _registry(), repo, owner_id="other-user")

@@ -31,6 +31,7 @@ Phase 4C.3 additions — forward-testing data-access primitives:
 
 NOT a live-streaming system.  Historical / research-grade ingestion only.
 """
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,6 +49,93 @@ from backend.storage.dataset_cache import DatasetCacheRegistry, DatasetCacheStat
 from backend.storage.parquet_store import StorageError
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# MD-1 hardening constants
+# ---------------------------------------------------------------------------
+
+# How long (seconds) to suppress provider calls for a range known to return
+# 0 records.  Short enough that valid future data isn't blocked; long enough
+# to prevent repeated hammering during a single research session.
+_EMPTY_RESPONSE_TTL_SECONDS: int = 900  # 15 minutes
+
+
+# ---------------------------------------------------------------------------
+# MD-1 — Empty-response negative cache
+# ---------------------------------------------------------------------------
+
+class _EmptyResponseGuard:
+    """
+    File-backed short-lived guard against repeated provider calls for ranges
+    known to produce empty responses.
+
+    When the provider returns 0 records for [gap_start, gap_end] the guard
+    records that (gap_start, gap_end) → expires_at in a JSON sidecar file
+    alongside the dataset's Parquet file.  Subsequent requests for the same
+    gap are silently skipped until the TTL expires.
+
+    Contract:
+    - Only the exact gap key is matched (no overlap detection).
+    - Expired entries are pruned lazily on every write.
+    - A missing or corrupt sidecar is treated as no guard (safe default).
+    - TTL is explicit: _EMPTY_RESPONSE_TTL_SECONDS (module-level constant).
+    - Guard does NOT permanently block any range — callers will retry after TTL.
+    """
+
+    _FILENAME = "empty_response_guard.json"
+
+    def __init__(self, base_path: Path, identity: DatasetIdentity) -> None:
+        self._path = (
+            ohlcv_store.dataset_path(base_path, identity).parent / self._FILENAME
+        )
+
+    def is_guarded(self, gap_start: datetime, gap_end: datetime) -> bool:
+        """Return True if this exact gap is still within its negative-cache TTL."""
+        entries = self._load()
+        expires_str = entries.get(self._key(gap_start, gap_end))
+        if not expires_str:
+            return False
+        try:
+            return datetime.fromisoformat(expires_str) > datetime.now(timezone.utc)
+        except ValueError:
+            return False
+
+    def record(self, gap_start: datetime, gap_end: datetime) -> None:
+        """Record that the provider returned 0 records for [gap_start, gap_end]."""
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=_EMPTY_RESPONSE_TTL_SECONDS)
+        entries = self._load()
+        # Prune expired entries before writing to keep the file small
+        entries = {
+            k: v for k, v in entries.items()
+            if _safe_parse_dt(v) > now
+        }
+        entries[self._key(gap_start, gap_end)] = expires.isoformat()
+        self._save(entries)
+
+    @staticmethod
+    def _key(gap_start: datetime, gap_end: datetime) -> str:
+        return f"{gap_start.isoformat()}|{gap_end.isoformat()}"
+
+    def _load(self) -> dict[str, str]:
+        if not self._path.exists():
+            return {}
+        try:
+            return json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save(self, entries: dict[str, str]) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+
+
+def _safe_parse_dt(value: str) -> datetime:
+    """Parse an ISO datetime string, falling back to epoch on error."""
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -467,8 +555,40 @@ class OHLCVService:
         fetch_fingerprint: Optional[str],
         **fetch_kwargs: object,
     ) -> list[NormalizedOHLCV]:
-        """FETCH_AND_STORE: check coverage, fetch missing, persist."""
+        """FETCH_AND_STORE: check coverage, fetch missing, persist.
+
+        MD-1 hardening — two additions:
+
+        1. Trailing-edge freshness: even when boundary coverage is complete,
+           if the latest stored bar has not yet been finalized (its candle
+           period + 60 s buffer hasn't elapsed), re-fetch the trailing edge
+           so that open/forming candles are not permanently served as final.
+
+        2. Empty-response guard: if a provider call returns 0 records for a
+           gap, record that gap in a short-lived (15 min) negative cache.
+           Subsequent requests for the same gap skip the provider until the
+           TTL expires, preventing repeated hammering of the data source.
+        """
         missing = self.calculate_missing_ranges(identity, start, end)
+
+        if not missing:
+            # MD-1 — trailing-edge freshness check.
+            # Boundary coverage is satisfied, but the latest stored bar may
+            # have been captured as a partial/open candle (e.g. fetched during
+            # the current trading session before close).  Re-fetch the trailing
+            # edge when the bar's candle period hasn't yet elapsed.
+            coverage = self._coverage.get(identity)
+            if coverage is not None and self._trailing_edge_is_stale(
+                identity, coverage.latest_timestamp
+            ):
+                trail_start = coverage.latest_timestamp
+                if trail_start <= end:
+                    logger.debug(
+                        "OHLCVService: trailing bar at %s not yet finalized"
+                        " — re-fetching trailing edge for %s",
+                        coverage.latest_timestamp.date(), identity.dataset_id,
+                    )
+                    missing = [(trail_start, end)]
 
         if not missing:
             logger.debug(
@@ -482,14 +602,27 @@ class OHLCVService:
             len(missing), identity.dataset_id, start.date(), end.date(),
         )
 
+        # MD-1 — empty-response guard: create once, reuse for all gaps.
+        guard = _EmptyResponseGuard(self._base_path, identity)
         ingested_any = False
         for gap_start, gap_end in missing:
+            # Skip gaps whose previous empty response is still within TTL
+            if guard.is_guarded(gap_start, gap_end):
+                logger.debug(
+                    "OHLCVService: empty-response guard active for [%s..%s]"
+                    " — skipping provider call",
+                    gap_start.date(), gap_end.date(),
+                )
+                continue
+
             raw = provider.fetch(gap_start, gap_end, **fetch_kwargs)
             if not raw:
                 logger.debug(
-                    "OHLCVService: provider returned 0 records for [%s..%s]",
+                    "OHLCVService: provider returned 0 records for [%s..%s]"
+                    " — recording empty-response guard",
                     gap_start.date(), gap_end.date(),
                 )
+                guard.record(gap_start, gap_end)
                 continue
 
             validated = self._normalize(identity, raw, gap_start, gap_end)
@@ -586,3 +719,38 @@ class OHLCVService:
             return ohlcv_store.read_range(self._base_path, identity, start, end)
         except StorageError:
             return []
+
+    def _trailing_edge_is_stale(
+        self,
+        identity: DatasetIdentity,
+        latest_ts: datetime,
+        *,
+        _now: Optional[datetime] = None,
+    ) -> bool:
+        """
+        Return True when the latest stored bar has not yet been finalized.
+
+        A bar opened at ``latest_ts`` with duration ``identity.timeframe`` is
+        considered *not yet final* when its candle period plus a 60-second
+        safety buffer hasn't elapsed.  This prevents permanently caching a
+        bar that was captured mid-session (open/forming candle).
+
+        Args:
+            identity:   Dataset identity — provides the timeframe.
+            latest_ts:  Open-time of the latest stored bar (UTC-aware).
+            _now:       Explicit reference time for deterministic testing.
+                        Defaults to ``datetime.now(timezone.utc)``.
+
+        Returns:
+            True  → bar still within finalization window; trailing re-fetch needed.
+            False → bar is settled; cached data is safe to serve.
+        """
+        if latest_ts.tzinfo is None:
+            return True  # defensive: treat naive timestamps as stale
+        now = _now if _now is not None else datetime.now(timezone.utc)
+        return not is_bar_finalized(
+            latest_ts,
+            identity.timeframe,
+            current_time=now,
+            buffer_seconds=60,
+        )

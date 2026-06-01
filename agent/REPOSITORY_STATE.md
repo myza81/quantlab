@@ -4,10 +4,10 @@
 main
 
 ## Current Phase
-PHASE 3S-C — Research Provenance & Workflow Continuity (complete)
+PHASE UX-5 — Evidence Readiness Panels (COMPLETE)
 
-All Phases 2T, 3A–3S-C complete. Backend: 3686 tests. Frontend: 155 tests. tsc clean.
-Last committed phase: 2P.9 + 2N. Phases 2T, 3A–3S-C are implemented but uncommitted.
+Backend 4 710 ✓ | Frontend 418 ✓ | `npm run build` ✓
+UX-5 adds explicit promotion evidence readiness panels throughout the lifecycle UI. New shared component EvidenceReadinessPanel renders evidence items with ✓/✗ status, per-item explanations, and a "Promotion Ready" / "Promotion Blocked" banner. Integrated into: BacktestReportPage (validated→Backtest Complete pathway), ForwardTestPanel (FT evidence inside ft-promotion-panel), PaperTradingPanel (PT evidence inside pt-promote-panel), StrategyLifecycleDashboard (evidence readiness between evidence summaries and quick navigation). Backend remains sole authority for lifecycle promotion — panels are display-only. 35 new frontend tests (14 EvidenceReadinessPanel unit + 5 BT + 4 FT + 4 PT + 4 LCD readiness + 4 UX-4 already counted). Previous phase UX-4 complete with 383 tests → now 418.
 
 ---
 
@@ -85,7 +85,17 @@ OPERATIONAL
 
 ## Frontend Status
 
-OPERATIONAL — build + browser workflow validated
+OPERATIONAL — production build + Vitest validated
+
+- Phase R1: `frontend/tsconfig.json` excludes `src/**/*.test.*` and `src/**/*.spec.*` from production `tsc`
+- Phase R2: new composer creation generates UUID-backed draft/toolset IDs for non-UUID inputs so `/drafts/{id}` reload succeeds and Add Tool can display registered tools
+- Phase R8: removed disconnected legacy frontend artifacts (`BacktestPanel`, old `api/backtest`, old `api/strategyRuns`, old `types/backtest`, `ToolPanel`, `ToolSetPanel`, `ConfiguredToolList`)
+- Phase P0: lifecycle gates hardened — `validate_draft()` promotes draft→validated on success; `DraftCreateRequest`/`DraftUpdateRequest` no longer accept `lifecycle_status`; `BacktestReportPage` promotion panel restricted to `validated` status only
+- Phase P3/P4/P5/P6: `PaperTradingPanel.tsx` — session list + create form + full operator view + Performance Analytics; `EquityCurveChart` (SVG, `pt-equity-curve`), `DrawdownSummary` (`pt-drawdown-summary`), `ReturnSummary` (`pt-return-summary`), `TradeOutcomeSummary` (`pt-trade-outcome`, `pt-no-completed-trades`); `MetricsSummary` (`pt-metrics`), Trade Ledger, Equity History table, raw Orders/Fills/Positions, action buttons
+- Phase UX-2: `StrategyLifecycleDashboard.tsx` — 6-stage lifecycle track, draft picker, next-action guidance, blockers, evidence summaries (BT/FT/PT), quick nav buttons, collapsible technical details; "Lifecycle" nav tab in App.tsx; 34 tests; refactored to use shared `computeGuidance`
+- Phase UX-3: `lifecycleGuidance.ts` (shared `computeGuidance`, `STAGE_LABELS`, `NavigateTarget`); `LifecycleGuidanceCard` (display-only, 9 testids); integrated into DraftWorkspace, BacktestReportPage, ForwardTestPanel.SessionOperatorView, PaperTradingPanel.SessionDetailView; 29 new tests (total frontend: 383)
+- `frontend/package.json` now exposes `npm test` as `vitest run`
+- Forward-test/auth test fixtures corrected for current TypeScript types
 
 - Vite + React 18 + TypeScript
 - `npm install` confirmed ✓
@@ -97,11 +107,9 @@ OPERATIONAL — build + browser workflow validated
 - Controls component (`Controls.tsx`) — provider/symbol/asset_class/exchange/timeframe/start/end + Fetch button
 - `frontend/src/api/marketData.ts` — typed client for `GET /market-data/ohlcv`
 - `frontend/src/types/strategy.ts` — `StrategySignalOverlay`, `StrategyForecastOverlay`, `StrategyOverlay` types
-- `frontend/vite.config.ts` — proxy: `/health`, `/market-data`, `/datasets`, `/strategy-runs`, `/tools`, `/drafts` → backend at :8000
+- `frontend/vite.config.ts` — proxy: `/health`, `/market-data`, `/datasets`, `/strategy-runs`, `/tools`, `/drafts`, `/semantics`, `/backtests`, `/auth`, `/provider-credentials`, `/catalog`, `/admin`, `/forward-tests`, `/paper-trading` → backend at :8000
 - `frontend/src/types/tools.ts` — `ToolConfigurationInstance` interface (mirrors backend ToolConfiguration)
 - `frontend/src/api/tools.ts` — typed `fetchTools()` client; `ToolListResponse`, `ToolMetadataResponse`, `ToolParameterResponse`
-- `frontend/src/components/ToolPanel.tsx` — collapsible tool discovery cards; loads from `GET /tools`
-- `frontend/src/components/ConfiguredToolList.tsx` — passive read-only display of `ToolConfigurationInstance[]`
 - `frontend/src/components/DraftWorkspace.tsx` — list/detail synchronization hardened after patch/reorder/toggle responses
 - `frontend/src/components/DraftDetailView.tsx` — per-draft validation/action state reset + lightweight request disabling
 - Draft Workspace browser workflow validated end-to-end via live frontend/backend session
@@ -178,8 +186,6 @@ Python: 3.13 | venv: `.venv/` at repo root
 - `backend/tools/validation.py` — `ConfigurationValidationError`, `validate_tool_configuration()`, `ToolSetValidationResult`, `validate_strategy_toolset_against_registry()`, `_check_type_compatibility()`
 - `backend/tools/toolset.py` — `StrategyToolSet` (frozen Pydantic v2; ordered tuple, duplicate instance_id rejection, get_tool/instance_ids/enabled_tools/__len__/__contains__)
 - `frontend/src/types/tools.ts` — `ToolConfigurationInstance` + `StrategyToolSetData` interfaces
-- `frontend/src/components/ConfiguredToolList.tsx` — passive configured-instance display component
-- `frontend/src/components/ToolSetPanel.tsx` — passive ordered toolset display with position numbers, color accents, param chips
 - `backend/strategy_registry/drafts.py` — `StrategyDraft` (frozen Pydantic v2; draft_id, display_name, toolset, created_at/updated_at UTC-enforced, enabled, tags, notes; `validate_against_registry()`)
 - `backend/strategy_registry/draft_repository.py` — `DraftRepository` (filesystem JSON; save/load/update/archive/delete/list_all; `DraftNotFoundError`, `DraftAlreadyExistsError`, `DraftPersistenceError`)
 - `backend/api/schemas/draft_composition.py` — `AddToolRequest`, `ReorderToolsRequest`, `PatchToolRequest`, `CompositionValidationResponse`
@@ -204,7 +210,6 @@ Python: 3.13 | venv: `.venv/` at repo root
 - `frontend/src/components/ToolCompositionPanel.tsx` — editable ordered toolset: reorder/enable/remove/patch params per tool
 - `frontend/src/components/AddToolForm.tsx` — inline add-tool form: tool picker, dynamic param inputs, coercion, backend error display
 - `frontend/src/api/marketData.ts` — typed `fetchOHLCV()` client
-- `frontend/src/api/strategyRuns.ts` — typed `runStrategy()` client; `IndicatorPoint`, `IndicatorSeries`, `StrategyRunResponse` with `indicators`
 - `frontend/src/types/strategy.ts` — `StrategySignalOverlay`, `StrategyForecastOverlay`, `StrategyOverlay` (includes `indicators`)
 - `frontend/src/components/Chart.tsx` — generic artifact renderer: candlestick + indicator line series (lifecycle-managed Map) + signal markers + forecast line
 - `frontend/src/components/Controls.tsx` — provider/symbol/timeframe/date-range controls

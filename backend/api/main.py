@@ -25,6 +25,7 @@ from backend.api.routes import auth
 from backend.api.routes import vault
 from backend.api.routes import admin
 from backend.api.routes import forward_testing
+from backend.api.routes import paper_trading
 
 setup_logging()
 
@@ -60,3 +61,4 @@ app.include_router(auth.router)
 app.include_router(vault.router)
 app.include_router(admin.router)
 app.include_router(forward_testing.router)
+app.include_router(paper_trading.router)

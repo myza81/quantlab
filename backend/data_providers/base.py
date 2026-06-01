@@ -20,6 +20,10 @@ class ProviderCapabilities(BaseModel):
 
     Describes what a provider supports so API layers and tooling can expose
     provider metadata without importing concrete adapter classes.
+
+    ``supports_search`` is False by default and set to True by
+    ProviderAdapterFactory.register_searcher() when a search callable is
+    registered for this provider.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -28,6 +32,7 @@ class ProviderCapabilities(BaseModel):
     display_name: str
     supported_timeframes: tuple[str, ...]
     supported_asset_classes: tuple[str, ...]
+    supports_search: bool = False
 
 
 class BaseDataAdapter(ABC):

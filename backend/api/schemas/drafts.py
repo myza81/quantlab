@@ -21,7 +21,13 @@ from backend.tools.toolset import StrategyToolSet
 # ---------------------------------------------------------------------------
 
 class DraftCreateRequest(BaseModel):
-    """Request body for POST /drafts."""
+    """
+    Request body for POST /drafts.
+
+    New drafts always start at the 'draft' lifecycle state.
+    lifecycle_status is intentionally absent — lifecycle transitions
+    must occur through explicit evidence-gated service methods only.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -32,7 +38,6 @@ class DraftCreateRequest(BaseModel):
     enabled: bool = True
     tags: list[str] = []
     notes: str | None = None
-    lifecycle_status: StrategyLifecycleStatus = StrategyLifecycleStatus.DRAFT
 
 
 class DraftUpdateRequest(BaseModel):
@@ -41,6 +46,10 @@ class DraftUpdateRequest(BaseModel):
 
     All fields are optional. Only explicitly provided fields are applied.
     Omitting a field leaves the existing value unchanged.
+
+    lifecycle_status is intentionally absent — lifecycle transitions
+    must occur through explicit evidence-gated service methods only
+    (e.g. POST /drafts/{id}/validate, POST /backtests/runs/{id}/promote-draft).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -51,7 +60,6 @@ class DraftUpdateRequest(BaseModel):
     enabled: bool | None = None
     tags: list[str] | None = None
     notes: str | None = None
-    lifecycle_status: StrategyLifecycleStatus | None = None
 
 
 # ---------------------------------------------------------------------------

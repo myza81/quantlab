@@ -1,3 +1,5 @@
+import type { ToolVisualizationSeries } from './toolVisualization'
+
 export type SignalType = 'long' | 'short' | 'exit' | 'reduce'
 export type ForecastDirection = 'long' | 'short' | 'neutral'
 
@@ -25,5 +27,5 @@ export interface StrategyForecastOverlay {
 export interface StrategyOverlay {
   signals: StrategySignalOverlay[]
   forecast: StrategyForecastOverlay | null
-  indicators: import('../api/strategyRuns').IndicatorSeries[]
+  indicators: ToolVisualizationSeries[]
 }

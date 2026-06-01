@@ -16,15 +16,16 @@ import { isAuthError } from '../api/client'
 import { fetchCredentials } from '../api/credentials'
 import type { CredentialMetadata } from '../types/credentials'
 import type { MarketDataParams } from '../api/marketData'
+import { AssetResolverInput } from './AssetResolverInput'
+import type { SelectedAsset } from './AssetResolverInput'
 
 interface ControlsProps {
   onFetch: (params: MarketDataParams) => void
   loading: boolean
 }
 
-const TIMEFRAMES    = ['1d', '1w', '1M', '1h', '30m', '15m', '5m', '1m']
-const ASSET_CLASSES = ['equity', 'etf', 'crypto', 'fx', 'future', 'index']
-const PROVIDERS     = ['yahoo', 'polygon']
+const TIMEFRAMES = ['1d', '1w', '1M', '1h', '30m', '15m', '5m', '1m']
+const PROVIDERS  = ['yahoo', 'polygon']
 
 // Providers that route through the vault — require a user-owned credential
 const CREDENTIALED_PROVIDERS = new Set(['polygon'])
@@ -41,13 +42,11 @@ function oneYearAgoStr(): string {
 export default function Controls({ onFetch, loading }: ControlsProps) {
   const { logout } = useAuth()
 
-  const [provider,    setProvider]    = useState('yahoo')
-  const [symbol,      setSymbol]      = useState('AAPL')
-  const [assetClass,  setAssetClass]  = useState('equity')
-  const [exchange,    setExchange]    = useState('NASDAQ')
-  const [timeframe,   setTimeframe]   = useState('1d')
-  const [start,       setStart]       = useState(oneYearAgoStr())
-  const [end,         setEnd]         = useState(todayStr())
+  const [provider,       setProvider]       = useState('yahoo')
+  const [selectedAsset,  setSelectedAsset]  = useState<SelectedAsset | null>(null)
+  const [timeframe,      setTimeframe]      = useState('1d')
+  const [start,          setStart]          = useState(oneYearAgoStr())
+  const [end,            setEnd]            = useState(todayStr())
 
   // Credential selection state (only used when provider is credentialed)
   const [allCredentials,     setAllCredentials]     = useState<CredentialMetadata[]>([])
@@ -86,16 +85,16 @@ export default function Controls({ onFetch, loading }: ControlsProps) {
   }, [provider, allCredentials])
 
   const needsCredential = CREDENTIALED_PROVIDERS.has(provider)
-  const canFetch = !loading && !(needsCredential && !credentialId)
+  const canFetch = !loading && !!selectedAsset && !(needsCredential && !credentialId)
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!canFetch) return
+    if (!canFetch || !selectedAsset) return
     onFetch({
       provider,
-      symbol,
-      asset_class:   assetClass,
-      exchange,
+      symbol:        selectedAsset.symbol,
+      asset_class:   selectedAsset.asset_class,
+      exchange:      selectedAsset.exchange || undefined,
       timeframe,
       start,
       end,
@@ -147,39 +146,20 @@ export default function Controls({ onFetch, loading }: ControlsProps) {
           </Field>
         )}
 
-        <div style={s.row2}>
-          <Field label="Symbol">
-            <input
-              data-testid="symbol-input"
-              value={symbol}
-              onChange={e => setSymbol(e.target.value.toUpperCase())}
-              style={s.input}
-              placeholder="AAPL"
-              required
-            />
-          </Field>
-          <Field label="Timeframe">
-            <select value={timeframe} onChange={e => setTimeframe(e.target.value)} style={s.input}>
-              {TIMEFRAMES.map(tf => <option key={tf} value={tf}>{tf}</option>)}
-            </select>
-          </Field>
-        </div>
+        <Field label="Asset">
+          <AssetResolverInput
+            selected={selectedAsset}
+            onSelect={setSelectedAsset}
+            provider={provider}
+            credentialId={needsCredential && credentialId ? credentialId : undefined}
+          />
+        </Field>
 
-        <div style={s.row2}>
-          <Field label="Asset Class">
-            <select value={assetClass} onChange={e => setAssetClass(e.target.value)} style={s.input}>
-              {ASSET_CLASSES.map(ac => <option key={ac} value={ac}>{ac}</option>)}
-            </select>
-          </Field>
-          <Field label="Exchange">
-            <input
-              value={exchange}
-              onChange={e => setExchange(e.target.value.toUpperCase())}
-              style={s.input}
-              placeholder="NASDAQ"
-            />
-          </Field>
-        </div>
+        <Field label="Timeframe">
+          <select value={timeframe} onChange={e => setTimeframe(e.target.value)} style={s.input}>
+            {TIMEFRAMES.map(tf => <option key={tf} value={tf}>{tf}</option>)}
+          </select>
+        </Field>
 
         <div style={s.row2}>
           <Field label="Start">

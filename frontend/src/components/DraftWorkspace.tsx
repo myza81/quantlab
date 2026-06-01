@@ -39,6 +39,21 @@ import {
 } from '../api/drafts'
 import { fetchTools } from '../api/tools'
 import { setSemantics, validateSemanticsPayload } from '../api/semantics'
+import { computeGuidance } from '../lib/lifecycleGuidance'
+import { LifecycleGuidanceCard } from './LifecycleGuidanceCard'
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function makePathSafeDraftId(input: string): string {
+  const trimmed = input.trim()
+  if (UUID_RE.test(trimmed)) return trimmed.toLowerCase()
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.floor(Math.random() * 16)
+    const v = c === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+}
 
 export function DraftWorkspace() {
   const { logout } = useAuth()
@@ -105,13 +120,14 @@ export function DraftWorkspace() {
 
   // Create new draft (empty toolset)
   async function handleCreateDraft(draftId: string, displayName: string) {
+    const pathSafeDraftId = makePathSafeDraftId(draftId)
     await createDraft({
-      draft_id: draftId,
+      draft_id: pathSafeDraftId,
       display_name: displayName,
-      toolset: { toolset_id: draftId, tools: [] },
+      toolset: { toolset_id: pathSafeDraftId, tools: [] },
     })
     await loadList()
-    await handleSelect(draftId.trim().toLowerCase())
+    await handleSelect(pathSafeDraftId)
   }
 
   // Archive → refresh list, clear selection if it was the archived draft
@@ -204,6 +220,10 @@ export function DraftWorkspace() {
     return validateSemanticsPayload(semantics)
   }
 
+  const dwGuidance = selectedDraft
+    ? computeGuidance({ lifecycleStatus: selectedDraft.lifecycle_status ?? 'draft' })
+    : null
+
   return (
     <div style={s.workspace}>
       {/* Left panel — draft list */}
@@ -232,6 +252,15 @@ export function DraftWorkspace() {
 
         {selectedId && !detailLoading && selectedDraft && (
           <div style={s.rightContent}>
+            {dwGuidance && (
+              <LifecycleGuidanceCard
+                currentStageLabel={dwGuidance.currentStageLabel}
+                nextAction={dwGuidance.nextAction}
+                whyItMatters={dwGuidance.whyItMatters}
+                blockers={dwGuidance.blockers}
+                navigateLocked={dwGuidance.navigateLocked}
+              />
+            )}
             <DraftDetailView
               key={`detail-${selectedDraft.draft_id}`}
               draft={selectedDraft}

@@ -293,3 +293,16 @@ class BacktestRunResponse(BaseModel):
     run_id: str
     status: str
     report: BacktestReport
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle promotion — Phase R3
+# ---------------------------------------------------------------------------
+
+class PromoteDraftRequest(BaseModel):
+    """Request body for POST /backtests/runs/{run_id}/promote-draft."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    notes: str | None = None

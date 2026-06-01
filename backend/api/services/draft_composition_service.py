@@ -26,8 +26,13 @@ from backend.api.schemas.draft_composition import (
     PatchToolRequest,
 )
 from backend.api.schemas.drafts import DraftResponse
+from backend.core.audit import AuditEvent, AuditEventKind, emit_audit_event
 from backend.strategy_registry.draft_repository import DraftRepository
 from backend.strategy_registry.drafts import StrategyDraft
+from backend.strategy_registry.lifecycle import (
+    StrategyLifecycleStatus,
+    validate_lifecycle_transition,
+)
 from backend.tools.configuration import ToolConfiguration
 from backend.tools.registry import ToolNotFoundError, ToolRegistry
 from backend.tools.toolset import StrategyToolSet
@@ -271,11 +276,37 @@ def validate_draft(
     """
     Validate the draft's toolset against the registry.
 
+    When validation succeeds and the draft is still in DRAFT status, promotes
+    the draft to VALIDATED and persists the transition. Drafts already at
+    VALIDATED or beyond are not downgraded — they simply receive the validation
+    result without a status change.
+
     Never raises — validation errors are surfaced in the response body.
     """
     draft = repository.load(draft_id, owner_id=owner_id)
     result = draft.validate_against_registry(registry)
+
+    promoted = False
+    if result.valid and draft.lifecycle_status == StrategyLifecycleStatus.DRAFT:
+        validate_lifecycle_transition(draft.lifecycle_status, StrategyLifecycleStatus.VALIDATED)
+        data = draft.model_dump()
+        data["lifecycle_status"] = StrategyLifecycleStatus.VALIDATED
+        data["updated_at"] = datetime.now(_UTC)
+        updated = StrategyDraft.model_validate(data)
+        repository.update(updated, owner_id=owner_id)
+        emit_audit_event(AuditEvent(
+            event_kind=AuditEventKind.GOV_PROMOTION_REQUESTED,
+            details={
+                "draft_id": draft_id,
+                "from_status": StrategyLifecycleStatus.DRAFT.value,
+                "to_status": StrategyLifecycleStatus.VALIDATED.value,
+                "user_id": owner_id,
+            },
+        ))
+        promoted = True
+
     return CompositionValidationResponse(
         valid=result.valid,
         errors=list(result.errors),
+        lifecycle_promoted=promoted,
     )
