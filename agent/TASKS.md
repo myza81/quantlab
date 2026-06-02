@@ -7,6 +7,103 @@ Not a historical archive — completed phase detail lives in `agent/archive/HAND
 
 # Current Phase Status
 
+**Phase Chart-UX-3C.1 — Indicator Workspace Refinement — COMPLETE**
+(backend: 4 847 ✓ unchanged | frontend: 471 ✓ | +5 new tests | frontend-only phase)
+- **`frontend/src/types/chartIndicators.ts`** — `IndicatorInstance` interface extended with three new fields: `instanceLabel` (compact label derived from tool abbreviation + parameters, e.g. "SMA (20)"), `instanceColor` (palette-assigned hex color string, set by ChartIndicatorPanel), `visible` (boolean flag for hide/show, default true)
+- **`frontend/src/components/ChartIndicatorPanel.tsx`** (rewritten, ~500 lines) — Complete UI overhaul to compact sidebar format:
+  - **Header**: "Indicators (N)" title + "Add Indicator" button (opens picker)
+  - **Picker dropdown**: Category groups (Trend/Momentum/Volatility/etc) + search by tool_id/display_name/description (reuses metadata)
+  - **Instance rows**: Compact display (swatch · label · eye/settings/remove actions) — one row per instance, no expansion
+  - **Collapsed editor**: Settings button opens parameter editor inline below row; Apply/Cancel buttons close editor; parameter changes trigger `computeArtifact` and update instanceLabel
+  - **Color palette**: `const INSTANCE_PALETTE = [10 distinct hex colors]`; `nextPaletteColor()` assigns sequentially; each new instance gets unique color
+  - **Clear All footer**: Removes all instances at once
+  - **State**: `[instances, showPicker, searchQuery, editingId, editedParams, metaLoading, metaError]`
+  - **Key functions**: `handleAddIndicator()` (adds instance with default params + calls computeArtifact), `handleToggleVisible()` (flip visible flag), `handleRemove()` (remove single), `handleClearAll()` (remove all), `handleApply()` (recompute + update label), `handleCancel()` (discard edits), `computeArtifact()` (call POST endpoint, store artifact in instance), `makeInstanceLabel()` (derive compact label from display_name abbrev + editable_parameters)
+  - **Helper**: `makeInstanceLabel()` — reads parameters from `editedParams[instanceId]`, formats as e.g. "SMA (20)" or "EMA (20, alpha=0.1)"
+  - **Reason**: Solves space consumption (forms → rows), visual distinctness (unique colors), and parameter persistence (artifacts stored per instance, not global)
+- **`frontend/src/components/Chart.tsx`** (modified from Chart-UX-3C) — Multi-oscillator pane rendering + color override:
+  - **New OscPane component** (~150 lines): Renders one pane per oscillator tool group (MACD, RSI, etc); filters null values (warmup bars); syncs time-scale bi-directionally with price chart; props: label, artifacts, instanceColors, priceChart
+  - **Updated main Chart component**: New props `instanceColors: Map<string, string>` (instance_id → hex color) and `indicatorArtifacts` (pre-filtered for visible+non-null). New state: `oscArtifactGroups` (useMemo, grouped by tool_id, filtered for oscillator_pane series). Multiple OscPane renders (one per group). Color override: single-series overlays (SMA20/50/200) use instanceColor from palette, overriding backend default_color (enables visual distinctness).
+  - **Artifact series lifecycle**: Separate map from strategy overlay (`artifactOscSeriesMapRef`); no interference with chart overlay pane oscillators
+  - **Null warmup handling**: Preserved through entire pipeline (artifact → OscPane → renderer); never rendered as zero
+  - **Reason**: Supports multi-instance indicator rendering with visual distinction; preserves oscillator pane visibility
+- **`frontend/src/App.tsx`** (integrated) — Sidebar layout + parent state:
+  - **Layout shift**: ChartIndicatorPanel moved from chart-area into left sidebar (alongside other controls)
+  - **State management**: Changed from `indicatorArtifacts: IndicatorArtifactResponse[]` to `indicatorInstances: IndicatorInstance[]` (holds full instance lifecycle)
+  - **Data derivation at Chart call-site**: `visibleArtifacts = indicatorInstances.filter(i => i.visible && i.artifact !== null).map(i => i.artifact!)` ; `instanceColors = new Map(indicatorInstances.map(i => [i.instanceId, i.instanceColor]))`
+  - **Reset on context change**: `setIndicatorInstances([])` on `handleFetch` / `handleCatalogLoad` (keyed reset behavior)
+  - **Sidebar style**: `overflow: 'auto'` allows vertical scrolling when many instances added
+  - **Reason**: Parents owns instances; derives filtered data via side effects at render boundary
+- **`frontend/src/components/__tests__/ChartIndicatorPanel.test.tsx`** — Comprehensive test suite (25 tests):
+  - **Render/load** (tests 1-3): Component renders, Add button present, metadata loads without error
+  - **Picker** (tests 4-7): Opens on Add click, category groups rendered, search by tool_id filters list, no-results state
+  - **Add flow** (tests 8-10): Calls computeArtifact with instance+params, compact row appears, no expanded editor on add
+  - **Editor** (tests 11-13): Settings opens editor inline, Cancel closes without recomputing, Apply recomputes and updates label
+  - **Multi-instance** (tests 14-16): Multiple instances have distinct labels and colors, visibility toggle works, hidden instances excluded from onInstancesChange
+  - **Removal** (tests 17-19): Remove single instance, others preserved, Clear All removes all
+  - **Integration** (tests 20-25): onInstancesChange called on add/remove/apply, error state during compute, catalog notice displayed, disabled state when meta loading, null warmup values preserved, metadata fetch error handled
+  - **Helper**: `renderPanel()` (accepts overrides for props/state, preserves null params via 'in' operator), `openPicker()` (waits for picker to open), `addIndicator()` (self-contained, clicks Add and waits for picker close)
+  - **Reason**: Ensures all UX flows are testable and reproducible; guides future maintenance
+- **TypeScript**: `tsc --noEmit` clean (removed unused `groupKey` parameter from OscPane signature and `currentInstances` parameter from computeArtifact function)
+- **All 466 existing tests remain green** (471 total including 5 from Chart-UX-3C API tests)
+
+**Phase Chart-UX-3B.1 — Metadata Consolidation — COMPLETE**
+(backend: 4 847 ✓ | +31 new tests | frontend: 437 ✓ unchanged | backend-only phase)
+- **`backend/tools/models.py`** — `ChartSeriesSpec` model added (frozen, extra=forbid; 5 required fields: series_id/label/pane/render_type/default_color); 9 new fields on `ToolMetadata` (all with safe defaults — backward-compatible): `chart_pane`, `chart_render_type`, `chart_series_kind`, `chart_category`, `chart_subcategory`, `chart_search_keywords`, `chart_display_order`, `chart_editable_parameters`, `chart_output_series`; `@model_validator(mode="after")` validates completeness for any `visible_on_chart=True` tool: (1) category must be indicator, (2) chart_pane/chart_render_type/chart_series_kind/chart_category/chart_output_series must all be non-None/non-empty — any violation raises ValueError at model construction time
+- **`backend/tools/sma.py`, `ema.py`, `rsi.py`, `macd.py`, `atr.py`, `bollinger_bands.py`** — all 6 tools declare full chart metadata inline in ToolMetadata: chart_pane, chart_render_type, chart_series_kind, chart_category, chart_subcategory, chart_search_keywords, chart_display_order, chart_editable_parameters, chart_output_series (with ChartSeriesSpec instances); import `ChartSeriesSpec` added to each tool file
+- **`backend/tools/__init__.py`** — `ChartSeriesSpec` exported from tools package
+- **`backend/api/services/chart_indicator_service.py`** — `_CHART_DISPLAY_METADATA` static dict removed entirely; `list_chart_indicators()` rebuilt to read only from ToolMetadata fields (no secondary dict); `compute_indicator_artifact()` reads `metadata.chart_pane`, `metadata.chart_output_series`, `metadata.name` etc. directly; `_empty_artifact` and `_build_artifact_response` refactored to accept `metadata: ToolMetadata` instead of `display: dict`; chart is now fully registry-driven — adding a new tool never requires modifying this file
+- **`tests/unit/test_chart_indicator_api.py`** — 31 new tests: `TestChartMetadataMigration` (11 — parametrized pane+category check for 6 tools; completeness check for all 6; MACD 3-series IDs in metadata; MACD histogram render_type; BB 3-series IDs; series_ids align with output_feature_names; subcategory for SMA+EMA; display_order ordering), `TestRegistryDrivenDiscovery` (3 — no static dict in service module; new custom tool appears automatically in GET /chart/indicators; response fields reflect ToolMetadata not external dict), `TestChartMetadataValidation` (4 — missing chart_pane raises; missing output_series raises; wrong category raises; False bypasses all validation), `TestChartSeriesSpec` (4 — creation/frozen/extra-forbidden/exported)
+- **All 54 original Chart-UX-3B tests remain green**
+
+**Phase Chart-UX-3B — Backend Indicator Artifact Endpoint — COMPLETE**
+(backend: 4 816 ✓ | +54 new tests | frontend: 437 ✓ unchanged | backend-only phase)
+- **`backend/tools/models.py`** — `visible_on_chart: bool = False` added to `ToolMetadata` (optional field with default, backward-compatible with all existing test fixtures and tool registrations)
+- **`backend/tools/sma.py`, `ema.py`, `rsi.py`, `macd.py`, `atr.py`, `bollinger_bands.py`** — all 6 built-in tools set `visible_on_chart=True`
+- **`backend/api/schemas/chart.py`** (NEW): `IndicatorArtifactRequest` (tool_id, instance_id, symbol, provider, timeframe, date_range, parameters, asset_class, exchange, credential_id); `IndicatorSeriesPoint` (timestamp str + Optional[float] value); `IndicatorArtifactSeries` (series_id, label, pane, render_type, default_color, values); `IndicatorArtifactResponse` (tool_id, instance_id, display_name, pane, render_type, parameters, series, warmup_bars, diagnostics); `ChartIndicatorMetadata` + `ChartIndicatorsListResponse` for picker
+- **`backend/api/services/chart_indicator_service.py`** (NEW): `ToolNotChartVisibleError`, `IndicatorArtifactError`, `IndicatorParameterError` exceptions; `_CHART_DISPLAY_METADATA` static dict (6 tools — bridges gap until Chart-UX-3D migrates into ToolMetadata); `list_chart_indicators(registry)` (filters `visible_on_chart=True` AND `category=indicator`, stable sort by category+tool_id); `compute_indicator_artifact(...)` (14-arg function: validates visibility, resolves vault API key via existing `_resolve_provider_api_key`, builds OHLCVService adapter, fetches candles, converts to `ToolComputationBarInput`, creates single-tool `StrategyToolSet`, calls `compute_tool_outputs_for_history`, builds timestamp-aligned response with null for warmup bars); `_build_artifact_response` (max warmup across all series; per-bar null/value mapping using output_name → {bar_index: value} dict)
+- **`backend/api/routes/chart.py`** (NEW): `router = APIRouter(prefix="/chart")`; `GET /chart/indicators` (intentionally public, no auth); `POST /chart/indicator-artifact` (`require_active_subscription`); exception mapping: `ToolNotFoundError→404`, `ToolNotChartVisibleError→400`, `IndicatorParameterError→422`, `IndicatorArtifactError→400`
+- **`backend/api/main.py`** — `chart.router` imported and registered
+- **`tests/unit/test_chart_indicator_api.py`** (NEW, 54 tests): indicator list (9 tests), artifact auth/validation (3), SMA (8 incl. warmup null, timestamp presence, count alignment), EMA (3), RSI (3), MACD (5 incl. 3-series, histogram render_type, max warmup), Bollinger (3), ATR (3), no-data (2), computation consistency (4 — SMA/EMA/MACD/Bollinger chart values == `compute_tool_outputs_for_history` direct call for identical bars), `visible_on_chart` field tests (7 — default False, all 6 builtins True)
+- **Pre-existing unrelated failure**: 6 tests in `test_polygon_provider.py::TestPolygonArchitectureBoundary` fail due to stale `/Volumes/externalDrive/...` path on this machine; not introduced by this phase
+
+**Phase Chart-UX-3A.1 — Chart Indicator Tool Contract Hardening — COMPLETE**
+(backend: 4 762 ✓ unchanged | frontend: 437 ✓ unchanged | no code changes — governance/documentation phase)
+- **`docs/CHART_INDICATOR_TOOL_CONTRACT.md`** updated from 15 sections to 20 sections:
+  - **§4 Tool-Type Taxonomy** (NEW): `indicator` / `strategy_helper` / `risk_helper` / `portfolio_helper` / `execution_helper` / `analysis_helper`; only `tool_type=indicator` may declare `visible_on_chart=true`; §4.7 enforcement rule: registry validation must reject chart-visibility for non-indicator types
+  - **§5** (was §4): renamed "Chart Rendering Classification" to clarify it governs HOW chart-visible tools render, not WHAT tool type they are; §5.6 "Non-Visual Indicator" clarified as an indicator that elects not to be chart-visible (distinct from non-indicator tool types)
+  - **§6** (was §5): added `tool_type` as first required field in table; updated §6.3 reference metadata to include discovery fields for all 6 tools
+  - **§7 Tool Discovery Metadata** (NEW): `category`, `subcategory`, `search_keywords`, `display_order`; category enum (Trend/Momentum/Volatility/Volume/Market Structure/Pattern Recognition/Risk/Custom); picker must be fully metadata-driven; §7.4 category assignment table for all 6 existing tools
+  - **§8** (was §6): unchanged, renumbered
+  - **§9 Multiple Indicator Instance Support** (NEW): `tool_id` vs `instance_id` separation; same tool, multiple independent concurrent instances (e.g. ema_20 + ema_50 + ema_200); instance isolation rules; instance_id assignment patterns; indicator lifecycle; alignment with `ToolConfiguration.instance_id` in Strategy Builder
+  - **§10 Indicator Presets** (NEW): `preset_id`/`name`/`tool_id`/`parameters`; 9 built-in platform presets (EMA 20/50/200, SMA 20/50/200, RSI 14, MACD Standard, BB 20,2); presets are convenience wrappers only — no separate computation; user-defined presets deferred to Chart-UX-3E
+  - **§11–§13** (were §7–§9): renumbered; §12.1 updated to reference `instance_id` per §9; §13.1 updated to clarify `instance_id` echo in response
+  - **§14** (was §10): extended onboarding checklist by 6 new items (tool_type, discovery metadata fields, multi-instance isolation, preset registration)
+  - **§15 Experimental Indicator Promotion Lifecycle** (NEW): Research Sandbox → Experimental → Validated → Registry Tool → Chart-Visible → Strategy Usage → Backtest/FT/PT; promotion gates for each transition; demotion requires deprecation, not silent rollback
+  - **§16** (was §11): §16.4 updated (covers both `tool_type` and `visible_on_chart`); §16.7 (NEW — non-indicator tools cannot be chart-visible without explicit contract revision); §16.8 (NEW — hardcoded indicator picker UI forbidden)
+  - **§17** (was §12): §17.7 (NEW — tool-type taxonomy tests); §17.8 (NEW — discovery metadata tests); §17.9 (NEW — multi-instance isolation tests); §17.10 (NEW — preset tests)
+  - **§18** (was §13): roadmap updated — 3B now includes `GET /chart/indicators` endpoint and tool_type enforcement; 3C now includes multi-instance and preset picker
+  - **§19–§20** (were §14–§15): renumbered; §20 added new alignment notes for `_TOOL_DISPATCHERS` tool_type enforcement gap and missing `tool_type` field in existing tool metadata objects
+
+**Phase Chart-UX-3A — Chart Indicator Tool Contract — COMPLETE**
+(backend: 4 762 ✓ unchanged | frontend: 437 ✓ unchanged | no code changes — architecture/documentation phase)
+- **`docs/CHART_INDICATOR_TOOL_CONTRACT.md`** (NEW) — 15-section architecture contract:
+  - §1 Purpose: extends `TOOL_REGISTRY_CONTRACT.md` for chart-visible tools
+  - §2 Problem statement: tools usable in Strategy Builder but not on Chart page; Bollinger Bands backend complete but frontend not wired
+  - §3 Design principle: one tool, one computation, multiple consumers (Chart / Strategy Builder / Backtest / Forward Test / Paper Trading)
+  - §4 Tool classification: 6 categories — overlay indicator, oscillator/separate-pane, multi-series, event/marker, drawing object (out of scope), non-visual/internal helper
+  - §5 Visualization metadata contract: 9 required fields (`visible_on_chart`, `chart_pane`, `render_type`, `series_kind`, `default_parameters`, `editable_parameters`, `source_field`, `warmup_bars_required`, `output_series`, `display_name`, `description`); `OutputSeriesSpec` sub-schema; non-normative reference metadata for all 6 existing tools (sma/ema/rsi/macd/bollinger_bands/atr)
+  - §6 Overlay vs pane behavior: price overlay / oscillator pane / event markers / multi-pane rules
+  - §7 Parameter editing rules: editable_parameters must be subset of tool's registered schema; chart and Strategy Builder share same schema; parameter changes trigger backend recomputation
+  - §8 Backend computation rule: frontend sends (tool_id, instance_id, symbol, timeframe, provider, date_range, parameters); backend computes via existing `_TOOL_DISPATCHERS`
+  - §9 Indicator artifact response contract: conceptual shape with timestamps/values/null warmup/diagnostics; series alignment requirement
+  - §10 Future custom tool onboarding: 10-item checklist; non-visual tools must declare `visible_on_chart: false`
+  - §11 Forbidden patterns: 6 explicit violations — frontend-only official computation, duplicate formulas, hardcoded tool-specific rendering, missing `visible_on_chart`, bypassing normalized data, strategy-identity-aware chart rendering
+  - §12 Testing expectations: 6 test categories — metadata registration, parameter schema mapping, backend computation consistency, chart artifact rendering, warmup/null behavior, overlay vs pane classification
+  - §13 Phased roadmap: Chart-UX-3B (backend endpoint) → Chart-UX-3C (frontend panel) → Chart-UX-3D (onboard 6 tools) → Chart-UX-3E (promotion workflow)
+  - §14 Architectural alignment: references §9, §3/4, §27 of ARCHITECTURE_GUARDRAILS.md
+  - §15 Existing code alignment notes: Chart.tsx overlay wiring, toolVisualization.ts types, `_TOOL_DISPATCHERS` integration point, Bollinger Bands backend-complete status, /chart/ route prefix needed
+
 **Phase Chart-UX-2 — Provider Search Capability & Polygon Resolver — COMPLETE**
 (backend: 4 762 ✓ | frontend: 437 ✓ | `npm run build` ✓)
 - **`backend/data_providers/base.py`** — `ProviderCapabilities.supports_search: bool = False` field added
@@ -432,11 +529,37 @@ Not a historical archive — completed phase detail lives in `agent/archive/HAND
 
 **Phase 3S-B — Critical Security & Runtime Boundary Fixes — COMPLETE**
 
-Completed phases: UX-4, UX-3, UX-2, P8C, P8B, P8A, P7, P6, P5, P4, P3, P2, P1, P0, R8, R7, R6, R5, R4, R3, R2, R1, 4E.4, 4E.3, 4E.2, 4E.1, 4D, 4C.6, 4C.5, 4C.4, 4C.3A, 4C.3, 4C.2, 4C.1, 4B, 4A.5, 4A.4, 4A.3, 4A.2, 4A.1, 3S-D, 3S-C, 3S-B, 3P-E, 3P-D, 3P-C, 3P-B.1, 3P-B, 3P-A.1, 3P-A, 3O, 3N, 3M.1, 3M, 3L, 3J, 3I, 3H, 3G, 3F, 3E, 3D, 3C, 3B, 3A, 2T–2U, 2N–2S, 2J–2M, 2D–2I, 2A–2C
+Completed phases: Chart-UX-3C, Chart-UX-3B.1, Chart-UX-3B, Chart-UX-3A.1, Chart-UX-3A, UX-4, UX-3, UX-2, P8C, P8B, P8A, P7, P6, P5, P4, P3, P2, P1, P0, R8, R7, R6, R5, R4, R3, R2, R1, 4E.4, 4E.3, 4E.2, 4E.1, 4D, 4C.6, 4C.5, 4C.4, 4C.3A, 4C.3, 4C.2, 4C.1, 4B, 4A.5, 4A.4, 4A.3, 4A.2, 4A.1, 3S-D, 3S-C, 3S-B, 3P-E, 3P-D, 3P-C, 3P-B.1, 3P-B, 3P-A.1, 3P-A, 3O, 3N, 3M.1, 3M, 3L, 3J, 3I, 3H, 3G, 3F, 3E, 3D, 3C, 3B, 3A, 2T–2U, 2N–2S, 2J–2M, 2D–2I, 2A–2C
 
 ---
 
 # Immediate Active Roadmap
+
+## Phase Chart-UX-3 — Chart Indicator Tool Implementation
+
+**Implementation authority:** `docs/CHART_INDICATOR_TOOL_CONTRACT.md`
+
+### Phase Chart-UX-3A — Contract and Architecture
+**Status:** COMPLETE (architecture/doc phase; no code changes)
+- `docs/CHART_INDICATOR_TOOL_CONTRACT.md` created; full contract for how tools become chart indicators
+
+### Phase Chart-UX-3B — Backend Indicator Artifact Endpoint
+**Status:** COMPLETE (54 tests; 4 816 backend total)
+**Scope:** `IndicatorArtifactRequest` / `IndicatorArtifactResponse` schemas; `POST /chart/indicator-artifact` route; OHLCVService data resolution; `_TOOL_DISPATCHERS` dispatch; warmup null values; auth: `require_active_subscription`; backend unit tests
+
+### Phase Chart-UX-3C — Frontend Indicator Panel and Parameter Editor
+**Status:** COMPLETE (29 new tests; 466 frontend total)
+**Scope:** Chart indicator picker (tool discovery from backend); parameter editor driven by tool metadata; indicator artifact fetch on add/change; overlay rendering for price-pane indicators; oscillator pane rendering; null gap handling; no in-browser computation; frontend tests
+
+### Phase Chart-UX-3D — Onboard Existing Tools
+**Status:** PENDING (depends on 3C)
+**Scope:** Add `visible_on_chart: true` + full visualization metadata to sma/ema/rsi/macd/bollinger_bands/atr; Bollinger Bands 3-series overlay wiring; MACD 3-series oscillator wiring; backend computation consistency tests; frontend rendering tests
+
+### Phase Chart-UX-3E — Custom Indicator Promotion Workflow
+**Status:** PENDING (depends on 3D)
+**Scope:** Promotion checklist UI; backend metadata validation (chart-visible = must have complete output_series); backend series_id ↔ strategy output reference consistency check; developer guide for adding new chart-visible tools
+
+---
 
 ## Phase 4E — Paper Trading Implementation
 
