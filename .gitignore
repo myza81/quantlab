@@ -127,7 +127,9 @@ desktop.ini
 *.dll
 
 # ─── Runtime Storage ───────────────────────────────────────────────────────────
-storage/
+# Exclude the top-level runtime storage directory (Parquet/cache data files).
+# Use /storage/ so it only matches at the repo root, not backend/storage/ (source code).
+/storage/
 
 # ─── Runtime Data (users, credentials, vault) ──────────────────────────────────
 # These files contain sensitive runtime state and must never be committed.
