@@ -221,17 +221,20 @@ function OscPane({ label, artifacts, instanceColors, priceChart, height = DEFAUL
     priceChart.timeScale().subscribeVisibleTimeRangeChange(syncFromPrice)
     chart.timeScale().subscribeVisibleTimeRangeChange(syncFromOsc)
 
-    // Crosshair sync: price chart → this oscillator pane (one-directional)
-    const syncCrosshair = (param: MouseEventParams) => {
-      if (!param.time) {
-        chart.clearCrosshairPosition()
+    // Crosshair sync: price chart → this oscillator pane (one-directional).
+    // param can be null when the chart fires the event to signal "no position".
+    // setCrosshairPosition can throw if the hovered timestamp has no matching bar
+    // in the oscillator time scale — guard with try/catch.
+    const syncCrosshair = (param: MouseEventParams | null) => {
+      if (!param || !param.time || seriesMapRef.current.size === 0) {
+        try { chart.clearCrosshairPosition() } catch { /* chart not ready */ }
         return
       }
       const firstSeries = [...seriesMapRef.current.values()][0]
       if (!firstSeries) return
       const val = timeValueMapRef.current.get(param.time as number)
       if (val !== undefined) {
-        chart.setCrosshairPosition(val, param.time, firstSeries)
+        try { chart.setCrosshairPosition(val, param.time, firstSeries) } catch { /* time out of range */ }
       }
     }
 
