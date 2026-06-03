@@ -1,18 +1,31 @@
 /**
- * Chart.tsx — Chart-UX-3C.2.
+ * Chart.tsx — Chart-UX-3C.3A (Time Synchronization Hardening).
  *
- * Changes from Chart-UX-3C.1:
- *  - Time-scale sync: replaced logical-range sync with time-range sync
- *    (subscribeVisibleTimeRangeChange / setVisibleRange) so price chart and
- *    oscillator panes stay aligned even when they have different bar counts.
- *  - Crosshair sync: price chart crosshair position mirrored to all oscillator
- *    panes (one-directional: price → oscillators).
- *  - Resizable panes: DragSplitter component between panes; oscPaneHeights state
- *    in Chart; OscPane accepts a height prop and ResizeObserver tracks height too.
- *  - indicatorArtifacts prop carries pre-patched colors from App.tsx so Chart
- *    has no dependency on seriesColorOverrides — colors arrive via series.default_color.
+ * Root-cause fix for horizontal drift between price chart and oscillator panes:
  *
- * Null warmup values (value: null) are filtered before rendering — never zero.
+ *   Problem: warmup-null values were filtered before setData, so oscillator panes
+ *   had fewer bars than the price chart.  When setVisibleRange was called with a
+ *   timestamp in the warmup gap, lightweight-charts clamped to the first available
+ *   bar and the pane appeared shifted.  With bidirectional sync, this clamped range
+ *   could echo back to the price chart, fighting the intended position.
+ *
+ *   Fix 1 — Full timestamp domain: warmup bars are now included as WhitespaceData
+ *   ({ time: T } with no value).  Every oscillator pane shares the exact same bar
+ *   sequence as the price chart, so setVisibleRange positions correctly at any zoom.
+ *
+ *   Fix 2 — One-directional sync (price → oscillators): oscillator time-scale changes
+ *   no longer propagate back to the price chart.  This eliminates echo-back drift and
+ *   all feedback-loop risk.  Tradeoff: scrolling inside an oscillator pane no longer
+ *   drives the price chart.  Oscillators resync on the next price-chart scroll event.
+ *
+ *   Fix 3 — normalizeChartData: sort + dedupe all data before setData to prevent
+ *   out-of-order or duplicate timestamp errors from the chart library.
+ *
+ *   Fix 4 — No fitContent after indicator updates: setVisibleRange(priceRange) is
+ *   applied instead, preserving user zoom/scroll.  fitContent only runs on initial
+ *   candle load.
+ *
+ * All other behavior (crosshair sync, color overrides, resizable panes) is preserved.
  */
 import { useEffect, useRef, useState, useMemo } from 'react'
 import {
@@ -34,11 +47,14 @@ import type {
   SeriesMarker,
   IRange,
   MouseEventParams,
+  LineData,
+  HistogramData,
+  WhitespaceData,
 } from 'lightweight-charts'
 import type { OHLCVCandle } from '../api/marketData'
 import type { ToolVisualizationSeries } from '../types/toolVisualization'
 import type { StrategyOverlay } from '../types/strategy'
-import type { IndicatorArtifactResponse } from '../types/chartIndicators'
+import type { IndicatorArtifactResponse, IndicatorSeriesPoint } from '../types/chartIndicators'
 
 interface ChartProps {
   candles: OHLCVCandle[]
@@ -69,9 +85,9 @@ const _CHART_THEME = {
   crosshair: { mode: 1 },
   rightPriceScale: { borderColor: '#2a2d3e' },
   timeScale: {
-    borderColor: '#2a2d3e',
-    timeVisible: true,
-    secondsVisible: false,
+    borderColor:     '#2a2d3e',
+    timeVisible:     true,
+    secondsVisible:  false,
   },
 }
 
@@ -102,34 +118,80 @@ const _OSCILLATOR_REFERENCE_GUIDES: OscillatorReferenceGuide[] = [
   },
 ]
 
-const MIN_OSC_HEIGHT    = 80
+const MIN_OSC_HEIGHT     = 80
 const DEFAULT_OSC_HEIGHT = 130
+
+// ---------------------------------------------------------------------------
+// Data-normalization helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Sort by time ascending + deduplicate (last occurrence wins for duplicate
+ * timestamps).  Does NOT mutate the input array.
+ */
+function normalizeChartData<T extends { time: UTCTimestamp }>(data: readonly T[]): T[] {
+  const map = new Map<number, T>()
+  for (const d of data) map.set(d.time as number, d)
+  return [...map.values()].sort((a, b) => (a.time as number) - (b.time as number))
+}
+
+/**
+ * Build a line-series data array aligned to the full candle timestamp domain.
+ * Candle timestamps that have no indicator value (warmup bars) become
+ * WhitespaceData items ({ time: T }), anchoring the oscillator's time axis to
+ * the same bar sequence as the price chart.
+ */
+function buildAlignedLineData(
+  values: IndicatorSeriesPoint[],
+  candleTimestamps: UTCTimestamp[],
+): Array<LineData<Time> | WhitespaceData<Time>> {
+  const byTs = new Map<number, number | null>()
+  for (const v of values) {
+    if (v.timestamp) byTs.set(toUTCTimestamp(v.timestamp), v.value)
+  }
+  return candleTimestamps.map(ts => {
+    const val = byTs.get(ts)
+    return (val !== null && val !== undefined)
+      ? ({ time: ts as Time, value: val } as LineData<Time>)
+      : ({ time: ts as Time } as WhitespaceData<Time>)
+  })
+}
+
+/**
+ * Build a histogram-series data array aligned to the full candle timestamp domain.
+ */
+function buildAlignedHistData(
+  values: IndicatorSeriesPoint[],
+  candleTimestamps: UTCTimestamp[],
+): Array<HistogramData<Time> | WhitespaceData<Time>> {
+  const byTs = new Map<number, number | null>()
+  for (const v of values) {
+    if (v.timestamp) byTs.set(toUTCTimestamp(v.timestamp), v.value)
+  }
+  return candleTimestamps.map(ts => {
+    const val = byTs.get(ts)
+    return (val !== null && val !== undefined)
+      ? ({ time: ts as Time, value: val, color: val >= 0 ? '#26a69a' : '#ef5350' } as HistogramData<Time>)
+      : ({ time: ts as Time } as WhitespaceData<Time>)
+  })
+}
 
 // ---------------------------------------------------------------------------
 // DragSplitter — thin draggable divider between panes
 // ---------------------------------------------------------------------------
 
-interface DragSplitterProps {
-  onDrag: (delta: number) => void
-}
-
-function DragSplitter({ onDrag }: DragSplitterProps) {
+function DragSplitter({ onDrag }: { onDrag: (delta: number) => void }) {
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()
     let lastY = e.clientY
-    const onMove = (ev: MouseEvent) => {
-      const delta = ev.clientY - lastY
-      lastY = ev.clientY
-      onDrag(delta)
-    }
-    const onUp = () => {
+    const onMove = (ev: MouseEvent) => { onDrag(ev.clientY - lastY); lastY = ev.clientY }
+    const onUp   = () => {
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
   }
-
   return (
     <div
       data-testid="pane-splitter"
@@ -145,46 +207,44 @@ const splitterStyle: React.CSSProperties = {
   background: '#0f0f1a',
   borderTop:  '1px solid #1e1e30',
   flexShrink: 0,
-  position:   'relative' as const,
+  position:   'relative',
   zIndex:     10,
 }
 
 // ---------------------------------------------------------------------------
-// OscPane — one dynamic oscillator pane per indicator tool group
+// OscPane — one oscillator pane per indicator tool group
 // ---------------------------------------------------------------------------
 
 interface OscPaneProps {
-  label: string
-  artifacts: IndicatorArtifactResponse[]
-  instanceColors?: Map<string, string>
-  priceChart: IChartApi | null
-  height?: number
+  label:             string
+  artifacts:         IndicatorArtifactResponse[]
+  instanceColors?:   Map<string, string>
+  /** Full price-chart timestamp sequence — used for whitespace alignment */
+  candleTimestamps:  UTCTimestamp[]
+  /** Price chart API reference — sync source (one-directional: price → osc) */
+  priceChart:        IChartApi | null
+  height?:           number
 }
 
-function OscPane({ label, artifacts, instanceColors, priceChart, height = DEFAULT_OSC_HEIGHT }: OscPaneProps) {
-  const containerRef   = useRef<HTMLDivElement>(null)
-  const chartRef       = useRef<IChartApi | null>(null)
-  const seriesMapRef   = useRef<Map<string, AnySeriesApi>>(new Map())
-  // time (UTCTimestamp) → first-series value — used for crosshair sync
+function OscPane({
+  label, artifacts, instanceColors, candleTimestamps, priceChart, height = DEFAULT_OSC_HEIGHT,
+}: OscPaneProps) {
+  const containerRef    = useRef<HTMLDivElement>(null)
+  const chartRef        = useRef<IChartApi | null>(null)
+  const seriesMapRef    = useRef<Map<string, AnySeriesApi>>(new Map())
+  // UTCTimestamp → first-series value — for crosshair position lookup
   const timeValueMapRef = useRef<Map<number, number>>(new Map())
+  // Guards re-entrant price→osc sync calls
+  const isSyncingRef    = useRef(false)
 
-  // Create the oscillator chart once on mount
+  // Create oscillator chart once on mount
   useEffect(() => {
     if (!containerRef.current) return
-
-    const chart = createChart(containerRef.current, {
-      ..._CHART_THEME,
-      height,
-    })
+    const chart = createChart(containerRef.current, { ..._CHART_THEME, height })
     chartRef.current = chart
 
     const ro = new ResizeObserver(entries => {
-      for (const e of entries) {
-        chart.applyOptions({
-          width:  e.contentRect.width,
-          height: e.contentRect.height,
-        })
-      }
+      for (const e of entries) chart.applyOptions({ width: e.contentRect.width, height: e.contentRect.height })
     })
     ro.observe(containerRef.current)
 
@@ -196,38 +256,27 @@ function OscPane({ label, artifacts, instanceColors, priceChart, height = DEFAUL
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Time-scale sync + crosshair sync when price chart becomes available
+  // One-directional time-scale sync: price chart → this pane.
+  // Oscillator range changes do NOT propagate back to the price chart.
+  // Rationale: bidirectional sync caused clamped oscillator ranges to echo back
+  // when the oscillator lacked warmup-period timestamps.  With full timestamp
+  // alignment (whitespace bars) the oscillator can handle any price-chart range,
+  // making one-directional sync sufficient and echo-free.
   useEffect(() => {
     const chart = chartRef.current
     if (!chart || !priceChart) return
 
-    let syncing = false
-
     const syncFromPrice = (range: IRange<Time> | null) => {
-      // Skip if no data loaded yet — setVisibleRange throws "Value is null" on empty charts
-      if (syncing || !range || seriesMapRef.current.size === 0) return
-      syncing = true
+      if (isSyncingRef.current || !range || seriesMapRef.current.size === 0) return
+      isSyncingRef.current = true
       try { chart.timeScale().setVisibleRange(range) } catch { /* chart not ready */ }
-      syncing = false
+      isSyncingRef.current = false
     }
 
-    const syncFromOsc = (range: IRange<Time> | null) => {
-      if (syncing || !range) return
-      syncing = true
-      try { priceChart.timeScale().setVisibleRange(range) } catch { /* chart not ready */ }
-      syncing = false
-    }
-
-    priceChart.timeScale().subscribeVisibleTimeRangeChange(syncFromPrice)
-    chart.timeScale().subscribeVisibleTimeRangeChange(syncFromOsc)
-
-    // Crosshair sync: price chart → this oscillator pane (one-directional).
-    // param can be null when the chart fires the event to signal "no position".
-    // setCrosshairPosition can throw if the hovered timestamp has no matching bar
-    // in the oscillator time scale — guard with try/catch.
+    // Crosshair sync: price chart → this pane (one-directional)
     const syncCrosshair = (param: MouseEventParams | null) => {
       if (!param || !param.time || seriesMapRef.current.size === 0) {
-        try { chart.clearCrosshairPosition() } catch { /* chart not ready */ }
+        try { chart.clearCrosshairPosition() } catch { /* ignore */ }
         return
       }
       const firstSeries = [...seriesMapRef.current.values()][0]
@@ -238,79 +287,76 @@ function OscPane({ label, artifacts, instanceColors, priceChart, height = DEFAUL
       }
     }
 
+    priceChart.timeScale().subscribeVisibleTimeRangeChange(syncFromPrice)
     priceChart.subscribeCrosshairMove(syncCrosshair)
 
     return () => {
       priceChart.timeScale().unsubscribeVisibleTimeRangeChange(syncFromPrice)
-      chart.timeScale().unsubscribeVisibleTimeRangeChange(syncFromOsc)
       priceChart.unsubscribeCrosshairMove(syncCrosshair)
     }
   }, [priceChart])
 
-  // Update series when artifacts or colors change
+  // Rebuild series when artifacts, colors, or candle timestamps change.
+  // Uses buildAlignedLineData/buildAlignedHistData so every candle timestamp
+  // is represented (warmup bars as whitespace).
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
 
     for (const s of seriesMapRef.current.values()) {
-      try { chart.removeSeries(s) } catch { /* ignore */ }
+      try { chart.removeSeries(s) } catch { /* already gone */ }
     }
     seriesMapRef.current.clear()
     timeValueMapRef.current.clear()
 
     for (const artifact of artifacts) {
-      const oscSeries = artifact.series.filter(s => s.pane === 'oscillator_pane')
+      const oscSeries      = artifact.series.filter(s => s.pane === 'oscillator_pane')
       const isSingleSeries = oscSeries.length === 1
       const instanceColor  = instanceColors?.get(artifact.instance_id)
-      let firstSeriesPopulated = false
+      let firstPopulated   = false
 
       for (const series of oscSeries) {
         const key = `${artifact.instance_id}.${series.series_id}`
-        const points = series.values
-          .filter(p => p.value !== null && p.timestamp)
-          .map(p => ({ time: toUTCTimestamp(p.timestamp) as Time, value: p.value as number }))
-
-        if (points.length === 0) continue
 
         if (series.render_type === 'histogram') {
+          const data = buildAlignedHistData(series.values, candleTimestamps)
+          if (data.every(d => !('value' in d))) continue  // all whitespace → skip
           const s = chart.addSeries(HistogramSeries, {
             priceLineVisible: false,
             lastValueVisible: true,
-            title: series.label,
+            title:            series.label,
           })
-          s.setData(points.map(p => ({
-            ...p,
-            color: p.value >= 0 ? '#26a69a' : '#ef5350',
-          })))
+          s.setData(data)
           seriesMapRef.current.set(key, s)
         } else {
-          // Colors arrive pre-patched in series.default_color from App.tsx.
-          // instanceColor (palette) still covers the single-series case where
-          // the user hasn't yet picked a custom color.
           const color = (isSingleSeries && instanceColor) ? instanceColor : series.default_color
+          const data  = buildAlignedLineData(series.values, candleTimestamps)
+          if (data.every(d => !('value' in d))) continue  // all whitespace → skip
           const s = chart.addSeries(LineSeries, {
             color,
             lineWidth:              1,
             crosshairMarkerVisible: false,
             lastValueVisible:       true,
             priceLineVisible:       false,
-            title: series.label,
+            title:                  series.label,
           })
-          s.setData(points)
+          s.setData(data)
           seriesMapRef.current.set(key, s)
-        }
 
-        // Populate the time→value map for crosshair sync from the first series
-        if (!firstSeriesPopulated && series.render_type !== 'histogram') {
-          for (const p of points) {
-            timeValueMapRef.current.set(p.time as number, p.value)
+          // Populate time→value lookup for crosshair sync
+          if (!firstPopulated) {
+            for (const p of data) {
+              if ('value' in p && p.value !== undefined) {
+                timeValueMapRef.current.set(p.time as number, p.value)
+              }
+            }
+            firstPopulated = true
           }
-          firstSeriesPopulated = true
         }
       }
     }
 
-    // Sync range from price chart after data update (avoids fitContent drift)
+    // Apply current price-chart range instead of fitContent to preserve user zoom
     if (seriesMapRef.current.size > 0) {
       const priceRange = priceChart?.timeScale().getVisibleRange()
       if (priceRange) {
@@ -319,10 +365,10 @@ function OscPane({ label, artifacts, instanceColors, priceChart, height = DEFAUL
         chart.timeScale().fitContent()
       }
     }
-  }, [artifacts, instanceColors, priceChart])
+  }, [artifacts, instanceColors, candleTimestamps, priceChart])
 
   return (
-    <div style={{ ...oscPaneWrapperStyle, height }}>
+    <div data-testid="osc-pane-wrapper" style={{ ...oscPaneWrapperStyle, height }}>
       <div style={oscPaneLabelStyle}>{label}</div>
       <div ref={containerRef} style={oscPaneChartStyle} />
     </div>
@@ -331,18 +377,18 @@ function OscPane({ label, artifacts, instanceColors, priceChart, height = DEFAUL
 
 const oscPaneWrapperStyle: React.CSSProperties = {
   flexShrink: 0,
-  position:   'relative' as const,
+  position:   'relative',
   background: '#0f0f1a',
 }
 const oscPaneLabelStyle: React.CSSProperties = {
-  position:      'absolute' as const,
+  position:      'absolute',
   top:           4,
   left:          8,
   fontSize:      9,
   color:         '#2a2a3e',
   fontFamily:    'monospace',
   letterSpacing: '0.07em',
-  pointerEvents: 'none' as const,
+  pointerEvents: 'none',
   zIndex:        1,
 }
 const oscPaneChartStyle: React.CSSProperties = {
@@ -359,16 +405,16 @@ export default function Chart({
   indicatorArtifacts, instanceColors,
   onClearStrategyResults,
 }: ChartProps) {
-  // Price chart
-  const priceContainerRef        = useRef<HTMLDivElement>(null)
-  const chartRef                 = useRef<IChartApi | null>(null)
-  const candleSeriesRef          = useRef<ISeriesApi<'Candlestick'> | null>(null)
-  const markerApiRef             = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
-  const forecastSeriesRef        = useRef<ISeriesApi<'Line'> | null>(null)
-  const priceSeriesMapRef        = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
+  // Price chart refs
+  const priceContainerRef         = useRef<HTMLDivElement>(null)
+  const chartRef                  = useRef<IChartApi | null>(null)
+  const candleSeriesRef           = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const markerApiRef              = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
+  const forecastSeriesRef         = useRef<ISeriesApi<'Line'> | null>(null)
+  const priceSeriesMapRef         = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
   const artifactPriceSeriesMapRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
 
-  // State copy of price chart API — passed to OscPane for time-scale + crosshair sync
+  // State copy of price chart API — passed to OscPane for sync
   const [priceChartApi, setPriceChartApi] = useState<IChartApi | null>(null)
 
   // Strategy oscillator chart
@@ -376,16 +422,25 @@ export default function Chart({
   const oscChartRef     = useRef<IChartApi | null>(null)
   const oscSeriesMapRef = useRef<Map<string, AnySeriesApi>>(new Map())
   const oscGuideMapRef  = useRef<Map<string, ReferenceGuideBinding>>(new Map())
+  const oscSyncingRef   = useRef(false)
 
   const [showOscillator, setShowOscillator] = useState(false)
 
-  // Indicator oscillator pane heights (tool_id → px height)
+  // Indicator oscillator pane heights (tool_id → px)
   const [oscPaneHeights, setOscPaneHeights] = useState<Record<string, number>>({})
 
-  // One OscPane group per oscillator tool_id
+  // Candle timestamps (stable array of UTCTimestamp — shared timestamp domain)
+  const candleTimestamps = useMemo(
+    () => normalizeChartData(
+      candles.map(c => ({ time: toUTCTimestamp(c.timestamp) }))
+    ).map(d => d.time),
+    [candles]
+  )
+
+  // One OscPane per distinct oscillator tool_id
   const oscArtifactGroups = useMemo(() => {
     if (!indicatorArtifacts || indicatorArtifacts.length === 0) return []
-    const seen = new Set<string>()
+    const seen   = new Set<string>()
     const groups: { key: string; label: string }[] = []
     for (const a of indicatorArtifacts) {
       if (!seen.has(a.tool_id) && a.series.some(s => s.pane === 'oscillator_pane')) {
@@ -396,7 +451,7 @@ export default function Chart({
     return groups
   }, [indicatorArtifacts])
 
-  // Initialise heights for newly-appearing groups; remove stale ones
+  // Initialise heights for new groups; prune stale ones
   useEffect(() => {
     setOscPaneHeights(prev => {
       const next = { ...prev }
@@ -489,65 +544,55 @@ export default function Chart({
     }
   }, [])
 
-  // ── Sync strategy oscillator with price chart (time-range based) ──────────
+  // ── One-directional sync: price chart → strategy oscillator ──────────────
   useEffect(() => {
     const priceChart = chartRef.current
     const oscChart   = oscChartRef.current
     if (!priceChart || !oscChart) return
 
-    let syncing = false
-
     const syncFromPrice = (range: IRange<Time> | null) => {
-      if (syncing || !range) return
-      syncing = true
-      try { oscChart.timeScale().setVisibleRange(range) } catch { /* osc chart not ready */ }
-      syncing = false
-    }
-
-    const syncFromOsc = (range: IRange<Time> | null) => {
-      if (syncing || !range) return
-      syncing = true
-      try { priceChart.timeScale().setVisibleRange(range) } catch { /* price chart not ready */ }
-      syncing = false
+      if (oscSyncingRef.current || !range) return
+      oscSyncingRef.current = true
+      try { oscChart.timeScale().setVisibleRange(range) } catch { /* not ready */ }
+      oscSyncingRef.current = false
     }
 
     priceChart.timeScale().subscribeVisibleTimeRangeChange(syncFromPrice)
-    oscChart.timeScale().subscribeVisibleTimeRangeChange(syncFromOsc)
-
     return () => {
       priceChart.timeScale().unsubscribeVisibleTimeRangeChange(syncFromPrice)
-      oscChart.timeScale().unsubscribeVisibleTimeRangeChange(syncFromOsc)
     }
   }, [])
 
-  // ── Update candlestick data ───────────────────────────────────────────────
+  // ── Update candlestick data — fitContent only on initial candle load ───────
   useEffect(() => {
     const series = candleSeriesRef.current
     if (!series) return
     if (candles.length === 0) { series.setData([]); return }
-    const data: CandlestickData[] = candles.map(c => ({
-      time:  toUTCTimestamp(c.timestamp),
-      open:  c.open,
-      high:  c.high,
-      low:   c.low,
-      close: c.close,
-    }))
+
+    const data: CandlestickData[] = normalizeChartData(
+      candles.map(c => ({
+        time:  toUTCTimestamp(c.timestamp),
+        open:  c.open,
+        high:  c.high,
+        low:   c.low,
+        close: c.close,
+      }))
+    )
     series.setData(data)
     chartRef.current?.timeScale().fitContent()
   }, [candles])
 
   // ── Strategy oscillator pane visibility ───────────────────────────────────
   useEffect(() => {
-    const hasOscFromOverlay = (overlay?.indicators ?? []).some(i => i.pane === 'oscillator')
-    setShowOscillator(hasOscFromOverlay)
+    setShowOscillator((overlay?.indicators ?? []).some(i => i.pane === 'oscillator'))
   }, [overlay])
 
-  // ── Render strategy overlay (signals + forecast + indicators) ─────────────
+  // ── Render strategy overlay ───────────────────────────────────────────────
   useEffect(() => {
-    const priceChart    = chartRef.current
-    const oscChart      = oscChartRef.current
-    const candleSeries  = candleSeriesRef.current
-    const markerApi     = markerApiRef.current
+    const priceChart     = chartRef.current
+    const oscChart       = oscChartRef.current
+    const candleSeries   = candleSeriesRef.current
+    const markerApi      = markerApiRef.current
     const forecastSeries = forecastSeriesRef.current
     if (!priceChart || !candleSeries || !markerApi || !forecastSeries) return
 
@@ -564,7 +609,7 @@ export default function Chart({
 
     if (!overlay) return
 
-    const indicators: ToolVisualizationSeries[] = overlay.indicators ?? []
+    const indicators      = overlay.indicators ?? []
     const priceIndicators = indicators.filter(ind => ind.pane !== 'oscillator')
     const oscIndicators   = indicators.filter(ind => ind.pane === 'oscillator')
 
@@ -575,9 +620,11 @@ export default function Chart({
         crosshairMarkerVisible: false,
         lastValueVisible:       true,
         priceLineVisible:       false,
-        title: ind.name,
+        title:                  ind.name,
       })
-      s.setData(ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value })))
+      s.setData(normalizeChartData(
+        ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value }))
+      ))
       priceSeriesMapRef.current.set(ind.name, s)
     })
 
@@ -589,10 +636,12 @@ export default function Chart({
           const s = oscChart.addSeries(HistogramSeries, {
             priceLineVisible: false, lastValueVisible: false, title: ind.name,
           })
-          s.setData(ind.points.map(p => ({
-            time: toUTCTimestamp(p.timestamp), value: p.value,
-            color: p.value >= 0 ? '#26a69a' : '#ef5350',
-          })))
+          s.setData(normalizeChartData(
+            ind.points.map(p => ({
+              time: toUTCTimestamp(p.timestamp), value: p.value,
+              color: p.value >= 0 ? '#26a69a' : '#ef5350',
+            }))
+          ))
           oscSeriesMapRef.current.set(ind.name, s)
         } else {
           const s = oscChart.addSeries(LineSeries, {
@@ -600,9 +649,11 @@ export default function Chart({
             crosshairMarkerVisible: false,
             lastValueVisible:       false,
             priceLineVisible:       false,
-            title: ind.name,
+            title:                  ind.name,
           })
-          s.setData(ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value })))
+          s.setData(normalizeChartData(
+            ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value }))
+          ))
           oscSeriesMapRef.current.set(ind.name, s)
           for (const guide of _OSCILLATOR_REFERENCE_GUIDES) {
             if (renderedGuideIds.has(guide.id) || !guide.matches(ind)) continue
@@ -615,7 +666,13 @@ export default function Chart({
           }
         }
       })
-      oscChart.timeScale().fitContent()
+      // Apply price-chart range instead of fitContent to avoid clobbering user zoom
+      const priceRange = chartRef.current?.timeScale().getVisibleRange()
+      if (priceRange) {
+        try { oscChart.timeScale().setVisibleRange(priceRange) } catch { oscChart.timeScale().fitContent() }
+      } else {
+        oscChart.timeScale().fitContent()
+      }
     }
 
     if (overlay.signals.length > 0) {
@@ -631,15 +688,15 @@ export default function Chart({
     }
 
     if (overlay.forecast && candles.length > 0) {
-      const lastCandle = candles[candles.length - 1]
+      const last = candles[candles.length - 1]
       forecastSeries.setData([
-        { time: toUTCTimestamp(lastCandle.timestamp), value: lastCandle.close },
+        { time: toUTCTimestamp(last.timestamp), value: last.close },
         { time: toUTCTimestamp(overlay.forecast.target_timestamp), value: overlay.forecast.target_price },
       ])
     }
   }, [overlay, candles])
 
-  // ── Render artifact price overlay series ──────────────────────────────────
+  // ── Render artifact price-overlay series ─────────────────────────────────
   useEffect(() => {
     const priceChart = chartRef.current
     if (!priceChart) return
@@ -657,15 +714,16 @@ export default function Chart({
       const instanceColor  = instanceColors?.get(artifact.instance_id)
 
       for (const series of priceSeries) {
-        const key = `${artifact.instance_id}.${series.series_id}`
-        // series.default_color already carries any user color override (patched in App.tsx).
-        // instanceColor (palette) used as fallback for single-series before user picks a color.
+        const key   = `${artifact.instance_id}.${series.series_id}`
         const color = (isSingleSeries && instanceColor) ? instanceColor : series.default_color
 
-        const points = series.values
-          .filter(p => p.value !== null && p.timestamp)
-          .map(p => ({ time: toUTCTimestamp(p.timestamp) as Time, value: p.value as number }))
-
+        // Price-overlay series: only non-null points (warmup gap is fine since
+        // the price chart defines the timestamp domain, not the overlay series)
+        const points = normalizeChartData(
+          series.values
+            .filter(p => p.value !== null && p.timestamp)
+            .map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value as number }))
+        )
         if (points.length === 0) continue
 
         const s = priceChart.addSeries(LineSeries, {
@@ -674,7 +732,7 @@ export default function Chart({
           crosshairMarkerVisible: false,
           lastValueVisible:       true,
           priceLineVisible:       false,
-          title: series.label,
+          title:                  series.label,
         })
         s.setData(points)
         artifactPriceSeriesMapRef.current.set(key, s)
@@ -682,7 +740,7 @@ export default function Chart({
     }
   }, [indicatorArtifacts, instanceColors])
 
-  // ── Derive counts for header badges ──────────────────────────────────────
+  // ── Header badge counts ──────────────────────────────────────────────────
   const signalCount   = overlay?.signals.length ?? 0
   const priceIndCount = (overlay?.indicators ?? []).filter(i => i.pane !== 'oscillator').length
   const oscIndCount   = (overlay?.indicators ?? []).filter(i => i.pane === 'oscillator').length
@@ -727,7 +785,7 @@ export default function Chart({
       {/* Price chart */}
       <div ref={priceContainerRef} style={styles.priceChart} />
 
-      {/* Strategy overlay oscillator pane */}
+      {/* Strategy oscillator pane */}
       <div style={{
         ...styles.oscWrapper,
         height:   showOscillator ? 160 : 0,
@@ -737,7 +795,7 @@ export default function Chart({
         <div ref={oscContainerRef} style={styles.oscChart} />
       </div>
 
-      {/* Dynamic indicator artifact oscillator panes — one per tool group with drag splitters */}
+      {/* Indicator artifact oscillator panes — one per tool group */}
       {oscArtifactGroups.map(group => {
         const paneHeight = oscPaneHeights[group.key] ?? DEFAULT_OSC_HEIGHT
         return (
@@ -752,6 +810,7 @@ export default function Chart({
               label={group.label}
               artifacts={(indicatorArtifacts ?? []).filter(a => a.tool_id === group.key)}
               instanceColors={instanceColors}
+              candleTimestamps={candleTimestamps}
               priceChart={priceChartApi}
               height={paneHeight}
             />
@@ -776,19 +835,19 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     background:    '#0f0f1a',
     minHeight:     0,
-    overflowY:     'auto' as const,
+    overflowY:     'auto',
   },
   header: {
-    padding:      '8px 16px',
-    fontSize:     '12px',
-    color:        '#8892a4',
-    fontFamily:   'monospace',
+    padding:       '8px 16px',
+    fontSize:      '12px',
+    color:         '#8892a4',
+    fontFamily:    'monospace',
     letterSpacing: '0.04em',
-    borderBottom: '1px solid #1a1a2e',
-    display:      'flex',
-    alignItems:   'center',
-    gap:          '12px',
-    flexShrink:   0,
+    borderBottom:  '1px solid #1a1a2e',
+    display:       'flex',
+    alignItems:    'center',
+    gap:           '12px',
+    flexShrink:    0,
   },
   priceChart: {
     flex:      1,
@@ -796,20 +855,20 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 200,
   },
   oscWrapper: {
-    flexShrink:  0,
-    borderTop:   '1px solid #1a1a2e',
-    position:    'relative' as const,
-    transition:  'height 0.15s ease',
+    flexShrink: 0,
+    borderTop:  '1px solid #1a1a2e',
+    position:   'relative',
+    transition: 'height 0.15s ease',
   },
   oscLabel: {
-    position:      'absolute' as const,
+    position:      'absolute',
     top:           4,
     left:          8,
     fontSize:      9,
     color:         '#2a2a3e',
     fontFamily:    'monospace',
     letterSpacing: '0.07em',
-    pointerEvents: 'none' as const,
+    pointerEvents: 'none',
     zIndex:        1,
   },
   oscChart: { width: '100%', height: '100%' },
