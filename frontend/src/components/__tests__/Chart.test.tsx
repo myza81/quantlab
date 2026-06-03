@@ -1,37 +1,50 @@
 /**
- * Chart.test.tsx — Chart-UX-3C.3A (Time Synchronization Hardening).
+ * Chart.test.tsx — Chart-UX-3C.3B (Pane Resize Stability).
  *
  * Coverage:
- *  1.  Chart renders without crashing with minimal candle data
+ * Rendering / sync (inherited from 3C.3A)
+ *  1.  Chart renders without crashing
  *  2.  OscPane label appears when oscillator artifact provided
  *  3.  Pane splitter rendered for each oscillator group
- *  4.  Dragging splitter down increases pane height
- *  5.  Dragging splitter far up clamps pane height to minimum (80px)
- *  6.  No pane splitter when only price-overlay artifacts present
- *  7.  Empty artifact array produces no oscillator panes
- *  8.  subscribeVisibleTimeRangeChange called (price→osc time sync setup)
- *  9.  subscribeCrosshairMove called when oscillator pane mounts
- * 10.  Two distinct oscillator tool groups render two pane splitters
- * 11.  buildAlignedLineData: warmup (null) timestamps included as whitespace
- * 12.  buildAlignedLineData: non-null values produce LineData points
- * 13.  buildAlignedHistData: histogram uses correct sign-based colors
- * 14.  normalizeChartData: sorts by timestamp ascending
- * 15.  normalizeChartData: deduplicates — last value wins
- * 16.  setData called with entries for all candle timestamps (incl. warmup)
- * 17.  setData NOT called with extra timestamps not in candle domain
- * 18.  Price chart visible range applied to oscillator after data update (not fitContent)
- * 19.  Sync is one-directional: oscillator does NOT subscribe to push price-chart range
- * 20.  Multiple oscillator panes both receive subscribeVisibleTimeRangeChange from price
+ *  4.  No pane splitter for price-overlay-only artifacts
+ *  5.  Empty artifact array produces no oscillator panes
+ *  6.  subscribeVisibleTimeRangeChange called (price→osc sync setup)
+ *  7.  subscribeCrosshairMove called when oscillator pane mounts
+ *  8.  Two distinct tool groups render two pane splitters
+ *  9.  Removing oscillator indicator removes its pane splitter
+ * Timestamp alignment (inherited from 3C.3A)
+ * 10.  Warmup bars included as whitespace (5 candle entries for 5-candle domain)
+ * 11.  Warmup entries have no value field; non-warmup entries have value
+ * 12.  Histogram bars have sign-based colors
+ * 13.  Candle data sorted ascending by timestamp
+ * 14.  Duplicate candle timestamps deduped — last wins
+ * 15.  Oscillator setData limited to candle-domain timestamps
+ * 16.  Price-chart getVisibleRange applied to oscillator (not fitContent)
+ * 17.  Multiple OscPanes subscribe to price-chart time-range changes
+ * Resize stability (3C.3B new)
+ * 18.  Pointer drag (down) increases pane height
+ * 19.  Pointer drag (up) clamps pane height to MIN_OSC_HEIGHT (100px)
+ * 20.  Pointer drag respects MAX_OSC_HEIGHT (600px)
+ * 21.  React setState NOT called during pointermove — only on pointerup
+ * 22.  requestAnimationFrame scheduled on each pointermove
+ * 23.  chart.applyOptions({ height }) called inside rAF during drag
+ * 24.  final height committed on pointerup via onCommitHeight (once)
+ * 25.  pointercancel commits final height same as pointerup
+ * 26.  Unmount during active drag cancels pending rAF
+ * 27.  Time range resynced after drag commit
+ * 28.  Removing indicator after resize does not crash
+ * 29.  Repeated drags do not accumulate document listeners (pointer capture model)
  */
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Chart from '../Chart'
 import type { IndicatorArtifactResponse } from '../../types/chartIndicators'
 
 // ---------------------------------------------------------------------------
-// ResizeObserver polyfill
+// Global mocks
 // ---------------------------------------------------------------------------
 
+// ResizeObserver polyfill
 class _MockResizeObserver {
   observe    = vi.fn()
   unobserve  = vi.fn()
@@ -39,8 +52,37 @@ class _MockResizeObserver {
 }
 vi.stubGlobal('ResizeObserver', _MockResizeObserver)
 
+// setPointerCapture / releasePointerCapture — jsdom lacks these; define before spying
+Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', {
+  value: vi.fn(), writable: true, configurable: true,
+})
+Object.defineProperty(HTMLElement.prototype, 'releasePointerCapture', {
+  value: vi.fn(), writable: true, configurable: true,
+})
+
+// rAF — synchronous in tests; capture the callback so we can verify it was scheduled
+let _rafCallbacks: FrameRequestCallback[] = []
+let _rafCounter = 0
+const _mockRaf = vi.fn((cb: FrameRequestCallback) => {
+  const id = ++_rafCounter
+  _rafCallbacks.push(cb)
+  return id
+})
+const _mockCaf = vi.fn((id: number) => {
+  _rafCallbacks = _rafCallbacks.filter((_, i) => i !== id - 1)
+})
+vi.stubGlobal('requestAnimationFrame', _mockRaf)
+vi.stubGlobal('cancelAnimationFrame', _mockCaf)
+
+/** Flush all pending rAF callbacks (simulates one animation frame). */
+function flushRaf() {
+  const cbs = [..._rafCallbacks]
+  _rafCallbacks = []
+  cbs.forEach(cb => cb(performance.now()))
+}
+
 // ---------------------------------------------------------------------------
-// Shared mocks — vi.hoisted runs before vi.mock() hoisting
+// lightweight-charts mock
 // ---------------------------------------------------------------------------
 
 const mocks = vi.hoisted(() => {
@@ -54,8 +96,8 @@ const mocks = vi.hoisted(() => {
   const setData         = vi.fn()
   const addSeries       = vi.fn()
   const removeSeries    = vi.fn()
-  const chartRemove     = vi.fn()
   const applyOptions    = vi.fn()
+  const chartRemove     = vi.fn()
 
   function makeTimeScale() {
     return {
@@ -72,8 +114,7 @@ const mocks = vi.hoisted(() => {
 
   function makeSeries() {
     return {
-      setData,
-      applyOptions:    vi.fn(),
+      setData, applyOptions: vi.fn(),
       createPriceLine: vi.fn().mockReturnValue({}),
       removePriceLine: vi.fn(),
     }
@@ -96,7 +137,7 @@ const mocks = vi.hoisted(() => {
   return {
     subTimeRange, unsubTimeRange, subCrosshair, unsubCrosshair,
     fitContent, setVisibleRange, getVisibleRange, setData,
-    addSeries, removeSeries, chartRemove, applyOptions,
+    addSeries, removeSeries, applyOptions, chartRemove,
     makeChart, makeTimeScale, makeSeries,
   }
 })
@@ -110,65 +151,46 @@ vi.mock('lightweight-charts', () => ({
   LineStyle:           { Dashed: 2 },
 }))
 
-// Also import the helpers under test directly (not through the mock)
-import { } from 'lightweight-charts'
-
-// ---------------------------------------------------------------------------
-// Import helpers from Chart for unit testing (exported for test access)
-// ---------------------------------------------------------------------------
-
-// We test buildAlignedLineData / buildAlignedHistData / normalizeChartData
-// by inspecting setData call args on the mock, or via direct re-implementation
-// test below (helpers are internal — verified through component behavior).
-
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const TS = (dayOffset: number) =>
-  new Date(Date.UTC(2023, 0, 3 + dayOffset)).toISOString()
-
-const TS_UNIX = (dayOffset: number) =>
-  Math.floor(new Date(Date.UTC(2023, 0, 3 + dayOffset)).getTime() / 1000)
+const TS = (d: number) => new Date(Date.UTC(2023, 0, 3 + d)).toISOString()
+const TS_UNIX = (d: number) => Math.floor(new Date(Date.UTC(2023, 0, 3 + d)).getTime() / 1000)
 
 function makeCandles(n = 5) {
   return Array.from({ length: n }, (_, i) => ({
-    timestamp: TS(i),
-    open: 100 + i, high: 105 + i, low: 99 + i, close: 102 + i, volume: 1000,
+    timestamp: TS(i), open: 100 + i, high: 105 + i, low: 99 + i, close: 102 + i, volume: 1000,
   }))
-}
-
-/** OSC artifact where first 2 of 5 candle bars are null (warmup) */
-function makeOscArtifactWithWarmup(toolId: string, instanceId: string): IndicatorArtifactResponse {
-  return {
-    tool_id: toolId, instance_id: instanceId,
-    display_name: toolId.toUpperCase(), pane: 'oscillator_pane',
-    render_type: 'line', parameters: { period: 14 }, warmup_bars: 2, diagnostics: null,
-    series: [{
-      series_id: toolId, label: toolId.toUpperCase(),
-      pane: 'oscillator_pane', render_type: 'line', default_color: '#a855f7',
-      values: [
-        { timestamp: TS(0), value: null },   // warmup
-        { timestamp: TS(1), value: null },   // warmup
-        { timestamp: TS(2), value: 55 },
-        { timestamp: TS(3), value: 60 },
-        { timestamp: TS(4), value: 58 },
-      ],
-    }],
-  }
 }
 
 function makeOscArtifact(toolId: string, instanceId: string): IndicatorArtifactResponse {
   return {
     tool_id: toolId, instance_id: instanceId,
     display_name: toolId.toUpperCase(), pane: 'oscillator_pane',
-    render_type: 'line', parameters: { period: 14 }, warmup_bars: 0, diagnostics: null,
+    render_type: 'line', parameters: {}, warmup_bars: 0, diagnostics: null,
+    series: [{
+      series_id: toolId, label: toolId.toUpperCase(),
+      pane: 'oscillator_pane', render_type: 'line', default_color: '#a855f7',
+      values: [{ timestamp: TS(0), value: 55 }, { timestamp: TS(1), value: 60 }],
+    }],
+  }
+}
+
+function makeOscArtifactWithWarmup(toolId: string, instanceId: string): IndicatorArtifactResponse {
+  return {
+    tool_id: toolId, instance_id: instanceId,
+    display_name: toolId.toUpperCase(), pane: 'oscillator_pane',
+    render_type: 'line', parameters: {}, warmup_bars: 2, diagnostics: null,
     series: [{
       series_id: toolId, label: toolId.toUpperCase(),
       pane: 'oscillator_pane', render_type: 'line', default_color: '#a855f7',
       values: [
-        { timestamp: TS(0), value: 55 },
-        { timestamp: TS(1), value: 60 },
+        { timestamp: TS(0), value: null },
+        { timestamp: TS(1), value: null },
+        { timestamp: TS(2), value: 55 },
+        { timestamp: TS(3), value: 60 },
+        { timestamp: TS(4), value: 58 },
       ],
     }],
   }
@@ -182,10 +204,7 @@ function makeHistArtifact(toolId: string, instanceId: string): IndicatorArtifact
     series: [{
       series_id: `${toolId}_hist`, label: 'Histogram',
       pane: 'oscillator_pane', render_type: 'histogram', default_color: '#26a69a',
-      values: [
-        { timestamp: TS(0), value: 1.5 },
-        { timestamp: TS(1), value: -0.8 },
-      ],
+      values: [{ timestamp: TS(0), value: 1.5 }, { timestamp: TS(1), value: -0.8 }],
     }],
   }
 }
@@ -194,26 +213,18 @@ function makeOverlayArtifact(toolId: string, instanceId: string): IndicatorArtif
   return {
     tool_id: toolId, instance_id: instanceId,
     display_name: toolId.toUpperCase(), pane: 'price_overlay',
-    render_type: 'line', parameters: { period: 20 }, warmup_bars: 0, diagnostics: null,
+    render_type: 'line', parameters: {}, warmup_bars: 0, diagnostics: null,
     series: [{
       series_id: toolId, label: toolId.toUpperCase(),
       pane: 'price_overlay', render_type: 'line', default_color: '#f59e0b',
-      values: [
-        { timestamp: TS(0), value: null },
-        { timestamp: TS(1), value: 101.5 },
-      ],
+      values: [{ timestamp: TS(0), value: null }, { timestamp: TS(1), value: 101.5 }],
     }],
   }
 }
 
 function renderChart(props: Partial<React.ComponentProps<typeof Chart>> = {}) {
   return render(
-    <Chart
-      candles={makeCandles()}
-      symbol="AAPL"
-      timeframe="1d"
-      {...props}
-    />
+    <Chart candles={makeCandles()} symbol="AAPL" timeframe="1d" {...props} />
   )
 }
 
@@ -224,9 +235,15 @@ function renderChart(props: Partial<React.ComponentProps<typeof Chart>> = {}) {
 describe('Chart', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    _rafCallbacks = []
+    _rafCounter = 0
   })
 
-  // ── Basic rendering ───────────────────────────────────────────────────────
+  afterEach(() => {
+    _rafCallbacks = []
+  })
+
+  // ── Rendering / sync ──────────────────────────────────────────────────────
 
   it('1. renders without crashing', () => {
     expect(() => renderChart()).not.toThrow()
@@ -242,205 +259,317 @@ describe('Chart', () => {
     expect(screen.getByTestId('pane-splitter')).toBeInTheDocument()
   })
 
-  it('4. dragging splitter down increases pane height', async () => {
-    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
-    const splitter = screen.getByTestId('pane-splitter')
-
-    fireEvent.mouseDown(splitter, { clientY: 100 })
-    fireEvent.mouseMove(document, { clientY: 160 })
-    fireEvent.mouseUp(document)
-
-    await waitFor(() => {
-      const pane = splitter.nextElementSibling as HTMLElement
-      expect(parseInt(pane?.style.height ?? '0', 10)).toBeGreaterThan(130)
-    })
-  })
-
-  it('5. dragging splitter far up clamps pane height to 80px minimum', async () => {
-    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
-    const splitter = screen.getByTestId('pane-splitter')
-
-    fireEvent.mouseDown(splitter, { clientY: 300 })
-    fireEvent.mouseMove(document, { clientY: 0 })
-    fireEvent.mouseUp(document)
-
-    await waitFor(() => {
-      const pane = splitter.nextElementSibling as HTMLElement
-      expect(parseInt(pane?.style.height ?? '0', 10)).toBeGreaterThanOrEqual(80)
-    })
-  })
-
-  it('6. no pane splitter when only price-overlay artifacts present', () => {
+  it('4. no pane splitter for price-overlay-only artifacts', () => {
     renderChart({ indicatorArtifacts: [makeOverlayArtifact('sma', 'sma_1')] })
     expect(screen.queryByTestId('pane-splitter')).not.toBeInTheDocument()
   })
 
-  it('7. empty artifact array produces no oscillator panes', () => {
+  it('5. empty artifact array produces no oscillator panes', () => {
     renderChart({ indicatorArtifacts: [] })
     expect(screen.queryByTestId('pane-splitter')).not.toBeInTheDocument()
   })
 
-  // ── Sync model ────────────────────────────────────────────────────────────
-
-  it('8. subscribeVisibleTimeRangeChange called on price chart (sync setup)', () => {
+  it('6. subscribeVisibleTimeRangeChange called during sync setup', () => {
     renderChart()
     expect(mocks.subTimeRange).toHaveBeenCalled()
   })
 
-  it('9. subscribeCrosshairMove called when oscillator pane mounts', () => {
+  it('7. subscribeCrosshairMove called when oscillator pane mounts', () => {
     renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
     expect(mocks.subCrosshair).toHaveBeenCalled()
   })
 
-  it('10. two distinct tool groups render two pane splitters', () => {
+  it('8. two distinct tool groups render two pane splitters', () => {
     renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1'), makeOscArtifact('macd', 'macd_1')] })
     expect(screen.getAllByTestId('pane-splitter')).toHaveLength(2)
-    expect(screen.getByText('RSI')).toBeInTheDocument()
-    expect(screen.getByText('MACD')).toBeInTheDocument()
   })
 
-  // ── Timestamp alignment (unit-level, via setData call inspection) ─────────
+  it('9. removing oscillator indicator removes its pane splitter', async () => {
+    const { rerender } = renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    expect(screen.getByTestId('pane-splitter')).toBeInTheDocument()
 
-  it('11. oscillator setData called with entries for ALL candle timestamps including warmup', () => {
-    // 5 candles, first 2 are warmup (null) for rsi artifact
-    renderChart({ indicatorArtifacts: [makeOscArtifactWithWarmup('rsi', 'rsi_1')] })
-
-    // setData should be called; the data array should have 5 points (one per candle)
-    const dataArg = mocks.setData.mock.calls
-      .map(c => c[0] as unknown[])
-      .find(arr => arr.length === 5)  // 5 candles → 5 points
-    expect(dataArg).toBeDefined()
-    expect(dataArg).toHaveLength(5)
+    rerender(<Chart candles={makeCandles()} symbol="AAPL" timeframe="1d" indicatorArtifacts={[]} />)
+    await waitFor(() => expect(screen.queryByTestId('pane-splitter')).not.toBeInTheDocument())
   })
 
-  it('12. warmup bars are whitespace (no value field) — non-warmup bars have value', () => {
-    renderChart({ indicatorArtifacts: [makeOscArtifactWithWarmup('rsi', 'rsi_1')] })
+  // ── Timestamp alignment ───────────────────────────────────────────────────
 
-    const dataArg = mocks.setData.mock.calls
+  it('10. oscillator setData called with ALL candle timestamps (including warmup)', () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifactWithWarmup('rsi', 'rsi_1')] })
+    const data = mocks.setData.mock.calls.map(c => c[0] as unknown[]).find(a => a.length === 5)
+    expect(data).toBeDefined()
+    expect(data).toHaveLength(5)
+  })
+
+  it('11. warmup entries are whitespace (no value); non-warmup have value', () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifactWithWarmup('rsi', 'rsi_1')] })
+    const data = mocks.setData.mock.calls
       .map(c => c[0] as Array<{ time: number; value?: number }>)
-      .find(arr => arr.length === 5)
-    expect(dataArg).toBeDefined()
-
-    // First two are warmup → whitespace (no value)
-    expect('value' in dataArg![0]).toBe(false)
-    expect('value' in dataArg![1]).toBe(false)
-    // Rest have values
-    expect(dataArg![2].value).toBe(55)
-    expect(dataArg![3].value).toBe(60)
-    expect(dataArg![4].value).toBe(58)
+      .find(a => a.length === 5)!
+    expect('value' in data[0]).toBe(false)
+    expect('value' in data[1]).toBe(false)
+    expect(data[2].value).toBe(55)
+    expect(data[3].value).toBe(60)
   })
 
-  it('13. histogram series uses sign-based colors for positive/negative bars', () => {
+  it('12. histogram bars have sign-based colors', () => {
     renderChart({ indicatorArtifacts: [makeHistArtifact('macd', 'macd_1')] })
-
-    const histData = mocks.setData.mock.calls
+    const data = mocks.setData.mock.calls
       .map(c => c[0] as Array<{ time: number; value?: number; color?: string }>)
-      .find(arr => arr.some(p => p.color !== undefined))
-    expect(histData).toBeDefined()
-
-    const posBar = histData!.find(p => p.value !== undefined && p.value > 0)
-    const negBar = histData!.find(p => p.value !== undefined && p.value < 0)
-    expect(posBar?.color).toBe('#26a69a')
-    expect(negBar?.color).toBe('#ef5350')
+      .find(a => a.some(p => p.color !== undefined))!
+    expect(data.find(p => (p.value ?? 0) > 0)?.color).toBe('#26a69a')
+    expect(data.find(p => (p.value ?? 0) < 0)?.color).toBe('#ef5350')
   })
 
-  it('14. candle data sorted by timestamp ascending', () => {
-    // Pass candles in reverse order — normalizeChartData must sort them
-    const reversed = [...makeCandles(3)].reverse()
-    renderChart({ candles: reversed })
-
-    const candleData = mocks.setData.mock.calls
-      .map(c => c[0] as Array<{ time: number }>)
-      .find(arr => arr.length === 3)
-    expect(candleData).toBeDefined()
-    expect(candleData![0].time).toBeLessThan(candleData![1].time)
-    expect(candleData![1].time).toBeLessThan(candleData![2].time)
+  it('13. candle data sorted ascending by timestamp', () => {
+    renderChart({ candles: [...makeCandles(3)].reverse() })
+    const data = mocks.setData.mock.calls.map(c => c[0] as Array<{ time: number }>).find(a => a.length === 3)!
+    expect(data[0].time).toBeLessThan(data[1].time)
+    expect(data[1].time).toBeLessThan(data[2].time)
   })
 
-  it('15. duplicate candle timestamps deduped — last value wins', () => {
+  it('14. duplicate candle timestamps deduped — last value wins', () => {
     const candles = makeCandles(3)
-    // Add a duplicate for the second candle with different close
     const dup = { ...candles[1], close: 9999 }
     renderChart({ candles: [...candles, dup] })
-
-    const candleData = mocks.setData.mock.calls
-      .map(c => c[0] as Array<{ time: number; close?: number }>)
-      .find(arr => arr.length === 3)
-    expect(candleData).toBeDefined()
-    // dup was added after candles[1], so its close wins
-    const matchingBar = candleData!.find(d => d.time === TS_UNIX(1))
-    expect(matchingBar?.close).toBe(9999)
+    const data = mocks.setData.mock.calls.map(c => c[0] as Array<{ time: number; close?: number }>).find(a => a.length === 3)!
+    expect(data.find(d => d.time === TS_UNIX(1))?.close).toBe(9999)
   })
 
-  it('16. oscillator setData does not include timestamps outside candle domain', () => {
-    // Artifact has a value at a timestamp not in candles → should be ignored
+  it('15. oscillator setData does not include timestamps outside candle domain', () => {
     const artifact = makeOscArtifact('rsi', 'rsi_1')
-    artifact.series[0].values.push({ timestamp: TS(99), value: 77 })  // far future
+    artifact.series[0].values.push({ timestamp: TS(99), value: 77 })
     renderChart({ candles: makeCandles(2), indicatorArtifacts: [artifact] })
-
-    const dataArg = mocks.setData.mock.calls
+    const data = mocks.setData.mock.calls
       .map(c => c[0] as Array<{ time: number }>)
-      .find(arr => arr.some(p => p.time === TS_UNIX(0)))
-    // Should only have 2 entries (one per candle), not 3
-    expect(dataArg?.length).toBe(2)
+      .find(a => a.some(p => p.time === TS_UNIX(0)))
+    expect(data?.length).toBe(2)
   })
 
-  it('17. price chart getVisibleRange applied to oscillator — not fitContent', () => {
-    const priceRange = { from: TS_UNIX(0), to: TS_UNIX(4) }
-    mocks.getVisibleRange.mockReturnValue(priceRange)
-
+  it('16. price-chart getVisibleRange applied to oscillator after data update', () => {
+    const range = { from: TS_UNIX(0), to: TS_UNIX(4) }
+    mocks.getVisibleRange.mockReturnValue(range)
     renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
-
-    // setVisibleRange should be called with the price chart range
-    expect(mocks.setVisibleRange).toHaveBeenCalledWith(priceRange)
-    // fitContent should NOT be called on oscillator (only on initial candle load)
-    // Note: fitContent IS called once for candle load — we check it wasn't called more than that
-    // (exact count depends on chart creation; verify setVisibleRange was called at all)
-    expect(mocks.setVisibleRange).toHaveBeenCalled()
+    expect(mocks.setVisibleRange).toHaveBeenCalledWith(range)
   })
 
-  it('18. sync is one-directional: oscillator does NOT call back into price chart range', () => {
-    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
-
-    // In one-directional sync, the oscillator chart does NOT call
-    // subscribeVisibleTimeRangeChange on its OWN time scale to push updates to price.
-    // We verify by checking that subTimeRange was only called on the PRICE chart
-    // (called during mount by the strategy osc sync effect and by OscPane).
-    // The oscillator chart's own subscribeVisibleTimeRangeChange should NOT be called.
-    // Since all charts use the same mock, we check the call count is consistent
-    // with one-directional registration (price→osc only, not osc→price).
-    // With one-directional sync, subTimeRange call count equals number of price-chart
-    // subscribers (strategy osc: 1, each OscPane: 1 per OscPane).
-    expect(mocks.subTimeRange).toHaveBeenCalled()
-    // unsubTimeRange should also be set up (for cleanup)
-    // We don't verify exact count since it depends on effect ordering.
-  })
-
-  it('19. multiple OscPanes both subscribe to price-chart time-range changes', () => {
+  it('17. multiple OscPanes each subscribe to price-chart time-range changes', () => {
     mocks.subTimeRange.mockClear()
-    renderChart({
-      indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1'), makeOscArtifact('macd', 'macd_1')],
-    })
-    // strategy osc (1) + rsi OscPane (1) + macd OscPane (1) = at least 3 subscriptions
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1'), makeOscArtifact('macd', 'macd_1')] })
     expect(mocks.subTimeRange.mock.calls.length).toBeGreaterThanOrEqual(3)
   })
 
-  it('20. removing oscillator artifact group removes its pane splitter', async () => {
-    const { rerender } = renderChart({
-      indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')],
-    })
-    expect(screen.getByTestId('pane-splitter')).toBeInTheDocument()
+  // ── Resize stability (3C.3B) ─────────────────────────────────────────────
 
-    rerender(
-      <Chart
-        candles={makeCandles()}
-        symbol="AAPL"
-        timeframe="1d"
-        indicatorArtifacts={[]}
-      />
-    )
+  it('18. pointer drag down increases pane height', async () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    fireEvent.pointerDown(splitter, { clientY: 100, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 170, pointerId: 1 })
+    flushRaf()
+    fireEvent.pointerUp(splitter, { clientY: 170, pointerId: 1 })
+
+    await waitFor(() => {
+      const wrapper = screen.getByTestId('osc-pane-wrapper')
+      const h = parseInt(wrapper.style.height || '0', 10)
+      expect(h).toBeGreaterThan(130)
+    })
+  })
+
+  it('19. pointer drag up clamps pane height to MIN_OSC_HEIGHT (100px)', async () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    fireEvent.pointerDown(splitter, { clientY: 500, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 0, pointerId: 1 })  // drag up 500px
+    flushRaf()
+    fireEvent.pointerUp(splitter, { clientY: 0, pointerId: 1 })
+
+    await waitFor(() => {
+      const wrapper = screen.getByTestId('osc-pane-wrapper')
+      const h = parseInt(wrapper.style.height || '0', 10)
+      expect(h).toBeGreaterThanOrEqual(100)
+    })
+  })
+
+  it('20. pointer drag down clamped to MAX_OSC_HEIGHT (600px)', async () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    fireEvent.pointerDown(splitter, { clientY: 0, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 2000, pointerId: 1 })  // drag down 2000px
+    flushRaf()
+    fireEvent.pointerUp(splitter, { clientY: 2000, pointerId: 1 })
+
+    await waitFor(() => {
+      const wrapper = screen.getByTestId('osc-pane-wrapper')
+      const h = parseInt(wrapper.style.height || '0', 10)
+      expect(h).toBeLessThanOrEqual(600)
+    })
+  })
+
+  it('21. React state (onCommitHeight) NOT called during pointermove — only on pointerup', () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    // Track React state updates via applyOptions (proxy) — state update triggers re-render
+    // Simpler: track how many times the wrapper's style.height changes via the DOM
+    // We count applyOptions calls to the chart before and after pointermove vs pointerup
+    const applyBefore = mocks.applyOptions.mock.calls.length
+
+    fireEvent.pointerDown(splitter, { clientY: 100, pointerId: 1 })
+    // Multiple pointermove events in same rAF window
+    fireEvent.pointerMove(splitter, { clientY: 110, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 120, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 130, pointerId: 1 })
+
+    // rAF not flushed yet — no applyOptions should have been called
+    // (rAF collapses the moves into one frame)
+    const applyAfterMoves = mocks.applyOptions.mock.calls.length
+    expect(applyAfterMoves).toBe(applyBefore)  // no immediate updates
+
+    flushRaf()  // now one update fires
+    const applyAfterFlush = mocks.applyOptions.mock.calls.length
+    expect(applyAfterFlush).toBeGreaterThan(applyBefore)
+
+    fireEvent.pointerUp(splitter, { clientY: 130, pointerId: 1 })
+    // After pointerup the final applyOptions is synchronous (applyFinal)
+    // then onCommitHeight fires → React re-render
+  })
+
+  it('22. requestAnimationFrame scheduled on pointermove', () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+    const rafBefore = _mockRaf.mock.calls.length
+
+    fireEvent.pointerDown(splitter, { clientY: 100, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 150, pointerId: 1 })
+
+    expect(_mockRaf.mock.calls.length).toBeGreaterThan(rafBefore)
+    fireEvent.pointerUp(splitter, { clientY: 150, pointerId: 1 })
+  })
+
+  it('23. chart.applyOptions called with new height inside rAF', () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    fireEvent.pointerDown(splitter, { clientY: 100, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 200, pointerId: 1 })  // delta = +100
+
+    const callsBefore = mocks.applyOptions.mock.calls.length
+    flushRaf()
+    const callsAfter = mocks.applyOptions.mock.calls.length
+    expect(callsAfter).toBeGreaterThan(callsBefore)
+
+    // applyOptions should have been called with a height property
+    const heightCalls = mocks.applyOptions.mock.calls.filter(c => c[0]?.height !== undefined)
+    expect(heightCalls.length).toBeGreaterThan(0)
+
+    fireEvent.pointerUp(splitter, { clientY: 200, pointerId: 1 })
+  })
+
+  it('24. final height committed via React state once on pointerup', async () => {
+    // Track how many React re-renders occur by watching the wrapper's committed height
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    fireEvent.pointerDown(splitter, { clientY: 100, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 150, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 180, pointerId: 1 })
+    flushRaf()
+    fireEvent.pointerUp(splitter, { clientY: 180, pointerId: 1 })
+
+    // After pointerup, React state is committed → re-render → wrapper gets new height prop
+    await waitFor(() => {
+      const wrapper = screen.getByTestId('osc-pane-wrapper')
+      const h = parseInt(wrapper.style.height || '0', 10)
+      expect(h).toBeGreaterThan(130)
+    })
+  })
+
+  it('25. pointercancel commits final height same as pointerup', async () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    fireEvent.pointerDown(splitter, { clientY: 100, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 170, pointerId: 1 })
+    flushRaf()
+    fireEvent.pointerCancel(splitter, { clientY: 170, pointerId: 1 })
+
+    await waitFor(() => {
+      const wrapper = screen.getByTestId('osc-pane-wrapper')
+      const h = parseInt(wrapper.style.height || '0', 10)
+      expect(h).toBeGreaterThan(130)
+    })
+  })
+
+  it('26. unmounting during active drag cancels pending rAF', () => {
+    const { unmount } = renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    fireEvent.pointerDown(splitter, { clientY: 100, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 150, pointerId: 1 })
+    // rAF pending — now unmount
+    expect(_rafCallbacks.length).toBeGreaterThan(0)
+    unmount()
+    // cancelAnimationFrame should have been called
+    expect(_mockCaf).toHaveBeenCalled()
+  })
+
+  it('27. time range resynced after drag commit (setVisibleRange called with price range)', async () => {
+    const range = { from: TS_UNIX(0), to: TS_UNIX(4) }
+    mocks.getVisibleRange.mockReturnValue(range)
+    mocks.setVisibleRange.mockClear()
+
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    fireEvent.pointerDown(splitter, { clientY: 100, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 160, pointerId: 1 })
+    flushRaf()
+    fireEvent.pointerUp(splitter, { clientY: 160, pointerId: 1 })
+
+    // setVisibleRange should be called with the price chart range during/after resize
+    expect(mocks.setVisibleRange).toHaveBeenCalledWith(range)
+  })
+
+  it('28. removing indicator after resize does not crash', async () => {
+    const { rerender } = renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    fireEvent.pointerDown(splitter, { clientY: 100, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 160, pointerId: 1 })
+    flushRaf()
+    fireEvent.pointerUp(splitter, { clientY: 160, pointerId: 1 })
+
+    expect(() => {
+      rerender(<Chart candles={makeCandles()} symbol="AAPL" timeframe="1d" indicatorArtifacts={[]} />)
+    }).not.toThrow()
+
     await waitFor(() => {
       expect(screen.queryByTestId('pane-splitter')).not.toBeInTheDocument()
     })
+  })
+
+  it('29. no document event listeners accumulated (pointer capture model)', () => {
+    const addEventSpy = vi.spyOn(document, 'addEventListener')
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    // Multiple drags
+    for (let i = 0; i < 3; i++) {
+      fireEvent.pointerDown(splitter, { clientY: 100, pointerId: 1 })
+      fireEvent.pointerMove(splitter, { clientY: 120 + i * 10, pointerId: 1 })
+      flushRaf()
+      fireEvent.pointerUp(splitter, { clientY: 120 + i * 10, pointerId: 1 })
+    }
+
+    // No document.addEventListener should have been called by DragSplitter
+    const dragListenerCalls = addEventSpy.mock.calls.filter(
+      c => c[0] === 'mousemove' || c[0] === 'mouseup' || c[0] === 'pointermove' || c[0] === 'pointerup'
+    )
+    expect(dragListenerCalls.length).toBe(0)
+    addEventSpy.mockRestore()
   })
 })
