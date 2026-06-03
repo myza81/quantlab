@@ -204,16 +204,17 @@ function OscPane({ label, artifacts, instanceColors, priceChart, height = DEFAUL
     let syncing = false
 
     const syncFromPrice = (range: IRange<Time> | null) => {
-      if (syncing || !range) return
+      // Skip if no data loaded yet — setVisibleRange throws "Value is null" on empty charts
+      if (syncing || !range || seriesMapRef.current.size === 0) return
       syncing = true
-      chart.timeScale().setVisibleRange(range)
+      try { chart.timeScale().setVisibleRange(range) } catch { /* chart not ready */ }
       syncing = false
     }
 
     const syncFromOsc = (range: IRange<Time> | null) => {
       if (syncing || !range) return
       syncing = true
-      priceChart.timeScale().setVisibleRange(range)
+      try { priceChart.timeScale().setVisibleRange(range) } catch { /* chart not ready */ }
       syncing = false
     }
 
@@ -310,7 +311,7 @@ function OscPane({ label, artifacts, instanceColors, priceChart, height = DEFAUL
     if (seriesMapRef.current.size > 0) {
       const priceRange = priceChart?.timeScale().getVisibleRange()
       if (priceRange) {
-        chart.timeScale().setVisibleRange(priceRange)
+        try { chart.timeScale().setVisibleRange(priceRange) } catch { chart.timeScale().fitContent() }
       } else {
         chart.timeScale().fitContent()
       }
@@ -496,14 +497,14 @@ export default function Chart({
     const syncFromPrice = (range: IRange<Time> | null) => {
       if (syncing || !range) return
       syncing = true
-      oscChart.timeScale().setVisibleRange(range)
+      try { oscChart.timeScale().setVisibleRange(range) } catch { /* osc chart not ready */ }
       syncing = false
     }
 
     const syncFromOsc = (range: IRange<Time> | null) => {
       if (syncing || !range) return
       syncing = true
-      priceChart.timeScale().setVisibleRange(range)
+      try { priceChart.timeScale().setVisibleRange(range) } catch { /* price chart not ready */ }
       syncing = false
     }
 
