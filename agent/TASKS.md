@@ -7,6 +7,35 @@ Not a historical archive — completed phase detail lives in `agent/archive/HAND
 
 # Current Phase Status
 
+**Phase Chart-UX-3C.2 — Chart Pane Synchronization & Indicator Styling — COMPLETE**
+(backend: 4 847 ✓ unchanged | frontend: 484 ✓ | +13 new tests | frontend-only phase)
+- **`frontend/src/types/chartIndicators.ts`** — `IndicatorInstance` extended with `seriesColors: Record<string, string>` (series_id → user hex color, frontend only, never sent to backend)
+- **`frontend/src/components/ChartIndicatorPanel.tsx`** — Three additions:
+  - `handleSeriesColorChange(instanceId, seriesId, color)`: updates `seriesColors`; also updates `instanceColor` for single-series indicators so the swatch reflects user choice; does NOT call `computeArtifact` — color changes apply without backend recompute
+  - Color editor section in settings editor: `<input type="color">` per series from `inst.artifact.series`; shows when settings are open and artifact is available; each input uses `inst.seriesColors[series_id] ?? (single-series ? instanceColor : series.default_color)` as effective color value
+  - New styles: `colorSection`, `colorSectionTitle`, `colorRow`, `colorInput`
+  - `newInstance.seriesColors = {}` added in `handleAddIndicator`
+- **`frontend/src/components/Chart.tsx`** (full update) — Four UX improvements:
+  - **Time-scale sync fixed**: All `subscribeVisibleLogicalRangeChange`/`setVisibleLogicalRange` calls replaced with `subscribeVisibleTimeRangeChange`/`setVisibleRange` (time-stamp based rather than bar-index based); prevents panes from drifting when bar counts differ due to warmup filtering
+  - **OscPane initial alignment fixed**: After setting data, `getVisibleRange()` is read from priceChart; if available, `setVisibleRange()` applied to oscillator immediately (no more `fitContent()` causing drift); fallback to `fitContent()` only when price chart has no range yet
+  - **Crosshair sync** (price → oscillators): OscPane subscribes to `priceChart.subscribeCrosshairMove`; maintains `timeValueMapRef` (UTCTimestamp → first-series value) populated on each data update; on crosshair event: clears position if `param.time` undefined, else calls `chart.setCrosshairPosition(val, param.time, firstSeries)` on the oscillator chart
+  - **Resizable panes**: `DragSplitter` component (5px transparent divider with `cursor: row-resize`); mousedown captures mousemove/mouseup on `document`; `oscPaneHeights: Record<string, number>` state; effect initializes new group keys at `DEFAULT_OSC_HEIGHT=130`, removes stale keys; OscPane accepts `height?` prop (default 130); ResizeObserver callback now updates both `width` and `height` via `applyOptions`; `MIN_OSC_HEIGHT=80` enforced in drag handler; splitter rendered before each OscPane in a Fragment
+  - New imports: `IRange`, `MouseEventParams` from `'lightweight-charts'`
+- **`frontend/src/App.tsx`** — Three improvements:
+  - `useMemo` added to imports
+  - `visibleArtifacts`: memoized filter+map of `indicatorInstances` that also patches `series.default_color` with `i.seriesColors[series_id]` when overrides exist (keeps Chart prop interface unchanged — no new Chart props)
+  - `instanceColorMap`: memoized `new Map(instances.map(i => [i.instanceId, i.instanceColor]))` (prevents new Map object on every render triggering Chart re-renders)
+- **`frontend/src/components/__tests__/ChartIndicatorPanel.test.tsx`** — 3 new tests (26-28):
+  - `26`: color section and `input[data-testid^="color-"]` appear in settings editor when artifact has series
+  - `27`: changing color via native-setter workaround (jsdom `input[type="color"]` limitation) does NOT trigger `computeIndicatorArtifact`
+  - `28`: `seriesColors` reflected in `onInstancesChange` callback after color change
+- **`frontend/src/components/__tests__/Chart.test.tsx`** (new file, 10 tests):
+  - `vi.hoisted()` for mock initialization before `vi.mock()` (avoids hoisting TDZ error)
+  - `vi.stubGlobal('ResizeObserver', _MockResizeObserver)` — class-based mock (arrow functions can't be constructors in Vitest)
+  - Tests: render-no-crash, OscPane label appears, splitter rendered, drag-down increases height, drag-up clamped to 80px, overlay-only no splitter, empty-array no splitter, `subscribeVisibleTimeRangeChange` called, `subscribeCrosshairMove` called, two tool groups → two splitters
+- **Crosshair sync limitation**: Price → oscillator direction only (one-directional); reverse sync (oscillator → price) is architecturally possible but deferred because `setCrosshairPosition` requires a price value from the oscillator's series which adds complexity with multi-series oscillators
+- **All 471 existing tests remain green** (484 total including 13 new from Chart-UX-3C.2)
+
 **Phase Chart-UX-3C.1 — Indicator Workspace Refinement — COMPLETE**
 (backend: 4 847 ✓ unchanged | frontend: 471 ✓ | +5 new tests | frontend-only phase)
 - **`frontend/src/types/chartIndicators.ts`** — `IndicatorInstance` interface extended with three new fields: `instanceLabel` (compact label derived from tool abbreviation + parameters, e.g. "SMA (20)"), `instanceColor` (palette-assigned hex color string, set by ChartIndicatorPanel), `visible` (boolean flag for hide/show, default true)

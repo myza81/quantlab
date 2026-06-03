@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Controls from './components/Controls'
 import Chart from './components/Chart'
 import { DraftWorkspace } from './components/DraftWorkspace'
@@ -28,6 +28,8 @@ import type { StrategyOverlay, SignalType } from './types/strategy'
 import type { CatalogOHLCVResponse, CatalogEntry } from './types/catalog'
 import type { ResearchSession } from './types/researchSession'
 import type { ForwardTestPrefill } from './types/forwardTesting'
+import { ChartIndicatorPanel } from './components/ChartIndicatorPanel'
+import type { IndicatorInstance } from './types/chartIndicators'
 
 type Status     = 'idle' | 'loading' | 'success' | 'error'
 type ActiveView = 'chart' | 'composer' | 'credentials' | 'report' | 'admin' | 'datasets' | 'history' | 'forward-test' | 'paper-trading' | 'lifecycle'
@@ -51,6 +53,34 @@ export default function App() {
   const [resumableRunId,     setResumableRunId]     = useState<string | null>(null)
   const [resuming,           setResuming]           = useState(false)
   const [forwardTestPrefill, setForwardTestPrefill] = useState<ForwardTestPrefill | null>(null)
+
+  // Chart-UX-3C.1: full indicator instances (visibility, colors, artifacts)
+  const [indicatorInstances, setIndicatorInstances] = useState<IndicatorInstance[]>([])
+
+  // Derived chart props — memoized to avoid spurious Chart effect re-runs
+  const visibleArtifacts = useMemo(() =>
+    indicatorInstances
+      .filter(i => i.visible && i.artifact !== null)
+      .map(i => {
+        const artifact = i.artifact!
+        // Patch series.default_color with user overrides so Chart doesn't need
+        // a separate seriesColorOverrides prop
+        if (Object.keys(i.seriesColors).length === 0) return artifact
+        return {
+          ...artifact,
+          series: artifact.series.map(s => ({
+            ...s,
+            default_color: i.seriesColors[s.series_id] ?? s.default_color,
+          })),
+        }
+      }),
+    [indicatorInstances]
+  )
+
+  const instanceColorMap = useMemo(
+    () => new Map(indicatorInstances.map(i => [i.instanceId, i.instanceColor])),
+    [indicatorInstances]
+  )
 
   // Restore lightweight session context on mount
   useEffect(() => {
@@ -106,6 +136,7 @@ export default function App() {
     setOverlay(null)
     setFetchMetadata(null)
     setCatalogMeta(null)
+    setIndicatorInstances([])
     try {
       const resp = await fetchOHLCV(p)
       setCandles(resp.candles)
@@ -192,6 +223,7 @@ export default function App() {
     setFetchMetadata(null)
     setCatalogMeta({ response, entry })
     setOverlay(null)
+    setIndicatorInstances([])
     setStatus('success')
     setError(null)
     setActiveView('chart')
@@ -341,6 +373,13 @@ export default function App() {
               onBacktestResult={handleBacktestResult}
               onNavigateToComposer={() => setActiveView('composer')}
             />
+            {/* Chart-UX-3C.1: Indicator panel lives in sidebar */}
+            <ChartIndicatorPanel
+              key={params ? `${params.symbol}|${params.timeframe}|${params.start}` : 'catalog'}
+              hasData={status === 'success' && candles.length > 0}
+              params={params}
+              onInstancesChange={setIndicatorInstances}
+            />
           </aside>
 
           {/* Chart area */}
@@ -370,6 +409,8 @@ export default function App() {
                   symbol={catalogMeta?.entry.symbol ?? params?.symbol ?? ''}
                   timeframe={catalogMeta?.entry.timeframe ?? params?.timeframe ?? ''}
                   overlay={overlay}
+                  indicatorArtifacts={visibleArtifacts}
+                  instanceColors={instanceColorMap}
                   onClearStrategyResults={clearStrategyResults}
                 />
               </>
@@ -557,7 +598,7 @@ const st: Record<string, React.CSSProperties> = {
     borderRight:   '1px solid #1a1a28',
     display:       'flex',
     flexDirection: 'column',
-    overflow:      'hidden',
+    overflowY:     'auto' as const,
   },
   chartArea: {
     flex:          1,
