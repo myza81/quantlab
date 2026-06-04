@@ -100,6 +100,19 @@ function makeInstanceLabel(
   return values.length === 0 ? abbrev : `${abbrev} (${values.join(', ')})`
 }
 
+/**
+ * Frontend UX defaults — override backend metadata defaults per tool_id.
+ * Only applied at instance creation time; never overwrites existing or
+ * restored instances.  Add new tool_ids here as needed.
+ */
+const _UX_DEFAULTS: Record<string, Record<string, number | string>> = {
+  sma:  { period: 21 },
+  ema:  { period: 9  },
+  rsi:  { period: 14 },
+  atr:  { period: 14 },
+  macd: { fast: 12, slow: 26, signal: 9 },
+}
+
 function getDefaultParameters(
   metadata: ChartIndicatorMetadata,
 ): Record<string, number | string> {
@@ -109,6 +122,11 @@ function getDefaultParameters(
     if (spec.default !== null && spec.default !== undefined) {
       result[spec.name] = spec.default as number | string
     }
+  }
+  // Apply UX overrides (only for params already present in result)
+  const overrides = _UX_DEFAULTS[metadata.tool_id] ?? {}
+  for (const [key, val] of Object.entries(overrides)) {
+    if (key in result) result[key] = val
   }
   return result
 }

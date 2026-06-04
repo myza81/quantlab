@@ -64,6 +64,17 @@ const MOCK_META: ChartIndicatorsListResponse = {
       chart_pane: 'price_overlay', render_type: 'line', series_kind: 'continuous',
       output_series: [{ series_id: 'sma', label: 'SMA', pane: 'price_overlay', render_type: 'line', default_color: '#f59e0b' }],
       editable_parameters: ['period'],
+      // backend default is 20; UX default overrides to 21
+      parameters: [{ name: 'period', description: 'Window', type_label: 'int', required: true, default: 20, min_value: 1, max_value: null }],
+      visible_on_chart: true,
+    },
+    {
+      tool_id: 'ema', display_name: 'Exponential Moving Average',
+      description: 'EMA.', category: 'Trend',
+      chart_pane: 'price_overlay', render_type: 'line', series_kind: 'continuous',
+      output_series: [{ series_id: 'ema', label: 'EMA', pane: 'price_overlay', render_type: 'line', default_color: '#3b82f6' }],
+      editable_parameters: ['period'],
+      // backend default is 20; UX default overrides to 9
       parameters: [{ name: 'period', description: 'Window', type_label: 'int', required: true, default: 20, min_value: 1, max_value: null }],
       visible_on_chart: true,
     },
@@ -470,5 +481,97 @@ describe('ChartIndicatorPanel', () => {
       const last: IndicatorInstance[] = onChange.mock.calls[onChange.mock.calls.length - 1][0]
       expect(Object.values(last[0].seriesColors).some(c => c === '#ff0000')).toBe(true)
     })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Default parameters (Chart-UX-3C.6A)
+  // ---------------------------------------------------------------------------
+
+  it('29. SMA instance created with UX default period=21 (not backend default 20)', async () => {
+    const onChange = vi.fn()
+    renderPanel({ onInstancesChange: onChange })
+    await addIndicator('sma')
+    await waitFor(() => {
+      const calls = onChange.mock.calls.filter(c => c[0].length > 0 && c[0][0].parameters?.period !== undefined)
+      expect(calls.length).toBeGreaterThan(0)
+      const inst: IndicatorInstance = calls[calls.length - 1][0][0]
+      expect(inst.parameters.period).toBe(21)
+    })
+  })
+
+  it('30. EMA instance created with UX default period=9 (not backend default 20)', async () => {
+    const onChange = vi.fn()
+    renderPanel({ onInstancesChange: onChange })
+    await addIndicator('ema')
+    await waitFor(() => {
+      const calls = onChange.mock.calls.filter(c => c[0].length > 0 && c[0][0].parameters?.period !== undefined)
+      expect(calls.length).toBeGreaterThan(0)
+      const inst: IndicatorInstance = calls[calls.length - 1][0][0]
+      expect(inst.parameters.period).toBe(9)
+    })
+  })
+
+  it('31. RSI uses its own UX default (period=14 matches backend, no override needed)', async () => {
+    const onChange = vi.fn()
+    renderPanel({ onInstancesChange: onChange })
+    await addIndicator('rsi')
+    await waitFor(() => {
+      const calls = onChange.mock.calls.filter(c => c[0].length > 0 && c[0][0].parameters?.period !== undefined)
+      expect(calls.length).toBeGreaterThan(0)
+      const inst: IndicatorInstance = calls[calls.length - 1][0][0]
+      expect(inst.parameters.period).toBe(14)
+    })
+  })
+
+  it('32. user-edited period survives Apply without reverting to UX default', async () => {
+    renderPanel()
+    await addIndicator('sma')
+    await waitFor(() => expect(document.querySelector('[data-testid^="settings-"]')).toBeInTheDocument())
+
+    fireEvent.click(document.querySelector('[data-testid^="settings-"]') as HTMLButtonElement)
+    await waitFor(() => expect(document.querySelector('[data-testid^="param-"]')).toBeInTheDocument())
+
+    const paramInput = document.querySelector('[data-testid^="param-"]') as HTMLInputElement
+    fireEvent.change(paramInput, { target: { value: '50' } })
+
+    await act(async () => {
+      fireEvent.click(document.querySelector('[data-testid^="apply-"]') as HTMLButtonElement)
+    })
+
+    // Verify computeIndicatorArtifact was called with user's value, not UX default
+    const lastCall = mockCompute.mock.calls[mockCompute.mock.calls.length - 1][0]
+    expect(lastCall.parameters.period).toBe(50)
+  })
+
+  it('33. two SMA instances each receive UX default period=21', async () => {
+    const onChange = vi.fn()
+    renderPanel({ onInstancesChange: onChange })
+    await addIndicator('sma')
+    await addIndicator('sma')
+    await waitFor(() => {
+      const calls = onChange.mock.calls.filter(c => c[0].length === 2)
+      expect(calls.length).toBeGreaterThan(0)
+      const [inst1, inst2]: IndicatorInstance[] = calls[calls.length - 1][0]
+      expect(inst1.parameters.period).toBe(21)
+      expect(inst2.parameters.period).toBe(21)
+    })
+  })
+
+  it('34. SMA instance label reflects UX default — "SMA (21)" not "SMA (20)"', async () => {
+    renderPanel()
+    await addIndicator('sma')
+    await waitFor(() => {
+      const labelEl = document.querySelector('[data-testid^="label-"]')
+      expect(labelEl?.textContent).toContain('21')
+    })
+  })
+
+  it('35. computeIndicatorArtifact called with UX default period=21 for SMA', async () => {
+    renderPanel()
+    await addIndicator('sma')
+    await waitFor(() => expect(mockCompute).toHaveBeenCalled())
+    const firstCall = mockCompute.mock.calls[0][0]
+    expect(firstCall.tool_id).toBe('sma')
+    expect(firstCall.parameters.period).toBe(21)
   })
 })
