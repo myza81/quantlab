@@ -460,3 +460,98 @@ describe('BacktestReportPage — Start Forward Test (Phase R5)', () => {
     expect(screen.queryByTestId('start-forward-test-btn')).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Strategy-UX-1I — Lifecycle guidance state mismatch on Backtest Report page
+// ---------------------------------------------------------------------------
+
+describe('BacktestReportPage lifecycle guidance consistency (Strategy-UX-1I)', () => {
+  it('completed backtest for validated draft: guidance does not say "No completed backtest found"', () => {
+    render(
+      <BacktestReportPage
+        report={makeReport('completed', 'validated')}
+        onBack={vi.fn()}
+      />
+    )
+    expect(screen.queryByText(/No completed backtest found/i)).toBeNull()
+  })
+
+  it('completed backtest for validated draft: guidance does not recommend "Run Backtest"', () => {
+    render(
+      <BacktestReportPage
+        report={makeReport('completed', 'validated')}
+        onBack={vi.fn()}
+      />
+    )
+    // lgc-next-action shows the guidance card's next action
+    const nextActionEl = screen.getByTestId('lgc-next-action')
+    expect(nextActionEl.textContent).not.toMatch(/Run Backtest/i)
+  })
+
+  it('completed backtest for validated draft: guidance shows Promote to Backtest Complete', () => {
+    render(
+      <BacktestReportPage
+        report={makeReport('completed', 'validated')}
+        onBack={vi.fn()}
+      />
+    )
+    const nextActionEl = screen.getByTestId('lgc-next-action')
+    expect(nextActionEl.textContent).toMatch(/Promote to Backtest Complete/i)
+  })
+
+  it('promotion card and guidance card agree: both ready, no blocker', () => {
+    render(
+      <BacktestReportPage
+        report={makeReport('completed', 'validated')}
+        onBack={vi.fn()}
+        onPromoteDraft={vi.fn()}
+      />
+    )
+    // Promotion evidence panel exists
+    expect(screen.getByTestId('bt-evidence-panel')).toBeTruthy()
+    // Guidance card blockers: none (lgc-no-blockers present, not lgc-blocker-item)
+    expect(screen.queryByTestId('lgc-blocker-item')).toBeNull()
+    expect(screen.getByTestId('lgc-no-blockers')).toBeTruthy()
+  })
+
+  it('incomplete backtest does not produce guidance (btGuidance is null)', () => {
+    render(
+      <BacktestReportPage
+        report={makeReport('running', 'validated')}
+        onBack={vi.fn()}
+      />
+    )
+    // No guidance card rendered for non-completed run
+    expect(screen.queryByTestId('lgc-next-action')).toBeNull()
+  })
+
+  it('after successful promotion: guidance advances to next lifecycle step', async () => {
+    render(
+      <BacktestReportPage
+        report={makeReport('completed', 'validated')}
+        onBack={vi.fn()}
+        onPromoteDraft={vi.fn().mockResolvedValue(undefined)}
+      />
+    )
+    fireEvent.click(screen.getByTestId('promote-to-backtested-btn'))
+    await waitFor(() => screen.getByTestId('promotion-success'))
+    // After promotion, guidance should reflect 'backtested' stage
+    const nextActionEl = screen.getByTestId('lgc-next-action')
+    expect(nextActionEl.textContent).not.toMatch(/Promote to Backtest Complete/i)
+    expect(nextActionEl.textContent).not.toMatch(/Run Backtest/i)
+    // Backtested stage next action is forward-test related
+    expect(nextActionEl.textContent).toMatch(/Forward Test|Create Forward/i)
+  })
+
+  it('draft_at_run = "backtested": guidance reflects already-backtested state', () => {
+    render(
+      <BacktestReportPage
+        report={makeReport('completed', 'backtested')}
+        onBack={vi.fn()}
+      />
+    )
+    const nextActionEl = screen.getByTestId('lgc-next-action')
+    expect(nextActionEl.textContent).not.toMatch(/Promote to Backtest Complete/i)
+    expect(nextActionEl.textContent).not.toMatch(/Run Backtest/i)
+  })
+})

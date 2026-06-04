@@ -144,8 +144,20 @@ export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToCo
     return parts.join(' · ')
   })()
 
+  // After a successful promotion the draft advances to 'backtested'. The report
+  // page only has a historical snapshot (lifecycleAtRun), so we derive the
+  // effective status here rather than re-fetching the draft.
+  const effectiveLifecycleStatus: string =
+    promotionState === 'success' ? 'backtested' : (lifecycleAtRun ?? 'draft')
+
   const btGuidance = run.status === 'completed' && lifecycleAtRun != null
-    ? computeGuidance({ lifecycleStatus: lifecycleAtRun })
+    ? computeGuidance({
+        lifecycleStatus:      effectiveLifecycleStatus,
+        // This page IS the completed backtest evidence — pass it directly
+        // instead of defaulting to false, which caused "Run Backtest" to appear
+        // alongside "Promotion Ready" on the same page.
+        hasCompletedBacktest: run.status === 'completed',
+      })
     : null
   const btNavCallback = btGuidance?.navigateTarget === 'composer' ? onNavigateToComposer : undefined
 
