@@ -50,7 +50,7 @@ import type {
   Time,
   UTCTimestamp,
   SeriesMarker,
-  IRange,
+  LogicalRange,
   MouseEventParams,
   LineData,
   HistogramData,
@@ -143,11 +143,11 @@ function buildAlignedHistData(
   })
 }
 
-/** Reapply price chart visible range to an oscillator chart (safe — ignores errors). */
+/** Reapply price chart logical range to an oscillator chart (safe — ignores errors). */
 function resyncRange(oscChart: IChartApi, priceChart: IChartApi | null) {
   if (!priceChart) return
-  const range = priceChart.timeScale().getVisibleRange()
-  if (range) try { oscChart.timeScale().setVisibleRange(range) } catch { /* not ready */ }
+  const range = priceChart.timeScale().getVisibleLogicalRange()
+  if (range) try { oscChart.timeScale().setVisibleLogicalRange(range) } catch { /* not ready */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -278,7 +278,9 @@ function DragSplitter({
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!dragRef.current) return
-    const delta = e.clientY - dragRef.current.startY
+    // Inverted: splitter is the top boundary of the pane below it, so dragging
+    // upward (negative clientY delta) should increase the pane height.
+    const delta = dragRef.current.startY - e.clientY
     const newH  = Math.min(maxHeight, Math.max(minHeight, dragRef.current.startH + delta))
     dragRef.current.liveH = newH
     scheduleApply(newH)
@@ -368,15 +370,17 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // One-directional time-scale + crosshair sync: price chart → this pane
+  // One-directional logical-range + crosshair sync: price chart → this pane.
+  // Logical range syncs correctly at extreme zoom levels where visible time range
+  // can clamp and stop changing while the logical viewport continues to move.
   useEffect(() => {
     const chart = chartRef.current
     if (!chart || !priceChart) return
 
-    const syncFromPrice = (range: IRange<Time> | null) => {
+    const syncFromPrice = (range: LogicalRange | null) => {
       if (isSyncingRef.current || !range || seriesMapRef.current.size === 0) return
       isSyncingRef.current = true
-      try { chart.timeScale().setVisibleRange(range) } catch { /* not ready */ }
+      try { chart.timeScale().setVisibleLogicalRange(range) } catch { /* not ready */ }
       isSyncingRef.current = false
     }
 
@@ -393,11 +397,11 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
       }
     }
 
-    priceChart.timeScale().subscribeVisibleTimeRangeChange(syncFromPrice)
+    priceChart.timeScale().subscribeVisibleLogicalRangeChange(syncFromPrice)
     priceChart.subscribeCrosshairMove(syncCrosshair)
 
     return () => {
-      priceChart.timeScale().unsubscribeVisibleTimeRangeChange(syncFromPrice)
+      priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncFromPrice)
       priceChart.unsubscribeCrosshairMove(syncCrosshair)
     }
   }, [priceChart])
@@ -459,11 +463,12 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
       }
     }
 
-    // Apply price-chart range instead of fitContent to preserve user zoom
+    // Apply price-chart logical range instead of fitContent to preserve user zoom.
+    // Logical range syncs correctly at extreme zoom levels.
     if (seriesMapRef.current.size > 0) {
-      const priceRange = priceChart?.timeScale().getVisibleRange()
+      const priceRange = priceChart?.timeScale().getVisibleLogicalRange()
       if (priceRange) {
-        try { chart.timeScale().setVisibleRange(priceRange) } catch { chart.timeScale().fitContent() }
+        try { chart.timeScale().setVisibleLogicalRange(priceRange) } catch { chart.timeScale().fitContent() }
       } else {
         chart.timeScale().fitContent()
       }
@@ -635,22 +640,22 @@ export default function Chart({
     }
   }, [])
 
-  // ── One-directional sync: price chart → strategy oscillator ──────────────
+  // ── One-directional logical-range sync: price chart → strategy oscillator ──
   useEffect(() => {
     const priceChart = chartRef.current
     const oscChart   = oscChartRef.current
     if (!priceChart || !oscChart) return
 
-    const syncFromPrice = (range: IRange<Time> | null) => {
+    const syncFromPrice = (range: LogicalRange | null) => {
       if (oscSyncingRef.current || !range) return
       oscSyncingRef.current = true
-      try { oscChart.timeScale().setVisibleRange(range) } catch { /* not ready */ }
+      try { oscChart.timeScale().setVisibleLogicalRange(range) } catch { /* not ready */ }
       oscSyncingRef.current = false
     }
 
-    priceChart.timeScale().subscribeVisibleTimeRangeChange(syncFromPrice)
+    priceChart.timeScale().subscribeVisibleLogicalRangeChange(syncFromPrice)
     return () => {
-      priceChart.timeScale().unsubscribeVisibleTimeRangeChange(syncFromPrice)
+      priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncFromPrice)
     }
   }, [])
 
@@ -746,10 +751,10 @@ export default function Chart({
           }
         }
       })
-      // Apply price-chart range instead of fitContent
-      const priceRange = chartRef.current?.timeScale().getVisibleRange()
+      // Apply price-chart logical range instead of fitContent
+      const priceRange = chartRef.current?.timeScale().getVisibleLogicalRange()
       if (priceRange) {
-        try { oscChart.timeScale().setVisibleRange(priceRange) } catch { oscChart.timeScale().fitContent() }
+        try { oscChart.timeScale().setVisibleLogicalRange(priceRange) } catch { oscChart.timeScale().fitContent() }
       } else {
         oscChart.timeScale().fitContent()
       }
