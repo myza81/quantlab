@@ -1441,3 +1441,57 @@ class TestIndicatorArtifactEMASource:
             )
         finally:
             _cleanup()
+
+
+# ---------------------------------------------------------------------------
+# short_name in chart indicator metadata — Strategy-UX-1E
+# ---------------------------------------------------------------------------
+
+class TestChartIndicatorShortName:
+    """short_name is exposed in GET /chart/indicators for compact UI labels."""
+
+    def _get_indicators(self) -> dict[str, dict]:
+        candles = _make_candles(1)
+        client  = _client_with_mocks(candles)
+        try:
+            resp = client.get("/chart/indicators")
+            assert resp.status_code == 200
+            return {m["tool_id"]: m for m in resp.json()["indicators"]}
+        finally:
+            _cleanup()
+
+    def test_ema_short_name(self) -> None:
+        indicators = self._get_indicators()
+        assert indicators["ema"]["short_name"] == "EMA"
+
+    def test_sma_short_name(self) -> None:
+        indicators = self._get_indicators()
+        assert indicators["sma"]["short_name"] == "SMA"
+
+    def test_rsi_short_name(self) -> None:
+        indicators = self._get_indicators()
+        assert indicators["rsi"]["short_name"] == "RSI"
+
+    def test_macd_short_name(self) -> None:
+        indicators = self._get_indicators()
+        assert indicators["macd"]["short_name"] == "MACD"
+
+    def test_atr_short_name(self) -> None:
+        indicators = self._get_indicators()
+        assert indicators["atr"]["short_name"] == "ATR"
+
+    def test_bollinger_short_name(self) -> None:
+        indicators = self._get_indicators()
+        assert indicators["bollinger_bands"]["short_name"] == "BB"
+
+    def test_short_name_none_for_tool_without_it_is_null(self) -> None:
+        """ChartIndicatorMetadata.short_name defaults to None (not a broken value)."""
+        from backend.api.schemas.chart import ChartIndicatorMetadata
+        meta = ChartIndicatorMetadata(
+            tool_id="test", display_name="Test", description="Test.",
+            category="Trend", chart_pane="price_overlay", render_type="line",
+            series_kind="continuous", output_series=[], editable_parameters=[],
+            parameters=[], visible_on_chart=True,
+            # short_name intentionally omitted — should default to None
+        )
+        assert meta.short_name is None

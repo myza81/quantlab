@@ -40,6 +40,7 @@ from backend.strategy_runtime.visualization import (
     IndicatorSeriesKind,
 )
 from backend.tools.models import (
+    ChartSeriesSpec,
     ParameterSpec,
     ToolCategory,
     ToolMetadata,
@@ -49,6 +50,7 @@ from backend.tools.models import (
 BOLLINGER_METADATA = ToolMetadata(
     tool_id="bollinger_bands",
     name="Bollinger Bands",
+    short_name="BB",
     version="1.0.0",
     category=ToolCategory.indicator,
     status=ToolStatus.stable,
@@ -102,6 +104,40 @@ BOLLINGER_METADATA = ToolMetadata(
     visualization_capabilities=frozenset(),  # all outputs are price-pane overlays
     min_warmup_bars=1,  # minimum when period=2; actual warmup = period - 1
     stateful=False,     # each bar's output depends only on the last `period` closes
+    visible_on_chart=True,
+    chart_pane="price_overlay",
+    chart_render_type="band",
+    chart_series_kind="continuous",
+    chart_category="Volatility",
+    chart_subcategory="Bands",
+    chart_search_keywords=(
+        "bollinger bands", "bb", "bands", "volatility", "standard deviation", "envelope",
+    ),
+    chart_display_order=10,
+    chart_editable_parameters=("period", "std_dev"),
+    chart_output_series=(
+        ChartSeriesSpec(
+            series_id="upper_band",
+            label="Upper Band",
+            pane="price_overlay",
+            render_type="line",
+            default_color="#94a3b8",
+        ),
+        ChartSeriesSpec(
+            series_id="middle_band",
+            label="Middle Band",
+            pane="price_overlay",
+            render_type="line",
+            default_color="#f59e0b",
+        ),
+        ChartSeriesSpec(
+            series_id="lower_band",
+            label="Lower Band",
+            pane="price_overlay",
+            render_type="line",
+            default_color="#94a3b8",
+        ),
+    ),
 )
 
 

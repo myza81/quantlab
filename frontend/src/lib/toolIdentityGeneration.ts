@@ -132,3 +132,51 @@ export function generateDisplayName(
 
   return `${toolName} (${values.join(', ')})`
 }
+
+/**
+ * Generate a compact, metadata-driven label for rule builders and indicator chips.
+ *
+ * Uses `shortName` (e.g. "EMA") as the prefix when available, falling back to
+ * `toolName` (e.g. "Exponential Moving Average") so future custom tools work
+ * automatically even without a short_name.
+ *
+ * Format: `{prefix}({param1, param2, ...})` — no space before parenthesis.
+ *
+ * Examples (with short_name):
+ *   EMA  + {period: 21, source: "close"} → "EMA(21, close)"
+ *   SMA  + {period: 50}                  → "SMA(50)"
+ *   RSI  + {period: 14}                  → "RSI(14)"
+ *   MACD + {fast_period: 12, ...}        → "MACD(12, 26, 9)"
+ *   BB   + {period: 20, std_dev: 2}      → "BB(20, 2)"
+ *
+ * Examples (without short_name fallback):
+ *   undefined + "My Custom Tool" + {period: 5} → "My Custom Tool(5)"
+ *
+ * @param toolId      Internal tool identifier (used to look up identity fields)
+ * @param shortName   Short label from metadata (e.g. "EMA"); undefined → falls back
+ * @param toolName    Full name from metadata (fallback when shortName absent)
+ * @param parameters  Full parameter dict for the instance
+ * @returns Compact label suitable for rule builders and indicator chips
+ */
+export function generateCompactLabel(
+  toolId: string,
+  shortName: string | undefined,
+  toolName: string,
+  parameters: Record<string, unknown>,
+): string {
+  const prefix = shortName ?? toolName
+  const fields  = IDENTITY_FIELDS[toolId] ?? []
+
+  if (fields.length === 0) return prefix
+
+  const values: string[] = []
+  for (const field of fields) {
+    const value = parameters[field]
+    if (value !== null && value !== undefined) {
+      values.push(String(value))
+    }
+  }
+
+  if (values.length === 0) return prefix
+  return `${prefix}(${values.join(', ')})`
+}

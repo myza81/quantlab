@@ -59,7 +59,7 @@ const MOCK_PARAMS: MarketDataParams = {
 const MOCK_META: ChartIndicatorsListResponse = {
   indicators: [
     {
-      tool_id: 'sma', display_name: 'Simple Moving Average',
+      tool_id: 'sma', display_name: 'Simple Moving Average', short_name: 'SMA',
       description: 'Arithmetic mean.', category: 'Trend',
       chart_pane: 'price_overlay', render_type: 'line', series_kind: 'continuous',
       output_series: [{ series_id: 'sma', label: 'SMA', pane: 'price_overlay', render_type: 'line', default_color: '#f59e0b' }],
@@ -69,7 +69,7 @@ const MOCK_META: ChartIndicatorsListResponse = {
       visible_on_chart: true,
     },
     {
-      tool_id: 'ema', display_name: 'Exponential Moving Average',
+      tool_id: 'ema', display_name: 'Exponential Moving Average', short_name: 'EMA',
       description: 'EMA.', category: 'Trend',
       chart_pane: 'price_overlay', render_type: 'line', series_kind: 'continuous',
       output_series: [{ series_id: 'ema', label: 'EMA', pane: 'price_overlay', render_type: 'line', default_color: '#3b82f6' }],
@@ -83,7 +83,7 @@ const MOCK_META: ChartIndicatorsListResponse = {
       visible_on_chart: true,
     },
     {
-      tool_id: 'rsi', display_name: 'Relative Strength Index',
+      tool_id: 'rsi', display_name: 'Relative Strength Index', short_name: 'RSI',
       description: 'Momentum oscillator.', category: 'Momentum',
       chart_pane: 'oscillator_pane', render_type: 'line', series_kind: 'continuous',
       output_series: [{ series_id: 'rsi', label: 'RSI', pane: 'oscillator_pane', render_type: 'line', default_color: '#a855f7' }],

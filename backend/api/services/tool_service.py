@@ -39,6 +39,7 @@ def _serialize_tool_metadata(metadata: ToolMetadata) -> ToolMetadataResponse:
     return ToolMetadataResponse(
         tool_id=metadata.tool_id,
         name=metadata.name,
+        short_name=metadata.short_name,
         version=metadata.version,
         category=metadata.category.value,
         status=metadata.status.value,

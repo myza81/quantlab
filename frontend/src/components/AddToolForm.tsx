@@ -19,7 +19,7 @@
 import { useEffect, useState } from 'react'
 import { fetchTools } from '../api/tools'
 import type { ToolMetadataResponse } from '../api/tools'
-import { generateInstanceIdBase, generateDisplayName } from '../lib/toolIdentityGeneration'
+import { generateInstanceIdBase, generateCompactLabel } from '../lib/toolIdentityGeneration'
 
 // ---------------------------------------------------------------------------
 // Special-rendering rules for well-known parameter names
@@ -120,7 +120,7 @@ export function AddToolForm({ draftId: _draftId, onSubmit, onCancel }: Props) {
       else                               { typed[p.name] = raw }
     }
     setGeneratedInstanceId(generateInstanceIdBase(toolId, typed))
-    setGeneratedDisplayName(generateDisplayName(toolId, toolMeta.name, typed))
+    setGeneratedDisplayName(generateCompactLabel(toolId, toolMeta.short_name, toolMeta.name, typed))
   }
 
   async function handleSubmit() {

@@ -6,6 +6,7 @@ import {
   generateInstanceIdBase,
   ensureUniqueInstanceId,
   generateDisplayName,
+  generateCompactLabel,
 } from '../toolIdentityGeneration'
 
 describe('toolIdentityGeneration', () => {
@@ -130,6 +131,66 @@ describe('toolIdentityGeneration', () => {
     it('skips missing parameters', () => {
       const name = generateDisplayName('sma', 'SMA', { period: 21 })
       expect(name).toBe('SMA (21)')
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // generateCompactLabel — Strategy-UX-1E
+  // ---------------------------------------------------------------------------
+
+  describe('generateCompactLabel', () => {
+    it('uses short_name as prefix for EMA', () => {
+      const label = generateCompactLabel('ema', 'EMA', 'Exponential Moving Average', { period: 9, source: 'close' })
+      expect(label).toBe('EMA(9, close)')
+    })
+
+    it('uses short_name as prefix for SMA without source', () => {
+      const label = generateCompactLabel('sma', 'SMA', 'Simple Moving Average', { period: 21 })
+      expect(label).toBe('SMA(21)')
+    })
+
+    it('uses short_name for RSI', () => {
+      const label = generateCompactLabel('rsi', 'RSI', 'Relative Strength Index', { period: 14 })
+      expect(label).toBe('RSI(14)')
+    })
+
+    it('uses short_name for MACD with three periods', () => {
+      const label = generateCompactLabel('macd', 'MACD', 'Moving Average Convergence Divergence', {
+        fast_period: 12, slow_period: 26, signal_period: 9,
+      })
+      expect(label).toBe('MACD(12, 26, 9)')
+    })
+
+    it('uses short_name "BB" for Bollinger Bands', () => {
+      const label = generateCompactLabel('bollinger', 'BB', 'Bollinger Bands', { period: 20, std_dev: 2 })
+      expect(label).toBe('BB(20, 2)')
+    })
+
+    it('no space before parenthesis (compact format)', () => {
+      const label = generateCompactLabel('ema', 'EMA', 'Exponential Moving Average', { period: 21 })
+      expect(label).not.toContain('EMA (')
+      expect(label).toBe('EMA(21)')
+    })
+
+    it('falls back to toolName when short_name is undefined', () => {
+      const label = generateCompactLabel('ema', undefined, 'Exponential Moving Average', { period: 9, source: 'close' })
+      expect(label).toBe('Exponential Moving Average(9, close)')
+    })
+
+    it('returns just prefix for unknown tool without identity fields', () => {
+      const label = generateCompactLabel('unknown_tool', 'UT', 'Unknown Tool', { param: 123 })
+      expect(label).toBe('UT')
+    })
+
+    it('returns just short_name when no identity params present', () => {
+      const label = generateCompactLabel('rsi', 'RSI', 'Relative Strength Index', {})
+      expect(label).toBe('RSI')
+    })
+
+    it('custom tool without short_name falls back to full name', () => {
+      const label = generateCompactLabel('my_custom_indicator', undefined, 'My Custom Indicator', { period: 5 })
+      // No identity fields for custom tool → just the full name (no params appended)
+      expect(label).toBe('My Custom Indicator')
     })
   })
 })

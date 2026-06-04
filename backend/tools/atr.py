@@ -35,6 +35,7 @@ from backend.strategy_runtime.visualization import (
     IndicatorSeriesKind,
 )
 from backend.tools.models import (
+    ChartSeriesSpec,
     ParameterSpec,
     ToolCategory,
     ToolMetadata,
@@ -45,6 +46,7 @@ from backend.tools.models import (
 ATR_METADATA = ToolMetadata(
     tool_id="atr",
     name="Average True Range",
+    short_name="ATR",
     version="1.0.0",
     category=ToolCategory.indicator,
     status=ToolStatus.stable,
@@ -93,6 +95,26 @@ ATR_METADATA = ToolMetadata(
     }),
     min_warmup_bars=1,  # minimum when period=1; actual warmup = period bars
     stateful=True,      # Wilder smoothing: each bar depends on previous ATR value
+    visible_on_chart=True,
+    chart_pane="oscillator_pane",
+    chart_render_type="line",
+    chart_series_kind="continuous",
+    chart_category="Volatility",
+    chart_subcategory=None,
+    chart_search_keywords=(
+        "average true range", "atr", "volatility", "range", "true range",
+    ),
+    chart_display_order=20,
+    chart_editable_parameters=("period",),
+    chart_output_series=(
+        ChartSeriesSpec(
+            series_id="atr",
+            label="ATR",
+            pane="oscillator_pane",
+            render_type="line",
+            default_color="#ef4444",
+        ),
+    ),
 )
 
 

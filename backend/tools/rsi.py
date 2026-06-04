@@ -39,6 +39,7 @@ from backend.strategy_runtime.visualization import (
     IndicatorSeriesKind,
 )
 from backend.tools.models import (
+    ChartSeriesSpec,
     ParameterSpec,
     ToolCategory,
     ToolMetadata,
@@ -49,6 +50,7 @@ from backend.tools.models import (
 RSI_METADATA = ToolMetadata(
     tool_id="rsi",
     name="Relative Strength Index",
+    short_name="RSI",
     version="1.0.0",
     category=ToolCategory.indicator,
     status=ToolStatus.stable,
@@ -96,6 +98,26 @@ RSI_METADATA = ToolMetadata(
     }),
     min_warmup_bars=2,  # minimum when period=2; actual warmup = period bars
     stateful=True,      # Wilder smoothing: each bar depends on previous avg_gain/avg_loss
+    visible_on_chart=True,
+    chart_pane="oscillator_pane",
+    chart_render_type="line",
+    chart_series_kind="continuous",
+    chart_category="Momentum",
+    chart_subcategory=None,
+    chart_search_keywords=(
+        "relative strength index", "rsi", "momentum", "overbought", "oversold",
+    ),
+    chart_display_order=10,
+    chart_editable_parameters=("period",),
+    chart_output_series=(
+        ChartSeriesSpec(
+            series_id="rsi",
+            label="RSI",
+            pane="oscillator_pane",
+            render_type="line",
+            default_color="#a855f7",
+        ),
+    ),
 )
 
 

@@ -41,7 +41,7 @@ import { fetchTools } from '../api/tools'
 import { setSemantics, validateSemanticsPayload } from '../api/semantics'
 import { computeGuidance } from '../lib/lifecycleGuidance'
 import { LifecycleGuidanceCard } from './LifecycleGuidanceCard'
-import { generateDisplayName } from '../lib/toolIdentityGeneration'
+import { generateCompactLabel } from '../lib/toolIdentityGeneration'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -287,8 +287,9 @@ export function DraftWorkspace() {
                 selectedDraft.toolset.tools.flatMap(t => {
                   const meta = toolRegistry[t.tool_id]
                   const outputs = meta?.output_feature_names ?? [t.tool_id]
-                  const displayLabel = generateDisplayName(
+                  const displayLabel = generateCompactLabel(
                     t.tool_id,
+                    meta?.short_name,
                     meta?.name ?? t.tool_id,
                     t.parameters as Record<string, unknown>,
                   )

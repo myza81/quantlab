@@ -89,15 +89,18 @@ function makeInstanceLabel(
   displayName: string,
   editableParameters: string[],
   parameters: Record<string, number | string>,
+  shortName?: string,
 ): string {
-  const abbrev = displayName
+  // Use short_name from metadata when available; otherwise abbreviate display name
+  // (first letter of each word) for backward compat with future custom tools.
+  const prefix = shortName ?? displayName
     .split(/\s+/)
     .map(w => w[0]?.toUpperCase() ?? '')
     .join('')
   const values = editableParameters
     .filter(p => parameters[p] !== undefined)
     .map(p => parameters[p])
-  return values.length === 0 ? abbrev : `${abbrev} (${values.join(', ')})`
+  return values.length === 0 ? prefix : `${prefix}(${values.join(', ')})`
 }
 
 /**
@@ -266,7 +269,7 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
     const color = nextPaletteColor()
     const instanceId = `${metadata.tool_id}_${_instanceCounter}`
     const defaultParams = getDefaultParameters(metadata)
-    const label = makeInstanceLabel(metadata.display_name, metadata.editable_parameters, defaultParams)
+    const label = makeInstanceLabel(metadata.display_name, metadata.editable_parameters, defaultParams, metadata.short_name)
 
     const newInstance: IndicatorInstance = {
       instanceId,
@@ -316,6 +319,7 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
       instance.displayName,
       indicators.find(m => m.tool_id === instance.toolId)?.editable_parameters ?? [],
       parsed,
+      indicators.find(m => m.tool_id === instance.toolId)?.short_name,
     )
     // Update label when params change
     setInstances(prev => prev.map(i =>

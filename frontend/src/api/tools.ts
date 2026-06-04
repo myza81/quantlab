@@ -11,6 +11,7 @@ export interface ToolParameterResponse {
 export interface ToolMetadataResponse {
   tool_id: string
   name: string
+  short_name?: string
   version: string
   category: string
   status: string

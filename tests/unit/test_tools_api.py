@@ -148,3 +148,65 @@ class TestGetTools:
         response = client.get("/tools")
 
         assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# short_name — Strategy-UX-1E (metadata-driven compact labels)
+# ---------------------------------------------------------------------------
+
+class TestToolShortName:
+    """short_name is metadata-driven and exposed via the /tools API response."""
+
+    def test_ema_has_short_name(self) -> None:
+        from backend.tools.ema import EMA_METADATA
+        assert EMA_METADATA.short_name == "EMA"
+
+    def test_sma_has_short_name(self) -> None:
+        from backend.tools.sma import SMA_METADATA
+        assert SMA_METADATA.short_name == "SMA"
+
+    def test_rsi_has_short_name(self) -> None:
+        from backend.tools.rsi import RSI_METADATA
+        assert RSI_METADATA.short_name == "RSI"
+
+    def test_macd_has_short_name(self) -> None:
+        from backend.tools.macd import MACD_METADATA
+        assert MACD_METADATA.short_name == "MACD"
+
+    def test_atr_has_short_name(self) -> None:
+        from backend.tools.atr import ATR_METADATA
+        assert ATR_METADATA.short_name == "ATR"
+
+    def test_bollinger_has_short_name(self) -> None:
+        from backend.tools.bollinger_bands import BOLLINGER_METADATA
+        assert BOLLINGER_METADATA.short_name == "BB"
+
+    def test_short_name_exposed_in_api_response(self) -> None:
+        """GET /tools must include short_name for all built-in tools."""
+        resp = _client().get("/tools")
+        assert resp.status_code == 200
+        tools = {t["tool_id"]: t for t in resp.json()["tools"]}
+        assert tools["ema"]["short_name"] == "EMA"
+        assert tools["sma"]["short_name"] == "SMA"
+        assert tools["rsi"]["short_name"] == "RSI"
+        assert tools["macd"]["short_name"] == "MACD"
+        assert tools["atr"]["short_name"] == "ATR"
+        assert tools["bollinger_bands"]["short_name"] == "BB"
+
+    def test_tool_without_short_name_is_none(self) -> None:
+        """A ToolMetadata without short_name defaults to None."""
+        from backend.strategy_registry.models import RuntimeMode
+        meta = ToolMetadata(
+            tool_id="no_short",
+            name="Tool Without Short Name",
+            version="1.0.0",
+            category=ToolCategory.indicator,
+            status=ToolStatus.experimental,
+            description="No short_name defined.",
+            input_data_family="ohlcv",
+            output_feature_names=("value",),
+            parameters=(),
+            supported_runtime_modes=frozenset({RuntimeMode.RESEARCH}),
+            visualization_capabilities=frozenset(),
+        )
+        assert meta.short_name is None

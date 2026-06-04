@@ -31,6 +31,7 @@ export interface ChartIndicatorParameterSpec {
 export interface ChartIndicatorMetadata {
   tool_id: string
   display_name: string
+  short_name?: string                           // compact UI label, e.g. "EMA"; falls back to display_name
   description: string
   category: string                              // "Trend", "Momentum", "Volatility", etc.
   chart_pane: 'price_overlay' | 'oscillator_pane'

@@ -7,6 +7,7 @@ from backend.strategy_runtime.visualization import (
     IndicatorSeriesKind,
 )
 from backend.tools.models import (
+    ChartSeriesSpec,
     ParameterSpec,
     ToolCategory,
     ToolMetadata,
@@ -17,6 +18,7 @@ from backend.tools.models import (
 SMA_METADATA = ToolMetadata(
     tool_id="sma",
     name="Simple Moving Average",
+    short_name="SMA",
     version="1.0.0",
     category=ToolCategory.indicator,
     status=ToolStatus.stable,
@@ -61,6 +63,26 @@ SMA_METADATA = ToolMetadata(
     }),
     min_warmup_bars=0,  # minimum when period=1; actual warmup = period - 1
     stateful=False,
+    visible_on_chart=True,
+    chart_pane="price_overlay",
+    chart_render_type="line",
+    chart_series_kind="continuous",
+    chart_category="Trend",
+    chart_subcategory="Moving Averages",
+    chart_search_keywords=(
+        "simple moving average", "sma", "moving average", "ma", "average",
+    ),
+    chart_display_order=10,
+    chart_editable_parameters=("period",),
+    chart_output_series=(
+        ChartSeriesSpec(
+            series_id="sma",
+            label="SMA",
+            pane="price_overlay",
+            render_type="line",
+            default_color="#f59e0b",
+        ),
+    ),
 )
 
 

@@ -42,6 +42,7 @@ from backend.strategy_runtime.visualization import (
     IndicatorSeriesKind,
 )
 from backend.tools.models import (
+    ChartSeriesSpec,
     ParameterSpec,
     ToolCategory,
     ToolMetadata,
@@ -52,6 +53,7 @@ from backend.tools.models import (
 MACD_METADATA = ToolMetadata(
     tool_id="macd",
     name="Moving Average Convergence Divergence",
+    short_name="MACD",
     version="1.0.0",
     category=ToolCategory.indicator,
     status=ToolStatus.stable,
@@ -119,6 +121,40 @@ MACD_METADATA = ToolMetadata(
     # slow_period + signal_period - 2 = 2 + 2 - 2 = 2
     min_warmup_bars=2,
     stateful=True,  # recursive EMA: each bar depends on previous EMA values
+    visible_on_chart=True,
+    chart_pane="oscillator_pane",
+    chart_render_type="line",
+    chart_series_kind="continuous",
+    chart_category="Momentum",
+    chart_subcategory=None,
+    chart_search_keywords=(
+        "macd", "moving average convergence divergence", "histogram", "signal line",
+    ),
+    chart_display_order=20,
+    chart_editable_parameters=("fast_period", "slow_period", "signal_period"),
+    chart_output_series=(
+        ChartSeriesSpec(
+            series_id="macd_line",
+            label="MACD",
+            pane="oscillator_pane",
+            render_type="line",
+            default_color="#3b82f6",
+        ),
+        ChartSeriesSpec(
+            series_id="signal_line",
+            label="Signal",
+            pane="oscillator_pane",
+            render_type="line",
+            default_color="#f97316",
+        ),
+        ChartSeriesSpec(
+            series_id="histogram",
+            label="Histogram",
+            pane="oscillator_pane",
+            render_type="histogram",
+            default_color="#22c55e",
+        ),
+    ),
 )
 
 

@@ -18,7 +18,7 @@ import { AddToolForm } from './AddToolForm'
 import type { StrategyDraftData } from '../types/drafts'
 import type { ToolConfigurationInstance } from '../types/tools'
 import type { ToolMetadataResponse } from '../api/tools'
-import { generateDisplayName } from '../lib/toolIdentityGeneration'
+import { generateCompactLabel } from '../lib/toolIdentityGeneration'
 
 interface Props {
   draft: StrategyDraftData
@@ -133,8 +133,9 @@ export function ToolCompositionPanel({
       <div style={s.toolList}>
         {tools.map((tool, index) => {
           const meta = toolRegistry?.[tool.tool_id]
-          const instanceLabel = generateDisplayName(
+          const instanceLabel = generateCompactLabel(
             tool.tool_id,
+            meta?.short_name,
             meta?.name ?? tool.tool_id,
             tool.parameters as Record<string, unknown>,
           )

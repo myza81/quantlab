@@ -13,6 +13,7 @@ class ToolParameterResponse(BaseModel):
 class ToolMetadataResponse(BaseModel):
     tool_id: str
     name: str
+    short_name: str | None = None
     version: str
     category: str
     status: str

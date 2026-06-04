@@ -40,6 +40,7 @@ from backend.tools.models import (
 EMA_METADATA = ToolMetadata(
     tool_id="ema",
     name="Exponential Moving Average",
+    short_name="EMA",
     version="1.0.0",
     category=ToolCategory.indicator,
     status=ToolStatus.stable,
