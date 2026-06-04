@@ -17,9 +17,13 @@ import { useState } from 'react'
 import { AddToolForm } from './AddToolForm'
 import type { StrategyDraftData } from '../types/drafts'
 import type { ToolConfigurationInstance } from '../types/tools'
+import type { ToolMetadataResponse } from '../api/tools'
+import { generateDisplayName } from '../lib/toolIdentityGeneration'
 
 interface Props {
   draft: StrategyDraftData
+  /** Optional tool registry for human-friendly display labels (Strategy-UX-1B). */
+  toolRegistry?: Record<string, ToolMetadataResponse>
   onAddTool: (
     tool: { instance_id: string; tool_id: string; parameters: Record<string, unknown> },
     index?: number | null,
@@ -37,6 +41,7 @@ interface Props {
 
 export function ToolCompositionPanel({
   draft,
+  toolRegistry,
   onAddTool,
   onRemoveTool,
   onReorderTools,
@@ -126,26 +131,35 @@ export function ToolCompositionPanel({
       )}
 
       <div style={s.toolList}>
-        {tools.map((tool, index) => (
-          <ToolRow
-            key={tool.instance_id}
-            tool={tool}
-            index={index}
-            total={tools.length}
-            onMoveUp={() => handleMoveUp(index)}
-            onMoveDown={() => handleMoveDown(index)}
-            onToggleEnabled={() => handleToggleEnabled(tool)}
-            onRemove={() => handleRemove(tool.instance_id)}
-            onPatchParams={async (params) => {
-              setOpError(null)
-              try {
-                await onPatchTool(tool.instance_id, { parameters: params })
-              } catch (err) {
-                setOpError(err instanceof Error ? err.message : 'Patch failed')
-              }
-            }}
-          />
-        ))}
+        {tools.map((tool, index) => {
+          const meta = toolRegistry?.[tool.tool_id]
+          const instanceLabel = generateDisplayName(
+            tool.tool_id,
+            meta?.name ?? tool.tool_id,
+            tool.parameters as Record<string, unknown>,
+          )
+          return (
+            <ToolRow
+              key={tool.instance_id}
+              tool={tool}
+              index={index}
+              total={tools.length}
+              instanceLabel={instanceLabel}
+              onMoveUp={() => handleMoveUp(index)}
+              onMoveDown={() => handleMoveDown(index)}
+              onToggleEnabled={() => handleToggleEnabled(tool)}
+              onRemove={() => handleRemove(tool.instance_id)}
+              onPatchParams={async (params) => {
+                setOpError(null)
+                try {
+                  await onPatchTool(tool.instance_id, { parameters: params })
+                } catch (err) {
+                  setOpError(err instanceof Error ? err.message : 'Patch failed')
+                }
+              }}
+            />
+          )
+        })}
       </div>
     </div>
   )
@@ -159,6 +173,8 @@ interface ToolRowProps {
   tool: ToolConfigurationInstance
   index: number
   total: number
+  /** Human-friendly label, e.g. "EMA (9)" — falls back to instance_id if not provided */
+  instanceLabel?: string
   onMoveUp: () => void
   onMoveDown: () => void
   onToggleEnabled: () => void
@@ -170,6 +186,7 @@ function ToolRow({
   tool,
   index,
   total,
+  instanceLabel,
   onMoveUp,
   onMoveDown,
   onToggleEnabled,
@@ -215,8 +232,16 @@ function ToolRow({
         <span style={s.position}>{index + 1}</span>
 
         <div style={s.toolInfo}>
-          <span style={s.instanceId}>{tool.instance_id}</span>
-          <span style={s.toolId}>{tool.tool_id}</span>
+          {/* Show human-friendly label (e.g. "EMA (9)"); fall back to instance_id */}
+          <span
+            data-testid={`tool-label-${tool.instance_id}`}
+            style={s.instanceId}
+            title={tool.instance_id}
+          >
+            {instanceLabel ?? tool.instance_id}
+          </span>
+          {/* Show raw instance_id dimmed below for reference */}
+          <span style={s.toolId}>{tool.instance_id}</span>
           {tool.display_name && (
             <span style={s.displayName}>{tool.display_name}</span>
           )}

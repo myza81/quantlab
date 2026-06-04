@@ -75,21 +75,42 @@ function newSemantics(): StrategySemantics {
 }
 
 // ---------------------------------------------------------------------------
-// OperandWidget — renders kind selector + appropriate ref input
+// OperandWidget — renders kind selector + appropriate ref input/select
 // ---------------------------------------------------------------------------
+
+/**
+ * One selectable tool-output option. label is human-friendly ("EMA (9).value"),
+ * value is the internal ref ("ema_9_close.value") stored in the condition.
+ */
+export interface ToolOutputOption {
+  label: string
+  value: string
+}
 
 function OperandWidget({
   operand,
   onChange,
+  toolOutputOptions,
 }: {
   operand: OperandReference
   onChange: (o: OperandReference) => void
+  /** Human-friendly label → internal ref pairs for the tool_output selector. */
+  toolOutputOptions?: ToolOutputOption[]
 }) {
   function changeKind(kind: OperandKind) {
     const defaultRef =
       kind === 'constant' ? '0' : kind === 'price' ? 'close' : ''
     onChange({ kind, ref: defaultRef })
   }
+
+  // For backward compat: if the stored ref doesn't match any option (e.g. from
+  // an older saved strategy or a removed tool), add it as a raw fallback option
+  // so the existing value is preserved and displayed without data loss.
+  const hasMatch = toolOutputOptions?.some(o => o.value === operand.ref) ?? false
+  const fallbackOption =
+    operand.ref && !hasMatch
+      ? { label: operand.ref, value: operand.ref }
+      : null
 
   return (
     <span style={s.operand}>
@@ -122,14 +143,22 @@ function OperandWidget({
           placeholder="0"
         />
       ) : (
-        <input
-          style={{ ...s.refInput, width: 120 }}
-          type="text"
-          list="tool-output-suggestions"
+        /* tool_output: dropdown with human-friendly labels; stored value is internal ref */
+        <select
+          data-testid="tool-output-select"
+          style={{ ...s.refSelect, minWidth: 160 }}
           value={operand.ref}
           onChange={e => onChange({ ...operand, ref: e.target.value })}
-          placeholder="instance.output"
-        />
+        >
+          <option value="">— select output —</option>
+          {toolOutputOptions?.map(opt => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+          {/* Fallback for refs not in current options (backward compat) */}
+          {fallbackOption && (
+            <option value={fallbackOption.value}>{fallbackOption.label}</option>
+          )}
+        </select>
       )}
     </span>
   )
@@ -143,16 +172,19 @@ function ConditionRow({
   condition,
   onChange,
   onRemove,
+  toolOutputOptions,
 }: {
   condition: Condition
   onChange: (c: Condition) => void
   onRemove: () => void
+  toolOutputOptions?: ToolOutputOption[]
 }) {
   return (
     <div style={s.conditionRow}>
       <OperandWidget
         operand={condition.left}
         onChange={left => onChange({ ...condition, left })}
+        toolOutputOptions={toolOutputOptions}
       />
       <select
         style={s.opSelect}
@@ -168,6 +200,7 @@ function ConditionRow({
       <OperandWidget
         operand={condition.right}
         onChange={right => onChange({ ...condition, right })}
+        toolOutputOptions={toolOutputOptions}
       />
       <button style={s.iconBtn} onClick={onRemove} title="Remove condition">
         ✕
@@ -185,11 +218,13 @@ function ConditionGroupEditor({
   onChange,
   onRemove,
   depth = 0,
+  toolOutputOptions,
 }: {
   group: ConditionGroup
   onChange: (g: ConditionGroup) => void
   onRemove?: () => void
   depth?: number
+  toolOutputOptions?: ToolOutputOption[]
 }) {
   function updateNode(i: number, updated: Condition | ConditionGroup) {
     onChange({
@@ -247,6 +282,7 @@ function ConditionGroupEditor({
               onChange={g => updateNode(i, g)}
               onRemove={() => removeNode(i)}
               depth={depth + 1}
+              toolOutputOptions={toolOutputOptions}
             />
           ) : (
             <ConditionRow
@@ -254,6 +290,7 @@ function ConditionGroupEditor({
               condition={node}
               onChange={c => updateNode(i, c)}
               onRemove={() => removeNode(i)}
+              toolOutputOptions={toolOutputOptions}
             />
           ),
         )}
@@ -292,12 +329,14 @@ function RuleBlock({
   index,
   onChange,
   onRemove,
+  toolOutputOptions,
 }: {
   rule: EntryRule | ExitRule
   kind: 'entry' | 'exit'
   index: number
   onChange: (r: EntryRule | ExitRule) => void
   onRemove: () => void
+  toolOutputOptions?: ToolOutputOption[]
 }) {
   const accentColor  = kind === 'entry' ? '#66bb6a' : '#ef5350'
   const accentBg     = kind === 'entry' ? '#1a2a1a' : '#2a1a1a'
@@ -325,6 +364,7 @@ function RuleBlock({
         group={rule.condition_group}
         onChange={g => onChange({ ...rule, condition_group: g })}
         depth={0}
+        toolOutputOptions={toolOutputOptions}
       />
 
       {/* Optional notes */}
@@ -356,11 +396,15 @@ interface Props {
    * and return the structural validation result.
    */
   onValidate: (s: StrategySemantics) => Promise<SemanticsValidationResponse>
-  /** Autocomplete prefixes for tool_output inputs, e.g. ["sma_fast.", "rsi_14."] */
-  toolOutputSuggestions?: string[]
+  /**
+   * Human-friendly options for the tool_output operand selector.
+   * Each entry has a display label ("EMA (9).value") and internal value ("ema_9_close.value").
+   * When omitted the selector renders without options (user can still select blank/fallback).
+   */
+  toolOutputOptions?: ToolOutputOption[]
 }
 
-export function SemanticEditorPanel({ semantics, onSave, onValidate, toolOutputSuggestions }: Props) {
+export function SemanticEditorPanel({ semantics, onSave, onValidate, toolOutputOptions }: Props) {
   // Local editing copy — initialized from props; synced with server after save.
   // Draft switches are handled via key={draft.draft_id} in DraftWorkspace.
   const [local, setLocal] = useState<StrategySemantics | null>(semantics)
@@ -440,11 +484,6 @@ export function SemanticEditorPanel({ semantics, onSave, onValidate, toolOutputS
 
   return (
     <div style={s.panel}>
-      {toolOutputSuggestions && toolOutputSuggestions.length > 0 && (
-        <datalist id="tool-output-suggestions">
-          {toolOutputSuggestions.map(opt => <option key={opt} value={opt} />)}
-        </datalist>
-      )}
       {/* Panel header */}
       <div style={s.panelHeader}>
         <span style={s.panelTitle}>SEMANTICS</span>
@@ -511,6 +550,7 @@ export function SemanticEditorPanel({ semantics, onSave, onValidate, toolOutputS
               index={i}
               onChange={r => updateEntryRule(i, r as EntryRule)}
               onRemove={() => removeEntryRule(i)}
+              toolOutputOptions={toolOutputOptions}
             />
           ))}
 
@@ -539,6 +579,7 @@ export function SemanticEditorPanel({ semantics, onSave, onValidate, toolOutputS
               index={i}
               onChange={r => updateExitRule(i, r as ExitRule)}
               onRemove={() => removeExitRule(i)}
+              toolOutputOptions={toolOutputOptions}
             />
           ))}
         </div>
