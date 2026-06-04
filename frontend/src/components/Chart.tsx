@@ -1,36 +1,26 @@
 /**
- * Chart.tsx — Chart-UX-3C.3B (Pane Resize Stability).
+ * Chart.tsx — Chart-UX-3C.5 (Chart Object Experience).
  *
- * Changes from Chart-UX-3C.3A:
+ * New features:
+ *  - On-chart indicator legends: ChartLegendOverlay positioned over price pane,
+ *    shows label + live crosshair value per instance + toggle/remove actions.
+ *  - Live crosshair values: subscribeCrosshairMove on price chart; param.seriesData
+ *    used to read current values without any extra lookup map.
+ *  - OscPane headers: compact header bar per artifact instance (color chip · label ·
+ *    live value · toggle · remove). Replaces the tiny corner label.
+ *  - OscPane crosshair values: propagated via onCrosshairValues callback so the
+ *    pane header can show live values when user hovers the price chart.
+ *  - Active pane feedback: isHovered state on OscPane → left border highlight.
+ *  - Splitter improvements: hover state, active-drag visual, wider hit target,
+ *    double-click resets pane to DEFAULT_OSC_HEIGHT.
+ *  - Pane height persistence: localStorage key "ql_pane_heights"; loaded on first
+ *    render, saved on every committed height change.
+ *  - Indicator ownership feedback: highlightedInstanceId prop → outline on matching
+ *    legend rows; onHoverInstance callback lets parent highlight sidebar items.
+ *  - Chart interaction defaults: rightOffset=5, barSpacing=8, kinetic scroll.
  *
- *  Resize architecture:
- *  - DragSplitter now uses pointer events (pointerdown/move/up/cancel) with
- *    setPointerCapture so all events stay on the splitter element — no global
- *    document listener accumulation possible.
- *  - During a drag, pane height is tracked in a useRef (dragState) — React state
- *    is NOT updated on every pointermove, preventing per-pixel re-renders.
- *  - DOM height + chart.applyOptions({ height }) are scheduled through
- *    requestAnimationFrame so multiple pointermove events in the same frame are
- *    collapsed into one resize operation.
- *  - OscPane is converted to forwardRef; it exposes { el, chart } via
- *    useImperativeHandle so DragSplitter can reach the wrapper element and the
- *    lightweight-charts instance directly.
- *  - React state (oscPaneHeights) is updated once, on pointerup/pointercancel,
- *    producing exactly one React re-render per completed drag.
- *  - touch-action:none + user-select:none on splitter prevents browser default
- *    gestures from intercepting the drag.
- *
- *  Height constraints:
- *  - MIN_OSC_HEIGHT = 100px
- *  - MAX_OSC_HEIGHT = 600px
- *
- *  Time sync after resize:
- *  - Price-chart visible range is reapplied to the oscillator pane after each
- *    rAF frame and at drag commit — preserving Chart-UX-3C.3A one-directional
- *    sync model.
- *
- * All Chart-UX-3C.3A behavior is preserved (whitespace alignment, one-directional
- * sync, normalizeChartData, no fitContent on indicator updates).
+ * All Chart-UX-3C.3A–3C.4 correctness preserved (logical range sync, whitespace
+ * timestamp alignment, one-directional sync, pointer-capture drag).
  */
 import { useEffect, useRef, useState, useMemo, forwardRef, useImperativeHandle } from 'react'
 import {
@@ -60,30 +50,55 @@ import type { OHLCVCandle } from '../api/marketData'
 import type { ToolVisualizationSeries } from '../types/toolVisualization'
 import type { StrategyOverlay } from '../types/strategy'
 import type { IndicatorArtifactResponse, IndicatorSeriesPoint } from '../types/chartIndicators'
+import { ChartLegendOverlay } from './ChartLegendOverlay'
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
 interface ChartProps {
-  candles:                OHLCVCandle[]
-  symbol:                 string
-  timeframe:              string
-  overlay?:               StrategyOverlay | null
-  indicatorArtifacts?:    IndicatorArtifactResponse[]
-  /** palette colors keyed by instance_id, for single-series overlay tools. */
-  instanceColors?:        Map<string, string>
+  candles:               OHLCVCandle[]
+  symbol:                string
+  timeframe:             string
+  overlay?:              StrategyOverlay | null
+  indicatorArtifacts?:   IndicatorArtifactResponse[]
+  instanceColors?:       Map<string, string>
+  /** Compact per-instance labels, e.g. "SMA (20)" */
+  instanceLabels?:       Map<string, string>
+  /** Per-instance visibility state */
+  instanceVisible?:      Map<string, boolean>
+  /** Which instance is highlighted (from sidebar hover) */
+  highlightedInstanceId?: string | null
   onClearStrategyResults?: () => void
+  onHoverInstance?:      (instanceId: string | null) => void
+  onIndicatorToggle?:    (instanceId: string) => void
+  onIndicatorRemove?:    (instanceId: string) => void
 }
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const _DEFAULT_COLORS  = ['#2196f3', '#ff9800', '#9c27b0', '#00bcd4', '#4caf50']
-const MIN_OSC_HEIGHT   = 100   // px — raised from 80 for resize stability
-const MAX_OSC_HEIGHT   = 600   // px — prevent single pane consuming workspace
+const _DEFAULT_COLORS   = ['#2196f3', '#ff9800', '#9c27b0', '#00bcd4', '#4caf50']
+const MIN_OSC_HEIGHT    = 100
+const MAX_OSC_HEIGHT    = 600
 const DEFAULT_OSC_HEIGHT = 130
+const STORAGE_KEY        = 'ql_pane_heights'
+
+// ---------------------------------------------------------------------------
+// Pane height persistence
+// ---------------------------------------------------------------------------
+
+function loadPersistedHeights(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as Record<string, number>) : {}
+  } catch { return {} }
+}
+
+function savePersistedHeights(heights: Record<string, number>) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(heights)) } catch { /* ignore */ }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -93,21 +108,12 @@ function toUTCTimestamp(isoString: string): UTCTimestamp {
   return Math.floor(new Date(isoString).getTime() / 1000) as UTCTimestamp
 }
 
-/**
- * Sort by time ascending + deduplicate (last occurrence wins).
- * Does NOT mutate the input.
- */
 function normalizeChartData<T extends { time: UTCTimestamp }>(data: readonly T[]): T[] {
   const map = new Map<number, T>()
   for (const d of data) map.set(d.time as number, d)
   return [...map.values()].sort((a, b) => (a.time as number) - (b.time as number))
 }
 
-/**
- * Build a line-series data array aligned to the full candle timestamp domain.
- * Warmup bars (null value) become WhitespaceData ({ time: T }), anchoring the
- * oscillator's time axis to the same bar sequence as the price chart.
- */
 function buildAlignedLineData(
   values: IndicatorSeriesPoint[],
   candleTimestamps: UTCTimestamp[],
@@ -124,9 +130,6 @@ function buildAlignedLineData(
   })
 }
 
-/**
- * Build a histogram-series data array aligned to the full candle timestamp domain.
- */
 function buildAlignedHistData(
   values: IndicatorSeriesPoint[],
   candleTimestamps: UTCTimestamp[],
@@ -143,7 +146,6 @@ function buildAlignedHistData(
   })
 }
 
-/** Reapply price chart logical range to an oscillator chart (safe — ignores errors). */
 function resyncRange(oscChart: IChartApi, priceChart: IChartApi | null) {
   if (!priceChart) return
   const range = priceChart.timeScale().getVisibleLogicalRange()
@@ -166,9 +168,11 @@ const _CHART_THEME = {
   crosshair: { mode: 1 },
   rightPriceScale: { borderColor: '#2a2d3e' },
   timeScale: {
-    borderColor:    '#2a2d3e',
-    timeVisible:    true,
-    secondsVisible: false,
+    borderColor:     '#2a2d3e',
+    timeVisible:     true,
+    secondsVisible:  false,
+    rightOffset:     5,
+    barSpacing:      8,
   },
 }
 
@@ -176,7 +180,7 @@ type AnySeriesApi = ISeriesApi<'Line'> | ISeriesApi<'Histogram'>
 type ReferenceGuideBinding = { series: ISeriesApi<'Line'>; lines: IPriceLine[] }
 type OscillatorReferenceGuide = {
   id: string
-  matches: (series: ToolVisualizationSeries) => boolean
+  matches: (s: ToolVisualizationSeries) => boolean
   levels: { value: number; label: string; color: string }[]
 }
 
@@ -184,8 +188,8 @@ const _OSCILLATOR_REFERENCE_GUIDES: OscillatorReferenceGuide[] = [
   {
     id: 'rsi',
     matches: ind => {
-      const name = ind.name.toLowerCase()
-      return ind.pane === 'oscillator' && ind.kind !== 'histogram' && /\brsi\b|\.rsi\b|rsi_/i.test(name)
+      const n = ind.name.toLowerCase()
+      return ind.pane === 'oscillator' && ind.kind !== 'histogram' && /\brsi\b|\.rsi\b|rsi_/i.test(n)
     },
     levels: [
       { value: 70, label: 'RSI 70', color: 'rgba(239, 83, 80, 0.45)' },
@@ -196,77 +200,56 @@ const _OSCILLATOR_REFERENCE_GUIDES: OscillatorReferenceGuide[] = [
 ]
 
 // ---------------------------------------------------------------------------
-// OscPaneHandle — exposed by OscPane via forwardRef/useImperativeHandle
+// OscPaneHandle
 // ---------------------------------------------------------------------------
 
 export interface OscPaneHandle {
-  /** Wrapper (outer) div — height is mutated directly during drag. */
   readonly el:    HTMLDivElement | null
-  /** lightweight-charts instance — applyOptions({ height }) called during drag. */
   readonly chart: IChartApi | null
 }
 
 // ---------------------------------------------------------------------------
-// DragSplitter — pointer-event-based, rAF-throttled, no document listeners
+// DragSplitter (pointer events + rAF + hover/active/double-click)
 // ---------------------------------------------------------------------------
 
 interface DragSplitterProps {
-  /** Called once on pointerup/cancel with the final committed height. */
-  onCommitHeight:    (height: number) => void
-  /** Returns the currently committed height (read at drag start). */
+  onCommitHeight:     (height: number) => void
   getCommittedHeight: () => number
-  /** Handle to the OscPane below — gives access to el + chart. */
   oscHandle:          OscPaneHandle | null
-  /** Price chart ref — used to resync time range after resize. */
   priceChartRef:      React.RefObject<IChartApi | null>
+  onReset:            () => void
   minHeight?:         number
   maxHeight?:         number
 }
 
 function DragSplitter({
-  onCommitHeight,
-  getCommittedHeight,
-  oscHandle,
-  priceChartRef,
-  minHeight = MIN_OSC_HEIGHT,
-  maxHeight = MAX_OSC_HEIGHT,
+  onCommitHeight, getCommittedHeight, oscHandle, priceChartRef, onReset,
+  minHeight = MIN_OSC_HEIGHT, maxHeight = MAX_OSC_HEIGHT,
 }: DragSplitterProps) {
-  const splitterRef = useRef<HTMLDivElement>(null)
-  const rafRef      = useRef<number | null>(null)
-  // Drag state — never triggers React re-renders
-  const dragRef     = useRef<{ startY: number; startH: number; liveH: number } | null>(null)
+  const rafRef    = useRef<number | null>(null)
+  const dragRef   = useRef<{ startY: number; startH: number; liveH: number } | null>(null)
+  const [isHovered,  setIsHovered]  = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
 
-  // Cancel pending rAF on unmount (or if drag is active when component unmounts)
   useEffect(() => () => {
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-    }
+    if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
   }, [])
 
-  /** Schedule a DOM + chart height update through rAF (collapses rapid moves). */
   const scheduleApply = (h: number) => {
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null
       const { el, chart } = oscHandle ?? {}
       if (el)    el.style.height = `${h}px`
-      if (chart) {
-        chart.applyOptions({ height: h })
-        resyncRange(chart, priceChartRef.current)
-      }
+      if (chart) { chart.applyOptions({ height: h }); resyncRange(chart, priceChartRef.current) }
     })
   }
 
-  /** Apply final height synchronously (called on pointerup/cancel). */
   const applyFinal = (h: number) => {
     if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
     const { el, chart } = oscHandle ?? {}
     if (el)    el.style.height = `${h}px`
-    if (chart) {
-      chart.applyOptions({ height: h })
-      resyncRange(chart, priceChartRef.current)
-    }
+    if (chart) { chart.applyOptions({ height: h }); resyncRange(chart, priceChartRef.current) }
   }
 
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -274,12 +257,11 @@ function DragSplitter({
     e.currentTarget.setPointerCapture(e.pointerId)
     const startH = getCommittedHeight()
     dragRef.current = { startY: e.clientY, startH, liveH: startH }
+    setIsDragging(true)
   }
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!dragRef.current) return
-    // Inverted: splitter is the top boundary of the pane below it, so dragging
-    // upward (negative clientY delta) should increase the pane height.
     const delta = dragRef.current.startY - e.clientY
     const newH  = Math.min(maxHeight, Math.max(minHeight, dragRef.current.startH + delta))
     dragRef.current.liveH = newH
@@ -290,75 +272,104 @@ function DragSplitter({
     if (!dragRef.current) return
     const finalH = dragRef.current.liveH
     dragRef.current = null
+    setIsDragging(false)
     applyFinal(finalH)
-    onCommitHeight(finalH)  // single React state update per drag
+    onCommitHeight(finalH)
   }
 
+  const handleDoubleClick = () => {
+    applyFinal(DEFAULT_OSC_HEIGHT)
+    onReset()
+  }
+
+  const lineColor = isDragging ? '#5a7ec0'
+    : isHovered ? '#3a4a7e'
+    : '#1e1e30'
+
   return (
+    // Wider hit target via vertical padding; actual visible line is 1px inside
     <div
-      ref={splitterRef}
       data-testid="pane-splitter"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerEnd}
       onPointerCancel={handlePointerEnd}
-      style={splitterStyle}
-    />
+      onDoubleClick={handleDoubleClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={splitterOuterStyle}
+    >
+      <div data-testid="pane-splitter-line" style={{ ...splitterLineStyle, background: lineColor }} />
+    </div>
   )
 }
 
-const splitterStyle: React.CSSProperties = {
-  height:        5,
-  cursor:        'row-resize',
-  background:    '#0f0f1a',
-  borderTop:     '1px solid #1e1e30',
-  flexShrink:    0,
-  position:      'relative',
-  zIndex:        10,
-  touchAction:   'none',    // prevent browser scroll from hijacking drag
-  userSelect:    'none',
+const splitterOuterStyle: React.CSSProperties = {
+  cursor:      'row-resize',
+  background:  '#0f0f1a',
+  flexShrink:  0,
+  padding:     '4px 0',      // wider invisible hit target
+  touchAction: 'none',
+  userSelect:  'none',
+}
+const splitterLineStyle: React.CSSProperties = {
+  height:     1,
+  transition: 'background 0.1s',
 }
 
 // ---------------------------------------------------------------------------
-// OscPane — forwardRef exposes el + chart for DragSplitter direct resize
+// OscPane (forwardRef, with compact header)
 // ---------------------------------------------------------------------------
 
 interface OscPaneProps {
-  label:            string
-  artifacts:        IndicatorArtifactResponse[]
-  instanceColors?:  Map<string, string>
-  candleTimestamps: UTCTimestamp[]
-  priceChart:       IChartApi | null
-  height?:          number
+  label:             string
+  artifacts:         IndicatorArtifactResponse[]
+  instanceColors?:   Map<string, string>
+  instanceLabels?:   Map<string, string>
+  instanceVisible?:  Map<string, boolean>
+  candleTimestamps:  UTCTimestamp[]
+  priceChart:        IChartApi | null
+  height?:           number
+  highlightedId?:    string | null
+  /** Crosshair values from this pane: instance_id → series_id → value */
+  onCrosshairValues?: (vals: Map<string, Map<string, number | null>>) => void
+  onToggle?:         (instanceId: string) => void
+  onRemove?:         (instanceId: string) => void
 }
 
 const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
-  { label, artifacts, instanceColors, candleTimestamps, priceChart, height = DEFAULT_OSC_HEIGHT },
+  {
+    label, artifacts, instanceColors, instanceLabels, instanceVisible,
+    candleTimestamps, priceChart, height = DEFAULT_OSC_HEIGHT,
+    highlightedId, onCrosshairValues, onToggle, onRemove,
+  },
   ref,
 ) {
   const wrapperRef      = useRef<HTMLDivElement>(null)
   const containerRef    = useRef<HTMLDivElement>(null)
   const chartRef        = useRef<IChartApi | null>(null)
   const seriesMapRef    = useRef<Map<string, AnySeriesApi>>(new Map())
-  const timeValueMapRef = useRef<Map<number, number>>(new Map())
+  const timeValueMapRef = useRef<Map<number, number>>(new Map())  // first-series values
   const isSyncingRef    = useRef(false)
+  // Full value lookup for all series — instance_id → series_id → ts → value
+  const allValuesRef    = useRef<Map<string, Map<string, Map<number, number>>>>(new Map())
+  const [isHovered, setIsHovered] = useState(false)
+  const [oscCrosshairVals, setOscCrosshairVals] =
+    useState<Map<string, Map<string, number | null>>>(new Map())
 
-  // Expose wrapper element + chart instance to DragSplitter via ref
   useImperativeHandle(ref, () => ({
     get el()    { return wrapperRef.current },
     get chart() { return chartRef.current },
   }), [])
 
-  // Create oscillator chart once on mount
+  // Create chart on mount
   useEffect(() => {
     if (!containerRef.current) return
     const chart = createChart(containerRef.current, { ..._CHART_THEME, height })
     chartRef.current = chart
 
     const ro = new ResizeObserver(entries => {
-      for (const e of entries) {
-        chart.applyOptions({ width: e.contentRect.width, height: e.contentRect.height })
-      }
+      for (const e of entries) chart.applyOptions({ width: e.contentRect.width, height: e.contentRect.height })
     })
     ro.observe(containerRef.current)
 
@@ -370,9 +381,7 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // One-directional logical-range + crosshair sync: price chart → this pane.
-  // Logical range syncs correctly at extreme zoom levels where visible time range
-  // can clamp and stop changing while the logical viewport continues to move.
+  // One-directional logical range sync + crosshair sync + live value reporting
   useEffect(() => {
     const chart = chartRef.current
     if (!chart || !priceChart) return
@@ -387,14 +396,33 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
     const syncCrosshair = (param: MouseEventParams | null) => {
       if (!param || !param.time || seriesMapRef.current.size === 0) {
         try { chart.clearCrosshairPosition() } catch { /* ignore */ }
+        // Clear displayed values
+        setOscCrosshairVals(new Map())
+        onCrosshairValues?.(new Map())
         return
       }
+      const ts = param.time as number
+
+      // Position crosshair on oscillator chart
       const firstSeries = [...seriesMapRef.current.values()][0]
-      if (!firstSeries) return
-      const val = timeValueMapRef.current.get(param.time as number)
-      if (val !== undefined) {
-        try { chart.setCrosshairPosition(val, param.time, firstSeries) } catch { /* out of range */ }
+      if (firstSeries) {
+        const val = timeValueMapRef.current.get(ts)
+        if (val !== undefined) {
+          try { chart.setCrosshairPosition(val, param.time, firstSeries) } catch { /* out of range */ }
+        }
       }
+
+      // Build live values for all instances in this pane
+      const vals = new Map<string, Map<string, number | null>>()
+      for (const [instId, seriesValMap] of allValuesRef.current) {
+        const svMap = new Map<string, number | null>()
+        for (const [seriesId, tsMap] of seriesValMap) {
+          svMap.set(seriesId, tsMap.get(ts) ?? null)
+        }
+        vals.set(instId, svMap)
+      }
+      setOscCrosshairVals(vals)
+      onCrosshairValues?.(vals)
     }
 
     priceChart.timeScale().subscribeVisibleLogicalRangeChange(syncFromPrice)
@@ -404,24 +432,27 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
       priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncFromPrice)
       priceChart.unsubscribeCrosshairMove(syncCrosshair)
     }
-  }, [priceChart])
+  }, [priceChart]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Rebuild series when artifacts, colors, or candle timestamps change
+  // Rebuild series data on artifacts/colors/timestamps change
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
 
     for (const s of seriesMapRef.current.values()) {
-      try { chart.removeSeries(s) } catch { /* already gone */ }
+      try { chart.removeSeries(s) } catch { /* gone */ }
     }
     seriesMapRef.current.clear()
     timeValueMapRef.current.clear()
+    allValuesRef.current.clear()
 
     for (const artifact of artifacts) {
       const oscSeries      = artifact.series.filter(s => s.pane === 'oscillator_pane')
       const isSingleSeries = oscSeries.length === 1
       const instanceColor  = instanceColors?.get(artifact.instance_id)
       let firstPopulated   = false
+
+      const instSeriesVals = new Map<string, Map<number, number>>()
 
       for (const series of oscSeries) {
         const key = `${artifact.instance_id}.${series.series_id}`
@@ -430,9 +461,7 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
           const data = buildAlignedHistData(series.values, candleTimestamps)
           if (data.every(d => !('value' in d))) continue
           const s = chart.addSeries(HistogramSeries, {
-            priceLineVisible: false,
-            lastValueVisible: true,
-            title:            series.label,
+            priceLineVisible: false, lastValueVisible: true, title: series.label,
           })
           s.setData(data)
           seriesMapRef.current.set(key, s)
@@ -441,30 +470,30 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
           const data  = buildAlignedLineData(series.values, candleTimestamps)
           if (data.every(d => !('value' in d))) continue
           const s = chart.addSeries(LineSeries, {
-            color,
-            lineWidth:              1,
-            crosshairMarkerVisible: false,
-            lastValueVisible:       true,
-            priceLineVisible:       false,
-            title:                  series.label,
+            color, lineWidth: 1, crosshairMarkerVisible: false,
+            lastValueVisible: true, priceLineVisible: false, title: series.label,
           })
           s.setData(data)
           seriesMapRef.current.set(key, s)
 
+          // Build crosshair value lookup
+          const tsValMap = new Map<number, number>()
+          for (const p of data) {
+            if ('value' in p && p.value !== undefined) tsValMap.set(p.time as number, p.value)
+          }
+          instSeriesVals.set(series.series_id, tsValMap)
+
           if (!firstPopulated) {
-            for (const p of data) {
-              if ('value' in p && p.value !== undefined) {
-                timeValueMapRef.current.set(p.time as number, p.value)
-              }
-            }
+            timeValueMapRef.current = tsValMap
             firstPopulated = true
           }
         }
       }
+      if (instSeriesVals.size > 0) {
+        allValuesRef.current.set(artifact.instance_id, instSeriesVals)
+      }
     }
 
-    // Apply price-chart logical range instead of fitContent to preserve user zoom.
-    // Logical range syncs correctly at extreme zoom levels.
     if (seriesMapRef.current.size > 0) {
       const priceRange = priceChart?.timeScale().getVisibleLogicalRange()
       if (priceRange) {
@@ -475,37 +504,133 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
     }
   }, [artifacts, instanceColors, candleTimestamps, priceChart])
 
+  const borderColor = isHovered ? '#2a3a6e' : 'transparent'
+
   return (
     <div
       ref={wrapperRef}
       data-testid="osc-pane-wrapper"
-      style={{ ...oscPaneWrapperStyle, height }}
+      style={{ ...oscPaneWrapperStyle, height, borderLeft: `2px solid ${borderColor}` }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
     >
-      <div style={oscPaneLabelStyle}>{label}</div>
+      {/* Compact header replacing the old corner label */}
+      <div style={oscPaneHeaderStyle}>
+        <span style={oscPaneTitleStyle}>{label}</span>
+        {artifacts.map(artifact => {
+          const iColor   = instanceColors?.get(artifact.instance_id)
+          const iLabel   = instanceLabels?.get(artifact.instance_id) ?? artifact.display_name
+          const visible  = instanceVisible?.get(artifact.instance_id) ?? true
+          const cvMap    = oscCrosshairVals.get(artifact.instance_id)
+          const firstSeries = artifact.series.find(s => s.pane === 'oscillator_pane')
+          const firstVal    = firstSeries ? (cvMap?.get(firstSeries.series_id) ?? null) : null
+          const displayColor = iColor ?? firstSeries?.default_color ?? '#888'
+          const isHigh   = highlightedId === artifact.instance_id
+
+          return (
+            <span
+              key={artifact.instance_id}
+              data-testid={`osc-instance-${artifact.instance_id}`}
+              style={{
+                ...oscInstanceChipStyle,
+                outline: isHigh ? '1px solid #3a4570' : 'none',
+                opacity: visible ? 1 : 0.4,
+              }}
+            >
+              <span style={{ ...chipDotStyle, background: displayColor }} />
+              <span style={chipLabelStyle}>{iLabel}</span>
+              {firstVal !== null && (
+                <span
+                  data-testid={`osc-value-${artifact.instance_id}`}
+                  style={{ ...chipValueStyle, color: displayColor }}
+                >
+                  {firstVal.toFixed(2)}
+                </span>
+              )}
+              <button
+                type="button"
+                data-testid={`osc-toggle-${artifact.instance_id}`}
+                style={oscActionBtnStyle}
+                onClick={() => onToggle?.(artifact.instance_id)}
+                title={visible ? 'Hide' : 'Show'}
+              >
+                {visible ? '◉' : '○'}
+              </button>
+              <button
+                type="button"
+                data-testid={`osc-remove-${artifact.instance_id}`}
+                style={oscActionBtnStyle}
+                onClick={() => onRemove?.(artifact.instance_id)}
+                title="Remove"
+              >
+                ×
+              </button>
+            </span>
+          )
+        })}
+      </div>
       <div ref={containerRef} style={oscPaneChartStyle} />
     </div>
   )
 })
 
 const oscPaneWrapperStyle: React.CSSProperties = {
-  flexShrink: 0,
-  position:   'relative',
-  background: '#0f0f1a',
+  flexShrink:  0,
+  position:    'relative',
+  background:  '#0f0f1a',
+  transition:  'border-color 0.1s',
 }
-const oscPaneLabelStyle: React.CSSProperties = {
-  position:      'absolute',
-  top:           4,
-  left:          8,
+const oscPaneHeaderStyle: React.CSSProperties = {
+  display:     'flex',
+  alignItems:  'center',
+  gap:         4,
+  padding:     '2px 6px',
+  background:  'rgba(10,10,20,0.6)',
+  flexWrap:    'wrap',
+}
+const oscPaneTitleStyle: React.CSSProperties = {
   fontSize:      9,
-  color:         '#2a2a3e',
+  color:         '#3a4055',
   fontFamily:    'monospace',
   letterSpacing: '0.07em',
-  pointerEvents: 'none',
-  zIndex:        1,
+  textTransform: 'uppercase',
+  marginRight:   4,
+}
+const oscInstanceChipStyle: React.CSSProperties = {
+  display:      'flex',
+  alignItems:   'center',
+  gap:          3,
+  borderRadius: 2,
+  padding:      '0 2px',
+}
+const chipDotStyle: React.CSSProperties = {
+  width:        6,
+  height:       6,
+  borderRadius: '50%',
+  flexShrink:   0,
+}
+const chipLabelStyle: React.CSSProperties = {
+  fontSize:   9,
+  fontFamily: 'monospace',
+  color:      '#c4cde0',
+}
+const chipValueStyle: React.CSSProperties = {
+  fontSize:   9,
+  fontFamily: 'monospace',
+  minWidth:   32,
+}
+const oscActionBtnStyle: React.CSSProperties = {
+  background: 'transparent',
+  border:     'none',
+  color:      '#4a5070',
+  cursor:     'pointer',
+  fontSize:   9,
+  padding:    '0 1px',
+  lineHeight: 1,
 }
 const oscPaneChartStyle: React.CSSProperties = {
   width:  '100%',
-  height: '100%',
+  height: `calc(100% - 22px)`,  // subtract header height
 }
 
 // ---------------------------------------------------------------------------
@@ -514,8 +639,9 @@ const oscPaneChartStyle: React.CSSProperties = {
 
 export default function Chart({
   candles, symbol, timeframe, overlay,
-  indicatorArtifacts, instanceColors,
-  onClearStrategyResults,
+  indicatorArtifacts, instanceColors, instanceLabels, instanceVisible,
+  highlightedInstanceId, onClearStrategyResults,
+  onHoverInstance, onIndicatorToggle, onIndicatorRemove,
 }: ChartProps) {
   const priceContainerRef         = useRef<HTMLDivElement>(null)
   const chartRef                  = useRef<IChartApi | null>(null)
@@ -535,16 +661,17 @@ export default function Chart({
 
   const [showOscillator, setShowOscillator] = useState(false)
 
-  // Committed pane heights — updated only on drag completion (once per drag)
-  const [oscPaneHeights, setOscPaneHeights] = useState<Record<string, number>>({})
+  // Committed pane heights (loaded from localStorage on first render)
+  const [oscPaneHeights, setOscPaneHeights] = useState<Record<string, number>>(() => loadPersistedHeights())
 
-  // Refs to OscPane handles (el + chart) for DragSplitter direct resize
   const oscHandlesRef = useRef<Map<string, OscPaneHandle | null>>(new Map())
 
+  // Crosshair values — updated on every price-chart crosshair move
+  const [crosshairValues, setCrosshairValues] =
+    useState<Map<string, Map<string, number | null>>>(new Map())
+
   const candleTimestamps = useMemo(
-    () => normalizeChartData(
-      candles.map(c => ({ time: toUTCTimestamp(c.timestamp) }))
-    ).map(d => d.time),
+    () => normalizeChartData(candles.map(c => ({ time: toUTCTimestamp(c.timestamp) }))).map(d => d.time),
     [candles]
   )
 
@@ -625,12 +752,10 @@ export default function Chart({
       height: oscContainerRef.current.clientHeight || 160,
     })
     oscChartRef.current = oscChart
-
     const ro = new ResizeObserver(entries => {
       for (const e of entries) oscChart.applyOptions({ width: e.contentRect.width, height: e.contentRect.height })
     })
     ro.observe(oscContainerRef.current)
-
     return () => {
       ro.disconnect()
       clearOscillatorReferenceGuides(oscGuideMapRef.current)
@@ -640,7 +765,7 @@ export default function Chart({
     }
   }, [])
 
-  // ── One-directional logical-range sync: price chart → strategy oscillator ──
+  // ── One-directional logical range sync: price → strategy osc ─────────────
   useEffect(() => {
     const priceChart = chartRef.current
     const oscChart   = oscChartRef.current
@@ -654,10 +779,38 @@ export default function Chart({
     }
 
     priceChart.timeScale().subscribeVisibleLogicalRangeChange(syncFromPrice)
-    return () => {
-      priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncFromPrice)
-    }
+    return () => { priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncFromPrice) }
   }, [])
+
+  // ── Crosshair → legend value update ──────────────────────────────────────
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    const onCrosshair = (param: MouseEventParams | null) => {
+      if (!param || !param.time) {
+        setCrosshairValues(new Map())
+        return
+      }
+      const newVals = new Map<string, Map<string, number | null>>()
+      for (const artifact of indicatorArtifacts ?? []) {
+        const svMap = new Map<string, number | null>()
+        for (const series of artifact.series.filter(s => s.pane === 'price_overlay')) {
+          const key = `${artifact.instance_id}.${series.series_id}`
+          const seriesApi = artifactPriceSeriesMapRef.current.get(key)
+          if (seriesApi) {
+            const d = param.seriesData.get(seriesApi) as { value?: number } | undefined
+            svMap.set(series.series_id, d?.value ?? null)
+          }
+        }
+        if (svMap.size > 0) newVals.set(artifact.instance_id, svMap)
+      }
+      setCrosshairValues(newVals)
+    }
+
+    chart.subscribeCrosshairMove(onCrosshair)
+    return () => { chart.unsubscribeCrosshairMove(onCrosshair) }
+  }, [indicatorArtifacts])
 
   // ── Update candlestick data ───────────────────────────────────────────────
   useEffect(() => {
@@ -665,10 +818,7 @@ export default function Chart({
     if (!series) return
     if (candles.length === 0) { series.setData([]); return }
     const data: CandlestickData[] = normalizeChartData(
-      candles.map(c => ({
-        time:  toUTCTimestamp(c.timestamp),
-        open:  c.open, high: c.high, low: c.low, close: c.close,
-      }))
+      candles.map(c => ({ time: toUTCTimestamp(c.timestamp), open: c.open, high: c.high, low: c.low, close: c.close }))
     )
     series.setData(data)
     chartRef.current?.timeScale().fitContent()
@@ -710,9 +860,7 @@ export default function Chart({
         color, lineWidth: 1, crosshairMarkerVisible: false,
         lastValueVisible: true, priceLineVisible: false, title: ind.name,
       })
-      s.setData(normalizeChartData(
-        ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value }))
-      ))
+      s.setData(normalizeChartData(ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value }))))
       priceSeriesMapRef.current.set(ind.name, s)
     })
 
@@ -725,10 +873,7 @@ export default function Chart({
             priceLineVisible: false, lastValueVisible: false, title: ind.name,
           })
           s.setData(normalizeChartData(
-            ind.points.map(p => ({
-              time: toUTCTimestamp(p.timestamp), value: p.value,
-              color: p.value >= 0 ? '#26a69a' : '#ef5350',
-            }))
+            ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value, color: p.value >= 0 ? '#26a69a' : '#ef5350' }))
           ))
           oscSeriesMapRef.current.set(ind.name, s)
         } else {
@@ -736,9 +881,7 @@ export default function Chart({
             color, lineWidth: 1, crosshairMarkerVisible: false,
             lastValueVisible: false, priceLineVisible: false, title: ind.name,
           })
-          s.setData(normalizeChartData(
-            ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value }))
-          ))
+          s.setData(normalizeChartData(ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value }))))
           oscSeriesMapRef.current.set(ind.name, s)
           for (const guide of _OSCILLATOR_REFERENCE_GUIDES) {
             if (renderedGuideIds.has(guide.id) || !guide.matches(ind)) continue
@@ -751,25 +894,23 @@ export default function Chart({
           }
         }
       })
-      // Apply price-chart logical range instead of fitContent
-      const priceRange = chartRef.current?.timeScale().getVisibleLogicalRange()
-      if (priceRange) {
-        try { oscChart.timeScale().setVisibleLogicalRange(priceRange) } catch { oscChart.timeScale().fitContent() }
+      const pr = chartRef.current?.timeScale().getVisibleLogicalRange()
+      if (pr) {
+        try { oscChart.timeScale().setVisibleLogicalRange(pr) } catch { oscChart.timeScale().fitContent() }
       } else {
         oscChart.timeScale().fitContent()
       }
     }
 
     if (overlay.signals.length > 0) {
-      const markers: SeriesMarker<Time>[] = overlay.signals.map(sig => ({
+      markerApi.setMarkers(overlay.signals.map(sig => ({
         time:     toUTCTimestamp(sig.timestamp),
         position: sig.signal_type === 'long' ? 'belowBar' : 'aboveBar',
         color:    sig.signal_type === 'long' ? '#26a69a' : '#ef5350',
         shape:    sig.signal_type === 'long' ? 'arrowUp' : 'arrowDown',
         text:     sig.signal_type.toUpperCase(),
         size:     1,
-      }))
-      markerApi.setMarkers(markers)
+      } as SeriesMarker<Time>)))
     }
 
     if (overlay.forecast && candles.length > 0) {
@@ -785,12 +926,10 @@ export default function Chart({
   useEffect(() => {
     const priceChart = chartRef.current
     if (!priceChart) return
-
     for (const s of artifactPriceSeriesMapRef.current.values()) {
       try { priceChart.removeSeries(s) } catch { /* ignore */ }
     }
     artifactPriceSeriesMapRef.current.clear()
-
     if (!indicatorArtifacts || indicatorArtifacts.length === 0) return
 
     for (const artifact of indicatorArtifacts) {
@@ -801,24 +940,30 @@ export default function Chart({
       for (const series of priceSeries) {
         const key   = `${artifact.instance_id}.${series.series_id}`
         const color = (isSingleSeries && instanceColor) ? instanceColor : series.default_color
-        const points = normalizeChartData(
-          series.values
-            .filter(p => p.value !== null && p.timestamp)
+        const pts   = normalizeChartData(
+          series.values.filter(p => p.value !== null && p.timestamp)
             .map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value as number }))
         )
-        if (points.length === 0) continue
-
+        if (pts.length === 0) continue
         const s = priceChart.addSeries(LineSeries, {
           color, lineWidth: 1, crosshairMarkerVisible: false,
           lastValueVisible: true, priceLineVisible: false, title: series.label,
         })
-        s.setData(points)
+        s.setData(pts)
         artifactPriceSeriesMapRef.current.set(key, s)
       }
     }
   }, [indicatorArtifacts, instanceColors])
 
-  // ── Header ────────────────────────────────────────────────────────────────
+  // ── Commit handler: save to localStorage ─────────────────────────────────
+  const commitHeight = (key: string, h: number) => {
+    setOscPaneHeights(prev => {
+      const next = { ...prev, [key]: h }
+      savePersistedHeights(next)
+      return next
+    })
+  }
+
   const signalCount       = overlay?.signals.length ?? 0
   const priceIndCount     = (overlay?.indicators ?? []).filter(i => i.pane !== 'oscillator').length
   const oscIndCount       = (overlay?.indicators ?? []).filter(i => i.pane === 'oscillator').length
@@ -829,17 +974,9 @@ export default function Chart({
       {candles.length > 0 && (
         <div style={styles.header}>
           <span>{symbol} · {timeframe} · {candles.length} candles</span>
-          {priceIndCount > 0 && (
-            <span style={styles.badge}>{priceIndCount} overlay{priceIndCount !== 1 ? 's' : ''}</span>
-          )}
-          {oscIndCount > 0 && (
-            <span style={{ ...styles.badge, color: '#7e57c2' }}>
-              {oscIndCount} oscillator{oscIndCount !== 1 ? 's' : ''}
-            </span>
-          )}
-          {signalCount > 0 && (
-            <span style={styles.badge}>{signalCount} signal{signalCount !== 1 ? 's' : ''}</span>
-          )}
+          {priceIndCount > 0 && <span style={styles.badge}>{priceIndCount} overlay{priceIndCount !== 1 ? 's' : ''}</span>}
+          {oscIndCount   > 0 && <span style={{ ...styles.badge, color: '#7e57c2' }}>{oscIndCount} oscillator{oscIndCount !== 1 ? 's' : ''}</span>}
+          {signalCount   > 0 && <span style={styles.badge}>{signalCount} signal{signalCount !== 1 ? 's' : ''}</span>}
           {overlay?.forecast && (
             <span style={{ ...styles.badge, color: overlay.forecast.direction === 'long' ? '#26a69a' : '#ef5350' }}>
               forecast {overlay.forecast.direction}
@@ -849,19 +986,28 @@ export default function Chart({
             type="button"
             onClick={onClearStrategyResults}
             disabled={!hasStrategyResults}
-            style={{
-              ...styles.clearBtn,
-              opacity: hasStrategyResults ? 1 : 0.45,
-              cursor:  hasStrategyResults ? 'pointer' : 'default',
-            }}
+            style={{ ...styles.clearBtn, opacity: hasStrategyResults ? 1 : 0.45, cursor: hasStrategyResults ? 'pointer' : 'default' }}
           >
             Clear Strategy Results
           </button>
         </div>
       )}
 
-      {/* Price chart */}
-      <div ref={priceContainerRef} style={styles.priceChart} />
+      {/* Price chart + legend overlay */}
+      <div style={styles.priceWrapper}>
+        <div ref={priceContainerRef} style={styles.priceChart} />
+        <ChartLegendOverlay
+          artifacts={(indicatorArtifacts ?? []).filter(a => a.series.some(s => s.pane === 'price_overlay'))}
+          instanceColors={instanceColors}
+          instanceLabels={instanceLabels}
+          instanceVisible={instanceVisible}
+          crosshairValues={crosshairValues}
+          highlightedId={highlightedInstanceId}
+          onHover={onHoverInstance}
+          onToggle={onIndicatorToggle}
+          onRemove={onIndicatorRemove}
+        />
+      </div>
 
       {/* Strategy oscillator pane */}
       <div style={{ ...styles.oscWrapper, height: showOscillator ? 160 : 0, overflow: 'hidden' }}>
@@ -869,25 +1015,32 @@ export default function Chart({
         <div ref={oscContainerRef} style={styles.oscChart} />
       </div>
 
-      {/* Indicator artifact oscillator panes — one per tool group */}
+      {/* Indicator artifact oscillator panes */}
       {oscArtifactGroups.map(group => {
         const committedH = oscPaneHeights[group.key] ?? DEFAULT_OSC_HEIGHT
         return (
           <div key={group.key}>
             <DragSplitter
               getCommittedHeight={() => oscPaneHeights[group.key] ?? DEFAULT_OSC_HEIGHT}
-              onCommitHeight={h => setOscPaneHeights(prev => ({ ...prev, [group.key]: h }))}
+              onCommitHeight={h => commitHeight(group.key, h)}
               oscHandle={oscHandlesRef.current.get(group.key) ?? null}
               priceChartRef={chartRef}
+              onReset={() => commitHeight(group.key, DEFAULT_OSC_HEIGHT)}
             />
             <OscPane
               ref={(handle: OscPaneHandle | null) => { oscHandlesRef.current.set(group.key, handle) }}
               label={group.label}
               artifacts={(indicatorArtifacts ?? []).filter(a => a.tool_id === group.key)}
               instanceColors={instanceColors}
+              instanceLabels={instanceLabels}
+              instanceVisible={instanceVisible}
               candleTimestamps={candleTimestamps}
               priceChart={priceChartApi}
               height={committedH}
+              highlightedId={highlightedInstanceId}
+              onCrosshairValues={_vals => { /* values consumed inside OscPane header */ }}
+              onToggle={onIndicatorToggle}
+              onRemove={onIndicatorRemove}
             />
           </div>
         )
@@ -904,60 +1057,17 @@ function clearOscillatorReferenceGuides(guides: Map<string, ReferenceGuideBindin
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  wrapper: {
-    flex:          1,
-    display:       'flex',
-    flexDirection: 'column',
-    background:    '#0f0f1a',
-    minHeight:     0,
-    overflowY:     'auto',
-  },
+  wrapper: { flex: 1, display: 'flex', flexDirection: 'column', background: '#0f0f1a', minHeight: 0, overflowY: 'auto' },
   header: {
-    padding:       '8px 16px',
-    fontSize:      '12px',
-    color:         '#8892a4',
-    fontFamily:    'monospace',
-    letterSpacing: '0.04em',
-    borderBottom:  '1px solid #1a1a2e',
-    display:       'flex',
-    alignItems:    'center',
-    gap:           '12px',
-    flexShrink:    0,
+    padding: '8px 16px', fontSize: '12px', color: '#8892a4', fontFamily: 'monospace',
+    letterSpacing: '0.04em', borderBottom: '1px solid #1a1a2e', display: 'flex',
+    alignItems: 'center', gap: '12px', flexShrink: 0,
   },
-  priceChart: { flex: 1, width: '100%', minHeight: 200 },
-  oscWrapper: {
-    flexShrink: 0,
-    borderTop:  '1px solid #1a1a2e',
-    position:   'relative',
-    transition: 'height 0.15s ease',
-  },
-  oscLabel: {
-    position:      'absolute',
-    top:           4,
-    left:          8,
-    fontSize:      9,
-    color:         '#2a2a3e',
-    fontFamily:    'monospace',
-    letterSpacing: '0.07em',
-    pointerEvents: 'none',
-    zIndex:        1,
-  },
+  priceWrapper: { flex: 1, position: 'relative', minHeight: 200 },
+  priceChart: { width: '100%', height: '100%' },
+  oscWrapper: { flexShrink: 0, borderTop: '1px solid #1a1a2e', position: 'relative', transition: 'height 0.15s ease' },
+  oscLabel: { position: 'absolute', top: 4, left: 8, fontSize: 9, color: '#2a2a3e', fontFamily: 'monospace', letterSpacing: '0.07em', pointerEvents: 'none', zIndex: 1 },
   oscChart: { width: '100%', height: '100%' },
-  badge: {
-    fontSize:     '11px',
-    color:        '#ffa726',
-    background:   '#1a1a2e',
-    padding:      '2px 8px',
-    borderRadius: '4px',
-  },
-  clearBtn: {
-    marginLeft:   'auto',
-    background:   '#111827',
-    border:       '1px solid #2a2d3e',
-    borderRadius: 4,
-    color:        '#9aa4b8',
-    fontFamily:   'monospace',
-    fontSize:     11,
-    padding:      '3px 9px',
-  },
+  badge: { fontSize: '11px', color: '#ffa726', background: '#1a1a2e', padding: '2px 8px', borderRadius: '4px' },
+  clearBtn: { marginLeft: 'auto', background: '#111827', border: '1px solid #2a2d3e', borderRadius: 4, color: '#9aa4b8', fontFamily: 'monospace', fontSize: 11, padding: '3px 9px' },
 }

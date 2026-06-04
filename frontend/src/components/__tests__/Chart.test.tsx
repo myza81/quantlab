@@ -231,6 +231,7 @@ describe('Chart', () => {
     vi.clearAllMocks()
     _rafCallbacks = []
     _rafCounter   = 0
+    localStorage.clear()  // prevent pane height persistence leaking between tests
   })
 
   afterEach(() => { _rafCallbacks = [] })
@@ -241,9 +242,10 @@ describe('Chart', () => {
     expect(() => renderChart()).not.toThrow()
   })
 
-  it('2. OscPane label appears when oscillator artifact provided', () => {
+  it('2. OscPane wrapper appears when oscillator artifact provided', () => {
     renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
-    expect(screen.getByText('RSI')).toBeInTheDocument()
+    // OscPane header shows tool name twice (title + instance chip) — use data-testid
+    expect(screen.getByTestId('osc-pane-wrapper')).toBeInTheDocument()
   })
 
   it('3. pane splitter rendered for each oscillator group', () => {
@@ -590,9 +592,10 @@ describe('Chart', () => {
     addEventSpy.mockRestore()
   })
 
-  it('33. two distinct tool groups render two pane splitters', () => {
+  it('33. two distinct tool groups render two pane splitters and two pane wrappers', () => {
     renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1'), makeOscArtifact('macd', 'macd_1')] })
     expect(screen.getAllByTestId('pane-splitter')).toHaveLength(2)
+    expect(screen.getAllByTestId('osc-pane-wrapper')).toHaveLength(2)
   })
 
   it('34. removing oscillator indicator removes its pane splitter', async () => {
@@ -601,5 +604,96 @@ describe('Chart', () => {
 
     rerender(<Chart candles={makeCandles()} symbol="AAPL" timeframe="1d" indicatorArtifacts={[]} />)
     await waitFor(() => expect(screen.queryByTestId('pane-splitter')).not.toBeInTheDocument())
+  })
+
+  // ── Chart-UX-3C.5: Chart Object Experience ─────────────────────────────────
+
+  it('35. OscPane header shows instance chip', () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    expect(screen.getByTestId('osc-instance-rsi_1')).toBeInTheDocument()
+  })
+
+  it('36. OscPane header toggle button calls onIndicatorToggle', () => {
+    const onToggle = vi.fn()
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')], onIndicatorToggle: onToggle })
+    fireEvent.click(screen.getByTestId('osc-toggle-rsi_1'))
+    expect(onToggle).toHaveBeenCalledWith('rsi_1')
+  })
+
+  it('37. OscPane header remove button calls onIndicatorRemove', () => {
+    const onRemove = vi.fn()
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')], onIndicatorRemove: onRemove })
+    fireEvent.click(screen.getByTestId('osc-remove-rsi_1'))
+    expect(onRemove).toHaveBeenCalledWith('rsi_1')
+  })
+
+  it('38. double-clicking splitter resets pane height to default (130)', async () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    // First drag up to 230
+    fireEvent.pointerDown(splitter, { clientY: 300, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 200, pointerId: 1 })
+    flushRaf()
+    fireEvent.pointerUp(splitter, { clientY: 200, pointerId: 1 })
+
+    // Double-click to reset
+    fireEvent.doubleClick(splitter)
+
+    await waitFor(() => {
+      const wrapper = screen.getByTestId('osc-pane-wrapper')
+      expect(parseInt(wrapper.style.height || '0', 10)).toBe(130)
+    })
+  })
+
+  it('39. pane height persisted to localStorage on commit', async () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+
+    fireEvent.pointerDown(splitter, { clientY: 300, pointerId: 1 })
+    fireEvent.pointerMove(splitter, { clientY: 200, pointerId: 1 })
+    flushRaf()
+    fireEvent.pointerUp(splitter, { clientY: 200, pointerId: 1 })
+
+    await waitFor(() => {
+      const stored = localStorage.getItem('ql_pane_heights')
+      expect(stored).not.toBeNull()
+      const parsed = JSON.parse(stored!)
+      expect(Object.values(parsed).some((v) => (v as number) > 130)).toBe(true)
+    })
+  })
+
+  it('40. pane height restored from localStorage on mount', async () => {
+    // Pre-seed localStorage with a known height
+    localStorage.setItem('ql_pane_heights', JSON.stringify({ rsi: 250 }))
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+
+    await waitFor(() => {
+      const wrapper = screen.getByTestId('osc-pane-wrapper')
+      // Height should be initialized from localStorage (250)
+      expect(parseInt(wrapper.style.height || '0', 10)).toBe(250)
+    })
+  })
+
+  it('41. hovering OscPane wrapper triggers isHovered active-pane feedback', async () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const wrapper = screen.getByTestId('osc-pane-wrapper')
+
+    fireEvent.mouseEnter(wrapper)
+    await waitFor(() => {
+      // Hover adds a non-transparent left border
+      expect(wrapper.style.borderLeft).not.toContain('transparent')
+    })
+
+    fireEvent.mouseLeave(wrapper)
+    await waitFor(() => {
+      expect(wrapper.style.borderLeft).toContain('transparent')
+    })
+  })
+
+  it('42. splitter outer div has wider hit target (padding)', () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    const splitter = screen.getByTestId('pane-splitter')
+    expect(splitter.style.padding).toBeTruthy()
   })
 })

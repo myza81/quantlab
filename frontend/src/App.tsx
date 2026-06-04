@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import Controls from './components/Controls'
 import Chart from './components/Chart'
 import { DraftWorkspace } from './components/DraftWorkspace'
@@ -29,6 +29,7 @@ import type { CatalogOHLCVResponse, CatalogEntry } from './types/catalog'
 import type { ResearchSession } from './types/researchSession'
 import type { ForwardTestPrefill } from './types/forwardTesting'
 import { ChartIndicatorPanel } from './components/ChartIndicatorPanel'
+import type { ChartIndicatorPanelHandle } from './components/ChartIndicatorPanel'
 import type { IndicatorInstance } from './types/chartIndicators'
 
 type Status     = 'idle' | 'loading' | 'success' | 'error'
@@ -56,6 +57,10 @@ export default function App() {
 
   // Chart-UX-3C.1: full indicator instances (visibility, colors, artifacts)
   const [indicatorInstances, setIndicatorInstances] = useState<IndicatorInstance[]>([])
+  // Chart-UX-3C.5: indicator panel ref (for Chart legend/header action callbacks)
+  const indicatorPanelRef = useRef<ChartIndicatorPanelHandle>(null)
+  // Chart-UX-3C.5: hovered instance for ownership feedback (sidebar ↔ chart legend)
+  const [hoveredInstanceId, setHoveredInstanceId] = useState<string | null>(null)
 
   // Derived chart props — memoized to avoid spurious Chart effect re-runs
   const visibleArtifacts = useMemo(() =>
@@ -375,10 +380,13 @@ export default function App() {
             />
             {/* Chart-UX-3C.1: Indicator panel lives in sidebar */}
             <ChartIndicatorPanel
+              ref={indicatorPanelRef}
               key={params ? `${params.symbol}|${params.timeframe}|${params.start}` : 'catalog'}
               hasData={status === 'success' && candles.length > 0}
               params={params}
               onInstancesChange={setIndicatorInstances}
+              highlightedInstanceId={hoveredInstanceId}
+              onHoverInstance={setHoveredInstanceId}
             />
           </aside>
 
@@ -411,7 +419,19 @@ export default function App() {
                   overlay={overlay}
                   indicatorArtifacts={visibleArtifacts}
                   instanceColors={instanceColorMap}
+                  instanceLabels={useMemo(
+                    () => new Map(indicatorInstances.map(i => [i.instanceId, i.instanceLabel])),
+                    [indicatorInstances]
+                  )}
+                  instanceVisible={useMemo(
+                    () => new Map(indicatorInstances.map(i => [i.instanceId, i.visible])),
+                    [indicatorInstances]
+                  )}
+                  highlightedInstanceId={hoveredInstanceId}
                   onClearStrategyResults={clearStrategyResults}
+                  onHoverInstance={setHoveredInstanceId}
+                  onIndicatorToggle={id => indicatorPanelRef.current?.toggleVisible(id)}
+                  onIndicatorRemove={id => indicatorPanelRef.current?.removeInstance(id)}
                 />
               </>
             )}

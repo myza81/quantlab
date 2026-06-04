@@ -16,7 +16,7 @@
  *     visibility, artifacts) so App.tsx can derive what Chart.tsx renders.
  *   - Instance colors are frontend-only state; they never touch the backend.
  */
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, forwardRef, useImperativeHandle } from 'react'
 import { getChartIndicators, computeIndicatorArtifact } from '../api/chartIndicators'
 import type { MarketDataParams } from '../api/marketData'
 import type {
@@ -51,6 +51,17 @@ interface ChartIndicatorPanelProps {
   hasData: boolean
   params: MarketDataParams | null
   onInstancesChange: (instances: IndicatorInstance[]) => void
+  /** Instance to visually highlight (from chart legend hover) */
+  highlightedInstanceId?: string | null
+  /** Report which instance is hovered (for chart legend highlight) */
+  onHoverInstance?: (instanceId: string | null) => void
+}
+
+/** Imperative handle exposed via forwardRef — lets Chart trigger actions. */
+export interface ChartIndicatorPanelHandle {
+  toggleVisible:  (instanceId: string) => void
+  removeInstance: (instanceId: string) => void
+  openSettings:   (instanceId: string) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +148,8 @@ function parseEditedParams(
 // Component
 // ---------------------------------------------------------------------------
 
-export function ChartIndicatorPanel({ hasData, params, onInstancesChange }: ChartIndicatorPanelProps) {
+export const ChartIndicatorPanel = forwardRef<ChartIndicatorPanelHandle, ChartIndicatorPanelProps>(
+function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedInstanceId, onHoverInstance }: ChartIndicatorPanelProps, ref) {
   const [indicators,   setIndicators]   = useState<ChartIndicatorMetadata[]>([])
   const [metaLoading,  setMetaLoading]  = useState(false)
   const [metaError,    setMetaError]    = useState<string | null>(null)
@@ -146,6 +158,13 @@ export function ChartIndicatorPanel({ hasData, params, onInstancesChange }: Char
   const [searchQuery,  setSearchQuery]  = useState('')
   const [editingId,    setEditingId]    = useState<string | null>(null)
   const [editedParams, setEditedParams] = useState<Record<string, Record<string, string>>>({})
+
+  // Expose actions to parent (App.tsx wires these to Chart legend/header buttons)
+  useImperativeHandle(ref, () => ({
+    toggleVisible:  handleToggleVisible,
+    removeInstance: handleRemove,
+    openSettings:   (id: string) => setEditingId(id),
+  }), []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Stable ref to callback so effects don't depend on it
   const onChangeRef = useRef(onInstancesChange)
@@ -387,7 +406,17 @@ export function ChartIndicatorPanel({ hasData, params, onInstancesChange }: Char
             const isEditing = editingId === inst.instanceId
 
             return (
-              <div key={inst.instanceId} data-testid={`indicator-instance-${inst.instanceId}`} style={s.instOuter}>
+              <div
+                key={inst.instanceId}
+                data-testid={`indicator-instance-${inst.instanceId}`}
+                style={{
+                  ...s.instOuter,
+                  outline: highlightedInstanceId === inst.instanceId ? '1px solid #3a4570' : 'none',
+                  borderRadius: 2,
+                }}
+                onMouseEnter={() => onHoverInstance?.(inst.instanceId)}
+                onMouseLeave={() => onHoverInstance?.(null)}
+              >
                 {/* Compact row */}
                 <div style={{ ...s.instRow, opacity: inst.visible ? 1 : 0.4 }}>
                   {/* Color swatch */}
@@ -532,7 +561,7 @@ export function ChartIndicatorPanel({ hasData, params, onInstancesChange }: Char
       )}
     </div>
   )
-}
+}) // end forwardRef
 
 // ---------------------------------------------------------------------------
 // Private helpers
