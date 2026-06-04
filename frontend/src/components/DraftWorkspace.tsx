@@ -39,6 +39,7 @@ import {
 } from '../api/drafts'
 import { fetchTools } from '../api/tools'
 import { setSemantics, validateSemanticsPayload } from '../api/semantics'
+import { listBacktestRuns } from '../api/backtestRuns'
 import { computeGuidance } from '../lib/lifecycleGuidance'
 import { LifecycleGuidanceCard } from './LifecycleGuidanceCard'
 import { generateCompactLabel } from '../lib/toolIdentityGeneration'
@@ -77,6 +78,21 @@ export function DraftWorkspace() {
       setToolRegistry(map)
     }).catch(() => { /* non-fatal: suggestions degrade gracefully */ })
   }, [])
+
+  // Backtest evidence for lifecycle guidance. Fetched whenever the selected draft
+  // changes so guidance reflects actual evidence state, not just lifecycle_status.
+  // Non-fatal: if the fetch fails the guidance falls back to no-evidence (conservative).
+  const [hasCompletedBacktest, setHasCompletedBacktest] = useState(false)
+
+  useEffect(() => {
+    if (!selectedDraft) { setHasCompletedBacktest(false); return }
+    const draftId = selectedDraft.draft_id
+    listBacktestRuns()
+      .then(runs => setHasCompletedBacktest(
+        runs.some(r => r.draft_id === draftId && r.status === 'completed')
+      ))
+      .catch(() => setHasCompletedBacktest(false))
+  }, [selectedDraft?.draft_id])
 
   const syncDraftInList = useCallback((updated: StrategyDraftData) => {
     setDrafts(prev =>
@@ -229,7 +245,10 @@ export function DraftWorkspace() {
   }
 
   const dwGuidance = selectedDraft
-    ? computeGuidance({ lifecycleStatus: selectedDraft.lifecycle_status ?? 'draft' })
+    ? computeGuidance({
+        lifecycleStatus:      selectedDraft.lifecycle_status ?? 'draft',
+        hasCompletedBacktest,
+      })
     : null
 
   return (

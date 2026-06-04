@@ -17,6 +17,9 @@ vi.mock('../../api/drafts', () => ({
   reorderDraftTools:    vi.fn(),
   validateDraft:        vi.fn(),
 }))
+vi.mock('../../api/backtestRuns', () => ({
+  listBacktestRuns: vi.fn(),
+}))
 vi.mock('../../api/tools', () => ({ fetchTools: vi.fn() }))
 vi.mock('../../api/semantics', () => ({
   setSemantics:              vi.fn(),
@@ -32,6 +35,7 @@ vi.mock('../PlanInspectionPanel', () => ({
 import { useAuth } from '../../auth/AuthContext'
 import { createDraft, fetchDraft, fetchDrafts, validateDraft } from '../../api/drafts'
 import { fetchTools } from '../../api/tools'
+import { listBacktestRuns } from '../../api/backtestRuns'
 
 const mockUseAuth = vi.mocked(useAuth)
 const mockCreateDraft = vi.mocked(createDraft)
@@ -39,6 +43,7 @@ const mockFetchDraft = vi.mocked(fetchDraft)
 const mockFetchDrafts = vi.mocked(fetchDrafts)
 const mockFetchTools = vi.mocked(fetchTools)
 const mockValidateDraft = vi.mocked(validateDraft)
+const mockListBacktestRuns = vi.mocked(listBacktestRuns)
 
 const GENERATED_DRAFT_ID = 'aaaaaaaa-0001-4001-8001-000000000001'
 
@@ -105,6 +110,7 @@ beforeEach(() => {
     .mockResolvedValueOnce({ drafts: [makeDraft()], count: 1 })
   mockCreateDraft.mockResolvedValue(makeDraft())
   mockFetchDraft.mockResolvedValue(makeDraft())
+  mockListBacktestRuns.mockResolvedValue([])
 })
 
 /** Render the workspace with one draft pre-loaded and selected. */
@@ -177,6 +183,7 @@ describe('DraftWorkspace validation / lifecycle guidance consistency', () => {
       login: vi.fn(), logout: vi.fn(), register: vi.fn(), refreshUser: vi.fn(),
     } as ReturnType<typeof useAuth>)
     mockFetchTools.mockResolvedValue({ tools: [] })
+    mockListBacktestRuns.mockResolvedValue([])  // default: no runs
   }
 
   it('lifecycle guidance shows validation blocker for draft status', async () => {
@@ -272,5 +279,123 @@ describe('DraftWorkspace validation / lifecycle guidance consistency', () => {
     await waitFor(() => expect(screen.getByText(/Toolset has no tools/i)).toBeTruthy())
     // No re-fetch when lifecycle_promoted is false
     expect(mockFetchDraft).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Strategy-UX-1G — Backtest evidence state mismatch regression tests
+// ---------------------------------------------------------------------------
+
+describe('DraftWorkspace backtest evidence / lifecycle guidance consistency', () => {
+  function setupBase() {
+    vi.resetAllMocks()
+    vi.stubGlobal('crypto', { randomUUID: vi.fn(() => GENERATED_DRAFT_ID) })
+    mockUseAuth.mockReturnValue({
+      user: null, isAuthenticated: false, isLoading: false,
+      login: vi.fn(), logout: vi.fn(), register: vi.fn(), refreshUser: vi.fn(),
+    } as ReturnType<typeof useAuth>)
+    mockFetchTools.mockResolvedValue({ tools: [] })
+    mockListBacktestRuns.mockResolvedValue([])
+  }
+
+  async function openDraft(draft: ReturnType<typeof makeDraft>) {
+    mockFetchDrafts.mockResolvedValue({ drafts: [draft], count: 1 })
+    mockFetchDraft.mockResolvedValue(draft)
+    render(<DraftWorkspace />)
+    await waitFor(() => expect(screen.getByText('Test Strategy')).toBeTruthy())
+    fireEvent.click(screen.getByText('Test Strategy'))
+    await waitFor(() => expect(screen.getByText('Validate')).toBeTruthy())
+  }
+
+  it('validated draft with no completed backtest shows Run Backtest blocker', async () => {
+    setupBase()
+    // No runs → hasCompletedBacktest = false
+    mockListBacktestRuns.mockResolvedValue([])
+    await openDraft(makeDraft(GENERATED_DRAFT_ID, 'validated'))
+
+    await waitFor(() =>
+      expect(screen.getByText(/No completed backtest found/i)).toBeTruthy()
+    )
+    expect(screen.getByText(/Run Backtest/i)).toBeTruthy()
+  })
+
+  it('validated draft with a completed backtest removes "No completed backtest found" blocker', async () => {
+    setupBase()
+    mockListBacktestRuns.mockResolvedValue([
+      { run_id: 'run-1', draft_id: GENERATED_DRAFT_ID, status: 'completed',
+        draft_name: 'Test', symbol: 'AAPL', timeframe: '1d', bars_count: 100,
+        run_timestamp: '2025-01-01T00:00:00Z', dataset_start: null, dataset_end: null,
+        engine_version: '1', dataset_provenance: null, draft_provenance: null,
+        total_return_pct: 5.0, trade_count: 10, max_drawdown_pct: -2.0 },
+    ])
+    await openDraft(makeDraft(GENERATED_DRAFT_ID, 'validated'))
+
+    await waitFor(() =>
+      expect(screen.queryByText(/No completed backtest found/i)).toBeNull()
+    )
+  })
+
+  it('validated draft with completed backtest shows Promote to Backtested action', async () => {
+    setupBase()
+    mockListBacktestRuns.mockResolvedValue([
+      { run_id: 'run-1', draft_id: GENERATED_DRAFT_ID, status: 'completed',
+        draft_name: 'Test', symbol: 'AAPL', timeframe: '1d', bars_count: 100,
+        run_timestamp: '2025-01-01T00:00:00Z', dataset_start: null, dataset_end: null,
+        engine_version: '1', dataset_provenance: null, draft_provenance: null,
+        total_return_pct: 5.0, trade_count: 10, max_drawdown_pct: -2.0 },
+    ])
+    await openDraft(makeDraft(GENERATED_DRAFT_ID, 'validated'))
+
+    // Use testid to target the guidance card's next-action slot specifically
+    await waitFor(() => {
+      const el = screen.getByTestId('lgc-next-action')
+      expect(el.textContent).toMatch(/Promote to Backtest Complete/i)
+    })
+  })
+
+  it('backtest run with wrong draft_id is ignored', async () => {
+    setupBase()
+    // Run exists but belongs to a different draft
+    mockListBacktestRuns.mockResolvedValue([
+      { run_id: 'run-1', draft_id: 'other-draft-id', status: 'completed',
+        draft_name: 'Other', symbol: 'AAPL', timeframe: '1d', bars_count: 100,
+        run_timestamp: '2025-01-01T00:00:00Z', dataset_start: null, dataset_end: null,
+        engine_version: '1', dataset_provenance: null, draft_provenance: null,
+        total_return_pct: null, trade_count: null, max_drawdown_pct: null },
+    ])
+    await openDraft(makeDraft(GENERATED_DRAFT_ID, 'validated'))
+
+    // Blocker still visible because the run belongs to a different draft
+    await waitFor(() =>
+      expect(screen.getByText(/No completed backtest found/i)).toBeTruthy()
+    )
+  })
+
+  it('incomplete/failed backtest does not satisfy evidence', async () => {
+    setupBase()
+    mockListBacktestRuns.mockResolvedValue([
+      { run_id: 'run-1', draft_id: GENERATED_DRAFT_ID, status: 'failed',
+        draft_name: 'Test', symbol: 'AAPL', timeframe: '1d', bars_count: 0,
+        run_timestamp: '2025-01-01T00:00:00Z', dataset_start: null, dataset_end: null,
+        engine_version: '1', dataset_provenance: null, draft_provenance: null,
+        total_return_pct: null, trade_count: null, max_drawdown_pct: null },
+    ])
+    await openDraft(makeDraft(GENERATED_DRAFT_ID, 'validated'))
+
+    // Failed run does not satisfy evidence → blocker still shown
+    await waitFor(() =>
+      expect(screen.getByText(/No completed backtest found/i)).toBeTruthy()
+    )
+  })
+
+  it('listBacktestRuns failure falls back to conservative guidance', async () => {
+    setupBase()
+    // API error → falls back to false → conservative: shows "No completed backtest"
+    mockListBacktestRuns.mockRejectedValue(new Error('Network error'))
+    await openDraft(makeDraft(GENERATED_DRAFT_ID, 'validated'))
+
+    await waitFor(() =>
+      expect(screen.getByText(/No completed backtest found/i)).toBeTruthy()
+    )
   })
 })
