@@ -30,7 +30,7 @@ vi.mock('../PlanInspectionPanel', () => ({
 }))
 
 import { useAuth } from '../../auth/AuthContext'
-import { createDraft, fetchDraft, fetchDrafts } from '../../api/drafts'
+import { createDraft, fetchDraft, fetchDrafts, validateDraft } from '../../api/drafts'
 import { fetchTools } from '../../api/tools'
 
 const mockUseAuth = vi.mocked(useAuth)
@@ -38,14 +38,16 @@ const mockCreateDraft = vi.mocked(createDraft)
 const mockFetchDraft = vi.mocked(fetchDraft)
 const mockFetchDrafts = vi.mocked(fetchDrafts)
 const mockFetchTools = vi.mocked(fetchTools)
+const mockValidateDraft = vi.mocked(validateDraft)
 
 const GENERATED_DRAFT_ID = 'aaaaaaaa-0001-4001-8001-000000000001'
 
-function makeDraft(draftId = GENERATED_DRAFT_ID): StrategyDraftData {
+function makeDraft(draftId = GENERATED_DRAFT_ID, lifecycle_status = 'draft'): StrategyDraftData {
   return {
     draft_id: draftId,
     display_name: 'Test Strategy',
     description: null,
+    lifecycle_status,
     toolset: {
       toolset_id: draftId,
       display_name: null,
@@ -105,6 +107,22 @@ beforeEach(() => {
   mockFetchDraft.mockResolvedValue(makeDraft())
 })
 
+/** Render the workspace with one draft pre-loaded and selected. */
+async function renderWithSelectedDraft(draft: StrategyDraftData) {
+  mockFetchDrafts.mockResolvedValue({ drafts: [draft], count: 1 })
+  mockFetchDraft.mockResolvedValue(draft)
+  render(<DraftWorkspace />)
+
+  // Wait for draft list to render
+  await waitFor(() => expect(screen.getByText(draft.display_name ?? draft.draft_id)).toBeTruthy())
+
+  // Click to select it
+  fireEvent.click(screen.getByText(draft.display_name ?? draft.draft_id))
+
+  // Wait for draft detail to load
+  await waitFor(() => expect(screen.getByText('Validate')).toBeTruthy())
+}
+
 describe('DraftWorkspace composer creation', () => {
   it('creates path-safe drafts and exposes registered tools in the new composer', async () => {
     render(<DraftWorkspace />)
@@ -139,5 +157,120 @@ describe('DraftWorkspace composer creation', () => {
     await waitFor(() => {
       expect(screen.getByRole('option', { name: /simple moving average/i })).toBeTruthy()
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Strategy-UX-1F — Validation State Mismatch regression tests
+//
+// Each test is fully self-contained: it calls vi.resetAllMocks() to clear all
+// mock implementations (including mockResolvedValueOnce queues set by outer
+// beforeEach), then sets up exactly what it needs.
+// ---------------------------------------------------------------------------
+
+describe('DraftWorkspace validation / lifecycle guidance consistency', () => {
+  function setupBase() {
+    vi.resetAllMocks()
+    vi.stubGlobal('crypto', { randomUUID: vi.fn(() => GENERATED_DRAFT_ID) })
+    mockUseAuth.mockReturnValue({
+      user: null, isAuthenticated: false, isLoading: false,
+      login: vi.fn(), logout: vi.fn(), register: vi.fn(), refreshUser: vi.fn(),
+    } as ReturnType<typeof useAuth>)
+    mockFetchTools.mockResolvedValue({ tools: [] })
+  }
+
+  it('lifecycle guidance shows validation blocker for draft status', async () => {
+    setupBase()
+    const draft = makeDraft(GENERATED_DRAFT_ID, 'draft')
+    mockFetchDrafts.mockResolvedValue({ drafts: [draft], count: 1 })
+    mockFetchDraft.mockResolvedValue(draft)
+
+    render(<DraftWorkspace />)
+    await waitFor(() => expect(screen.getByText('Test Strategy')).toBeTruthy())
+    fireEvent.click(screen.getByText('Test Strategy'))
+    await waitFor(() => expect(screen.getByText('Validate')).toBeTruthy())
+
+    expect(screen.getByText(/Draft has not been validated/i)).toBeTruthy()
+  })
+
+  it('after successful validation: re-fetches draft to update lifecycle status', async () => {
+    setupBase()
+    const draftBefore = makeDraft(GENERATED_DRAFT_ID, 'draft')
+    const draftAfter  = makeDraft(GENERATED_DRAFT_ID, 'validated')
+    mockFetchDrafts.mockResolvedValue({ drafts: [draftBefore], count: 1 })
+    mockFetchDraft
+      .mockResolvedValueOnce(draftBefore)   // initial load
+      .mockResolvedValueOnce(draftAfter)    // re-fetch after validation
+    mockValidateDraft.mockResolvedValue({ valid: true, errors: [], lifecycle_promoted: true })
+
+    render(<DraftWorkspace />)
+    await waitFor(() => expect(screen.getByText('Test Strategy')).toBeTruthy())
+    fireEvent.click(screen.getByText('Test Strategy'))
+    await waitFor(() => expect(screen.getByText('Validate')).toBeTruthy())
+    fireEvent.click(screen.getByText('Validate'))
+
+    // fetchDraft must be called a second time (re-fetch after promotion)
+    await waitFor(() => expect(mockFetchDraft).toHaveBeenCalledTimes(2))
+  })
+
+  it('after successful validation: lifecycle blocker disappears', async () => {
+    setupBase()
+    const draftBefore = makeDraft(GENERATED_DRAFT_ID, 'draft')
+    const draftAfter  = makeDraft(GENERATED_DRAFT_ID, 'validated')
+    mockFetchDrafts.mockResolvedValue({ drafts: [draftBefore], count: 1 })
+    mockFetchDraft
+      .mockResolvedValueOnce(draftBefore)
+      .mockResolvedValueOnce(draftAfter)
+    mockValidateDraft.mockResolvedValue({ valid: true, errors: [], lifecycle_promoted: true })
+
+    render(<DraftWorkspace />)
+    await waitFor(() => expect(screen.getByText('Test Strategy')).toBeTruthy())
+    fireEvent.click(screen.getByText('Test Strategy'))
+    await waitFor(() => expect(screen.getByText('Validate')).toBeTruthy())
+
+    // Blocker is visible before validation
+    expect(screen.getByText(/Draft has not been validated/i)).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Validate'))
+
+    // Blocker must disappear after lifecycle_status becomes 'validated'
+    await waitFor(() => expect(screen.queryByText(/Draft has not been validated/i)).toBeNull())
+  })
+
+  it('failed validation: lifecycle blocker remains visible', async () => {
+    setupBase()
+    const draft = makeDraft(GENERATED_DRAFT_ID, 'draft')
+    mockFetchDrafts.mockResolvedValue({ drafts: [draft], count: 1 })
+    mockFetchDraft.mockResolvedValue(draft)
+    mockValidateDraft.mockResolvedValue({ valid: false, errors: ['Toolset has no tools.'], lifecycle_promoted: false })
+
+    render(<DraftWorkspace />)
+    await waitFor(() => expect(screen.getByText('Test Strategy')).toBeTruthy())
+    fireEvent.click(screen.getByText('Test Strategy'))
+    await waitFor(() => expect(screen.getByText('Validate')).toBeTruthy())
+    fireEvent.click(screen.getByText('Validate'))
+
+    // Draft not promoted → blocker must still show
+    await waitFor(() => expect(screen.getByText(/Draft has not been validated/i)).toBeTruthy())
+  })
+
+  it('failed validation: does NOT re-fetch the draft', async () => {
+    setupBase()
+    const draft = makeDraft(GENERATED_DRAFT_ID, 'draft')
+    mockFetchDrafts.mockResolvedValue({ drafts: [draft], count: 1 })
+    mockFetchDraft.mockResolvedValue(draft)
+    mockValidateDraft.mockResolvedValue({ valid: false, errors: ['Toolset has no tools.'], lifecycle_promoted: false })
+
+    render(<DraftWorkspace />)
+    await waitFor(() => expect(screen.getByText('Test Strategy')).toBeTruthy())
+    fireEvent.click(screen.getByText('Test Strategy'))
+    await waitFor(() => expect(screen.getByText('Validate')).toBeTruthy())
+    mockFetchDraft.mockClear()
+
+    fireEvent.click(screen.getByText('Validate'))
+
+    await waitFor(() => expect(screen.getByText(/Toolset has no tools/i)).toBeTruthy())
+    // No re-fetch when lifecycle_promoted is false
+    expect(mockFetchDraft).not.toHaveBeenCalled()
   })
 })

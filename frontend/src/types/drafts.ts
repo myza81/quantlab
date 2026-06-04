@@ -33,4 +33,6 @@ export interface DraftListResponse {
 export interface CompositionValidationResponse {
   valid: boolean
   errors: string[]
+  /** True when validation succeeded and draft was promoted to 'validated' status. */
+  lifecycle_promoted?: boolean
 }

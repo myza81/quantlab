@@ -153,10 +153,17 @@ export function DraftWorkspace() {
     await loadList()
   }
 
-  // Validate — returns result; DraftDetailView stores and displays it
+  // Validate — returns result to DraftDetailView; re-fetches draft when validation
+  // promotes lifecycle_status (draft → validated) so lifecycle guidance updates.
   async function handleValidate(): Promise<CompositionValidationResponse> {
     if (!selectedDraft) throw new Error('No draft selected')
-    return validateDraft(selectedDraft.draft_id)
+    const result = await validateDraft(selectedDraft.draft_id)
+    if (result.lifecycle_promoted) {
+      const updated = await fetchDraft(selectedDraft.draft_id)
+      setSelectedDraft(updated)
+      syncDraftInList(updated)
+    }
+    return result
   }
 
   // ---------------------------------------------------------------------------
