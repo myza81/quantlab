@@ -12,12 +12,12 @@ Optimized for fast AI-agent onboarding. Historical phase detail → `agent/archi
 **QuantLab** — modular strategy research and execution ecosystem.
 Architecture-first, governance-disciplined, AI-orchestrated development.
 
-## Test Counts (as of Phase Chart-UX-3C.5)
+## Test Counts (as of Phase Chart-UX-3C.6A)
 
 | Layer    | Tests  | Status |
 |----------|--------|--------|
 | Backend  | 4 847  | ✓ all pass (6 pre-existing polygon stale-path failures excluded) |
-| Frontend | 532    | ✓ all pass |
+| Frontend | 542    | ✓ all pass |
 | TypeScript | — | ✓ `tsc --noEmit` clean |
 | Frontend build | — | ✓ `npm run build` clean (if run) |
 
