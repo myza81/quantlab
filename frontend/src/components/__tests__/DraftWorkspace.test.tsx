@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DraftWorkspace } from '../DraftWorkspace'
+import { StrategyContextProvider } from '../../context/StrategyContext'
+import { StrategyContextBar } from '../StrategyContextBar'
 import type { StrategyDraftData } from '../../types/drafts'
 
 vi.mock('../../auth/AuthContext', () => ({ useAuth: vi.fn() }))
@@ -396,6 +398,86 @@ describe('DraftWorkspace backtest evidence / lifecycle guidance consistency', ()
 
     await waitFor(() =>
       expect(screen.getByText(/No completed backtest found/i)).toBeTruthy()
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NAV-UX-3A — DraftWorkspace ↔ StrategyContext bidirectional sync
+// ---------------------------------------------------------------------------
+
+const SECOND_DRAFT_ID = 'aaaaaaaa-0002-4002-8002-000000000002'
+
+describe('DraftWorkspace ↔ StrategyContext sync (NAV-UX-3A)', () => {
+  function setupBase() {
+    vi.resetAllMocks()
+    try { localStorage.clear() } catch { /* ignore */ }
+    vi.stubGlobal('crypto', { randomUUID: vi.fn(() => GENERATED_DRAFT_ID) })
+    mockUseAuth.mockReturnValue({
+      user: null, isAuthenticated: false, isLoading: false,
+      login: vi.fn(), logout: vi.fn(), register: vi.fn(), refreshUser: vi.fn(),
+    } as ReturnType<typeof useAuth>)
+    mockFetchTools.mockResolvedValue({ tools: [] })
+    mockListBacktestRuns.mockResolvedValue([])
+  }
+
+  function renderWithProvider() {
+    return render(
+      <StrategyContextProvider>
+        <StrategyContextBar />
+        <DraftWorkspace />
+      </StrategyContextProvider>
+    )
+  }
+
+  it('context auto-selects first draft and DraftWorkspace loads it (bar → workspace)', async () => {
+    setupBase()
+    const first  = makeDraft(GENERATED_DRAFT_ID, 'validated')
+    const second = makeDraft(SECOND_DRAFT_ID, 'draft')
+    second.display_name = 'Second Strategy'
+    mockFetchDrafts.mockResolvedValue({ drafts: [first, second], count: 2 })
+    mockFetchDraft.mockResolvedValue(first)
+
+    renderWithProvider()
+
+    // Provider auto-selects first → DraftWorkspace effect calls fetchDraft(first)
+    await waitFor(() => expect(mockFetchDraft).toHaveBeenCalledWith(GENERATED_DRAFT_ID))
+    // Bar selector reflects the first draft
+    const sel = screen.getByTestId('strategy-context-selector') as HTMLSelectElement
+    expect(sel.value).toBe(GENERATED_DRAFT_ID)
+  })
+
+  it('changing strategy in the context bar drives DraftWorkspace selection', async () => {
+    setupBase()
+    const first  = makeDraft(GENERATED_DRAFT_ID, 'validated')
+    const second = makeDraft(SECOND_DRAFT_ID, 'draft')
+    second.display_name = 'Second Strategy'
+    mockFetchDrafts.mockResolvedValue({ drafts: [first, second], count: 2 })
+    mockFetchDraft.mockImplementation(async (id: string) =>
+      id === SECOND_DRAFT_ID ? second : first
+    )
+
+    renderWithProvider()
+    await waitFor(() => expect(mockFetchDraft).toHaveBeenCalledWith(GENERATED_DRAFT_ID))
+
+    // Change selection via the bar
+    fireEvent.change(screen.getByTestId('strategy-context-selector'), {
+      target: { value: SECOND_DRAFT_ID },
+    })
+
+    // DraftWorkspace effect reacts → fetchDraft(second)
+    await waitFor(() => expect(mockFetchDraft).toHaveBeenCalledWith(SECOND_DRAFT_ID))
+  })
+
+  it('context bar lifecycle badge reflects the selected draft status', async () => {
+    setupBase()
+    const first = makeDraft(GENERATED_DRAFT_ID, 'backtested')
+    mockFetchDrafts.mockResolvedValue({ drafts: [first], count: 1 })
+    mockFetchDraft.mockResolvedValue(first)
+
+    renderWithProvider()
+    await waitFor(() =>
+      expect(screen.getByTestId('scb-lifecycle-badge').textContent).toMatch(/Backtest Complete/i)
     )
   })
 })

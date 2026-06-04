@@ -21,6 +21,7 @@ import { listForwardTestSessions } from '../api/forwardTests'
 import { listPaperTradingSessions } from '../api/paperTrading'
 import { computeGuidance, STAGE_LABELS } from '../lib/lifecycleGuidance'
 import type { NavigateTarget } from '../lib/lifecycleGuidance'
+import { useStrategyContext } from '../context/StrategyContext'
 import { EvidenceReadinessPanel } from './EvidenceReadinessPanel'
 import type { EvidenceItem } from './EvidenceReadinessPanel'
 import type { StrategyDraftData } from '../types/drafts'
@@ -138,6 +139,8 @@ function EvidenceSection({ title, testId, children }: { title: string; testId: s
 // ---------------------------------------------------------------------------
 
 export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToHistory, onNavigateToForwardTest, onNavigateToPaperTrading }: Props) {
+  // Shared strategy context (NAV-UX-3A). No-op defaults outside a provider.
+  const ctx = useStrategyContext()
   const [drafts,       setDrafts]       = useState<StrategyDraftData[]>([])
   const [selectedId,   setSelectedId]   = useState<string | null>(null)
   const [btRuns,       setBtRuns]       = useState<BacktestRunListItem[]>([])
@@ -149,20 +152,33 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
   const [promoting,      setPromoting]      = useState(false)
   const [promotionError, setPromotionError] = useState<string | null>(null)
 
-  // Load drafts on mount
+  // Load drafts on mount. Initial selection prefers the shared context selection
+  // (so the dashboard opens on the same strategy as the context bar), then any
+  // existing local selection, then the first draft.
   useEffect(() => {
     setLoading(true)
     setError(null)
     fetchDrafts()
       .then(res => {
         setDrafts(res.drafts)
-        if (res.drafts.length > 0 && selectedId === null) {
-          setSelectedId(res.drafts[0].draft_id)
+        if (selectedId === null && res.drafts.length > 0) {
+          const ctxMatch = ctx.draftId && res.drafts.some(d => d.draft_id === ctx.draftId)
+            ? ctx.draftId
+            : null
+          setSelectedId(ctxMatch ?? res.drafts[0].draft_id)
         }
       })
       .catch(e => setError(e instanceof Error ? e.message : 'Failed to load drafts'))
       .finally(() => setLoading(false))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // React to selection driven from the context bar. Only fires on external change.
+  useEffect(() => {
+    if (ctx.draftId && ctx.draftId !== selectedId) {
+      setSelectedId(ctx.draftId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.draftId])
 
   // Load evidence data when a draft is selected
   useEffect(() => {
@@ -274,6 +290,7 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
     try {
       const updated = await promoteDraftToBacktested(latestCompletedBt.run_id, selectedId)
       setDrafts(prev => prev.map(d => d.draft_id === updated.draft_id ? updated : d))
+      ctx.updateDraft(updated)  // context bar badge reflects promoted stage
     } catch (err) {
       setPromotionError(err instanceof Error ? err.message : 'Promotion failed')
     } finally {
@@ -316,7 +333,11 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
             <select
               data-testid="lcd-draft-select"
               value={selectedId ?? ''}
-              onChange={e => setSelectedId(e.target.value || null)}
+              onChange={e => {
+                const id = e.target.value || null
+                setSelectedId(id)
+                if (id && id !== ctx.draftId) ctx.selectDraft(id)  // mirror to context bar
+              }}
               style={{
                 background: '#161b22', border: '1px solid #30363d', borderRadius: 4,
                 color: '#e2e8f0', fontSize: 13, padding: '4px 8px', minWidth: 240,

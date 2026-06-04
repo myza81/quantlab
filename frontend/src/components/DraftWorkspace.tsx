@@ -43,6 +43,7 @@ import { listBacktestRuns } from '../api/backtestRuns'
 import { computeGuidance } from '../lib/lifecycleGuidance'
 import { LifecycleGuidanceCard } from './LifecycleGuidanceCard'
 import { generateCompactLabel } from '../lib/toolIdentityGeneration'
+import { useStrategyContext } from '../context/StrategyContext'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -59,6 +60,9 @@ function makePathSafeDraftId(input: string): string {
 
 export function DraftWorkspace() {
   const { logout } = useAuth()
+  // Shared strategy context (NAV-UX-3A). Outside a provider this returns safe
+  // no-op defaults, so DraftWorkspace works standalone (e.g. isolated tests).
+  const ctx = useStrategyContext()
   const [drafts, setDrafts] = useState<StrategyDraftData[]>([])
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
@@ -122,11 +126,13 @@ export function DraftWorkspace() {
   // Load selected draft
   async function handleSelect(id: string) {
     setSelectedId(id)
+    if (ctx.draftId !== id) ctx.selectDraft(id)  // mirror to shared context
     setDetailLoading(true)
     try {
       const draft = await fetchDraft(id)
       setSelectedDraft(draft)
       syncDraftInList(draft)
+      ctx.updateDraft(draft)  // keep context bar fresh
     } catch (err) {
       if (isAuthError(err)) { logout(); return }
       setSelectedDraft(null)
@@ -134,6 +140,16 @@ export function DraftWorkspace() {
       setDetailLoading(false)
     }
   }
+
+  // React to selection driven from the context bar (or any other consumer).
+  // Only fires when the shared selection differs from the local one; handleSelect
+  // sets selectedId, which closes the loop. No-op outside a provider (draftId null).
+  useEffect(() => {
+    if (ctx.draftId && ctx.draftId !== selectedId) {
+      handleSelect(ctx.draftId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.draftId])
 
   // Create new draft (empty toolset)
   async function handleCreateDraft(draftId: string, displayName: string) {
@@ -144,6 +160,7 @@ export function DraftWorkspace() {
       toolset: { toolset_id: pathSafeDraftId, tools: [] },
     })
     await loadList()
+    await ctx.refreshDrafts()  // keep context bar list in sync
     await handleSelect(pathSafeDraftId)
   }
 
@@ -156,6 +173,7 @@ export function DraftWorkspace() {
       setSelectedDraft(null)
     }
     await loadList()
+    await ctx.refreshDrafts()  // archived draft drops out of context selection safely
   }
 
   // Delete → refresh list, clear selection
@@ -167,6 +185,7 @@ export function DraftWorkspace() {
       setSelectedDraft(null)
     }
     await loadList()
+    await ctx.refreshDrafts()  // deleted draft drops out of context selection safely
   }
 
   // Validate — returns result to DraftDetailView; re-fetches draft when validation
@@ -178,6 +197,7 @@ export function DraftWorkspace() {
       const updated = await fetchDraft(selectedDraft.draft_id)
       setSelectedDraft(updated)
       syncDraftInList(updated)
+      ctx.updateDraft(updated)  // context bar badge reflects new lifecycle_status
     }
     return result
   }
@@ -194,6 +214,7 @@ export function DraftWorkspace() {
     const updated = await addToolToDraft(selectedDraft.draft_id, { tool, index })
     setSelectedDraft(updated)
     syncDraftInList(updated)
+    ctx.updateDraft(updated)
   }
 
   async function handleRemoveTool(instanceId: string) {
@@ -201,6 +222,7 @@ export function DraftWorkspace() {
     const updated = await removeToolFromDraft(selectedDraft.draft_id, instanceId)
     setSelectedDraft(updated)
     syncDraftInList(updated)
+    ctx.updateDraft(updated)
   }
 
   async function handleReorderTools(orderedIds: string[]) {
@@ -210,6 +232,7 @@ export function DraftWorkspace() {
     })
     setSelectedDraft(updated)
     syncDraftInList(updated)
+    ctx.updateDraft(updated)
   }
 
   async function handlePatchTool(
@@ -220,6 +243,7 @@ export function DraftWorkspace() {
     const updated = await patchDraftTool(selectedDraft.draft_id, instanceId, patch)
     setSelectedDraft(updated)
     syncDraftInList(updated)
+    ctx.updateDraft(updated)
   }
 
   // ---------------------------------------------------------------------------
@@ -234,6 +258,7 @@ export function DraftWorkspace() {
     const updated: StrategyDraftData = { ...selectedDraft, semantics: result.semantics }
     setSelectedDraft(updated)
     syncDraftInList(updated)
+    ctx.updateDraft(updated)
     setPlanRefreshToken(t => t + 1)
     return result.semantics
   }

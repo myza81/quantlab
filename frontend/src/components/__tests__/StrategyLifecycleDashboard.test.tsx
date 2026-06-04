@@ -26,6 +26,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { StrategyLifecycleDashboard } from '../StrategyLifecycleDashboard'
+import { StrategyContextProvider } from '../../context/StrategyContext'
+import { StrategyContextBar } from '../StrategyContextBar'
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -539,5 +541,60 @@ describe('Lifecycle Dashboard direct promotion (Strategy-UX-1H)', () => {
       expect(btn.textContent).toContain('Promoting…')
       expect(btn.disabled).toBe(true)
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NAV-UX-3A — Lifecycle Dashboard ↔ StrategyContext sync
+// ---------------------------------------------------------------------------
+
+describe('Lifecycle Dashboard ↔ StrategyContext sync (NAV-UX-3A)', () => {
+  beforeEach(() => {
+    try { localStorage.clear() } catch { /* ignore */ }
+  })
+
+  function renderWithProvider() {
+    return render(
+      <StrategyContextProvider>
+        <StrategyContextBar />
+        <StrategyLifecycleDashboard {...defaultProps} />
+      </StrategyContextProvider>
+    )
+  }
+
+  it('context bar badge reflects the dashboard-selected strategy stage', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'backtested' })], count: 1 })
+    mockListBtRuns.mockResolvedValue([])
+    mockListFtSessions.mockResolvedValue([])
+    mockListPtSessions.mockResolvedValue([])
+
+    renderWithProvider()
+    await waitFor(() =>
+      expect(screen.getByTestId('scb-lifecycle-badge').textContent).toMatch(/Backtest Complete/i)
+    )
+  })
+
+  it('promotion in dashboard updates the context bar badge (validated → backtested)', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'validated' })], count: 1 })
+    mockListBtRuns.mockResolvedValue([makeBtRun({ status: 'completed' })])
+    mockListFtSessions.mockResolvedValue([])
+    mockListPtSessions.mockResolvedValue([])
+    mockPromoteToBacktested.mockResolvedValue(makeDraft({ lifecycle_status: 'backtested' }))
+
+    renderWithProvider()
+
+    // Bar starts at Validated
+    await waitFor(() =>
+      expect(screen.getByTestId('scb-lifecycle-badge').textContent).toMatch(/Validated/i)
+    )
+
+    // Promote from the dashboard
+    await waitFor(() => expect(screen.getByTestId('lcd-next-action-btn')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+
+    // Bar badge advances to Backtest Complete via ctx.updateDraft
+    await waitFor(() =>
+      expect(screen.getByTestId('scb-lifecycle-badge').textContent).toMatch(/Backtest Complete/i)
+    )
   })
 })

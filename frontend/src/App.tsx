@@ -12,6 +12,8 @@ import { ForwardTestPanel } from './components/ForwardTestPanel'
 import { PaperTradingPanel } from './components/PaperTradingPanel'
 import { StrategyLifecycleDashboard } from './components/StrategyLifecycleDashboard'
 import { SessionProvenanceStrip } from './components/SessionProvenanceStrip'
+import { StrategyContextProvider } from './context/StrategyContext'
+import { StrategyContextBar } from './components/StrategyContextBar'
 import { LoginPage } from './components/LoginPage'
 import { RegisterPage } from './components/RegisterPage'
 import { AuthGuard } from './components/AuthGuard'
@@ -35,6 +37,18 @@ import type { IndicatorInstance } from './types/chartIndicators'
 type Status     = 'idle' | 'loading' | 'success' | 'error'
 type ActiveView = 'chart' | 'composer' | 'credentials' | 'report' | 'admin' | 'datasets' | 'history' | 'forward-test' | 'paper-trading' | 'lifecycle'
 type AuthView   = 'login' | 'register'
+
+// Workflow pages where the persistent Strategy Context Bar is shown (NAV-UX-3A).
+// Hidden on Chart (symbol-centric, not strategy-centric), Credentials, Datasets,
+// and Admin (not strategy-scoped).
+const CONTEXT_BAR_VIEWS = new Set<ActiveView>([
+  'composer',       // Strategy Builder
+  'history',        // Backtest History
+  'forward-test',   // Forward Testing
+  'paper-trading',  // Paper Trading
+  'lifecycle',      // Lifecycle Dashboard
+  'report',         // Backtest Report (transient)
+])
 
 export default function App() {
   const { user, logout, refreshUser } = useAuth()
@@ -251,6 +265,7 @@ export default function App() {
   return (
     <AuthGuard fallback={authFallback}>
       <SubscriptionGate>
+      <StrategyContextProvider>
       <div style={st.app}>
 
         {/* ── Global header ── */}
@@ -288,6 +303,21 @@ export default function App() {
           onResumeReport={resumableRunId && !backtestReport ? handleResumeReport : undefined}
           resuming={resuming}
         />
+
+        {/* ── Persistent strategy context bar (workflow pages only) ── */}
+        {CONTEXT_BAR_VIEWS.has(activeView) && (
+          <StrategyContextBar
+            onStrategyChange={() => {
+              // Changing strategy invalidates a report belonging to the previous
+              // strategy. Navigate back to Backtest History to avoid showing a
+              // report that no longer matches the selected strategy.
+              if (activeView === 'report') {
+                setBacktestReport(null)
+                setActiveView('history')
+              }
+            }}
+          />
+        )}
 
         {/* ── History ── */}
         {activeView === 'history' && (
@@ -443,6 +473,7 @@ export default function App() {
         </div>
 
       </div>
+      </StrategyContextProvider>
       </SubscriptionGate>
     </AuthGuard>
   )
