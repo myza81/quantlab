@@ -32,12 +32,12 @@ import { StrategyLifecycleDashboard } from '../StrategyLifecycleDashboard'
 // ---------------------------------------------------------------------------
 
 vi.mock('../../api/drafts',        () => ({ fetchDrafts:           vi.fn() }))
-vi.mock('../../api/backtestRuns',  () => ({ listBacktestRuns:      vi.fn() }))
+vi.mock('../../api/backtestRuns',  () => ({ listBacktestRuns: vi.fn(), promoteDraftToBacktested: vi.fn() }))
 vi.mock('../../api/forwardTests',  () => ({ listForwardTestSessions: vi.fn() }))
 vi.mock('../../api/paperTrading',  () => ({ listPaperTradingSessions: vi.fn() }))
 
 import { fetchDrafts }              from '../../api/drafts'
-import { listBacktestRuns }         from '../../api/backtestRuns'
+import { listBacktestRuns, promoteDraftToBacktested } from '../../api/backtestRuns'
 import { listForwardTestSessions }  from '../../api/forwardTests'
 import { listPaperTradingSessions } from '../../api/paperTrading'
 import type { StrategyDraftData }           from '../../types/drafts'
@@ -45,10 +45,11 @@ import type { BacktestRunListItem }         from '../../types/backtestRuns'
 import type { ForwardTestSessionSummary }   from '../../types/forwardTesting'
 import type { PaperTradingSessionSummary }  from '../../types/paperTrading'
 
-const mockFetchDrafts     = vi.mocked(fetchDrafts)
-const mockListBtRuns      = vi.mocked(listBacktestRuns)
-const mockListFtSessions  = vi.mocked(listForwardTestSessions)
-const mockListPtSessions  = vi.mocked(listPaperTradingSessions)
+const mockFetchDrafts         = vi.mocked(fetchDrafts)
+const mockListBtRuns          = vi.mocked(listBacktestRuns)
+const mockListFtSessions      = vi.mocked(listForwardTestSessions)
+const mockListPtSessions      = vi.mocked(listPaperTradingSessions)
+const mockPromoteToBacktested = vi.mocked(promoteDraftToBacktested)
 
 // ---------------------------------------------------------------------------
 // Test data builders
@@ -439,5 +440,104 @@ describe('Next action per lifecycle stage', () => {
     mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'backtested' })], count: 1 })
     await renderAndWait()
     expect(screen.getByTestId('lcd-next-action-btn').textContent).toContain('Create Forward Test')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Strategy-UX-1H — Direct promotion from Lifecycle Dashboard
+// ---------------------------------------------------------------------------
+
+describe('Lifecycle Dashboard direct promotion (Strategy-UX-1H)', () => {
+  const validatedDraft = () => makeDraft({ lifecycle_status: 'validated' })
+  const backtestRun    = () => makeBtRun({ status: 'completed', run_id: RUN_ID })
+  const promotedDraft  = () => makeDraft({ lifecycle_status: 'backtested' })
+
+  beforeEach(() => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [validatedDraft()], count: 1 })
+    mockListBtRuns.mockResolvedValue([backtestRun()])
+    mockListFtSessions.mockResolvedValue([])
+    mockListPtSessions.mockResolvedValue([])
+    mockPromoteToBacktested.mockResolvedValue(promotedDraft())
+  })
+
+  it('validated + completed backtest shows Promote to Backtest Complete button', async () => {
+    await renderAndWait()
+    await waitFor(() =>
+      expect(screen.getByTestId('lcd-next-action-btn').textContent).toContain('Promote to Backtest Complete')
+    )
+  })
+
+  it('validated + no completed backtest shows Run Backtest button (not Promote)', async () => {
+    mockListBtRuns.mockResolvedValue([makeBtRun({ status: 'failed' })])
+    await renderAndWait()
+    await waitFor(() =>
+      expect(screen.getByTestId('lcd-next-action-btn').textContent).toContain('Run Backtest')
+    )
+  })
+
+  it('clicking Promote calls promoteDraftToBacktested with run_id and draft_id', async () => {
+    await renderAndWait()
+    await waitFor(() =>
+      expect(screen.getByTestId('lcd-next-action-btn').textContent).toContain('Promote to Backtest Complete')
+    )
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    await waitFor(() =>
+      expect(mockPromoteToBacktested).toHaveBeenCalledWith(RUN_ID, DRAFT_ID)
+    )
+  })
+
+  it('after successful promotion: stage updates to Backtest Complete', async () => {
+    await renderAndWait()
+    await waitFor(() => expect(screen.getByTestId('lcd-next-action-btn')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    await waitFor(() => {
+      const stageEl = screen.getByTestId('lcd-current-stage')
+      expect(stageEl.textContent).toMatch(/Backtest Complete/i)
+    })
+  })
+
+  it('after successful promotion: button no longer shows Promote to Backtest Complete', async () => {
+    await renderAndWait()
+    await waitFor(() => expect(screen.getByTestId('lcd-next-action-btn')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    await waitFor(() => {
+      const btn = screen.getByTestId('lcd-next-action-btn')
+      expect(btn.textContent).not.toMatch(/Promote to Backtest Complete/i)
+    })
+  })
+
+  it('after successful promotion: next action advances to Create Forward Test', async () => {
+    await renderAndWait()
+    await waitFor(() => expect(screen.getByTestId('lcd-next-action-btn')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    await waitFor(() => {
+      const btn = screen.getByTestId('lcd-next-action-btn')
+      expect(btn.textContent).toMatch(/Create Forward Test/i)
+    })
+  })
+
+  it('failed promotion shows error and preserves previous state', async () => {
+    mockPromoteToBacktested.mockRejectedValue(new Error('Promotion failed: no evidence'))
+    await renderAndWait()
+    await waitFor(() => expect(screen.getByTestId('lcd-next-action-btn')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    await waitFor(() =>
+      expect(screen.getByTestId('lcd-promotion-error').textContent).toMatch(/Promotion failed/i)
+    )
+    // Stage must remain Validated after failure
+    expect(screen.getByTestId('lcd-current-stage').textContent).toMatch(/Validated/i)
+  })
+
+  it('during promotion: button is disabled and shows Promoting…', async () => {
+    // Mock that never resolves so we can inspect intermediate state
+    mockPromoteToBacktested.mockImplementation(() => new Promise(() => {}))
+    await renderAndWait()
+    await waitFor(() => expect(screen.getByTestId('lcd-next-action-btn')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    await waitFor(() => {
+      const btn = screen.getByTestId('lcd-next-action-btn') as HTMLButtonElement
+      expect(btn.textContent).toContain('Promoting…')
+      expect(btn.disabled).toBe(true)
+    })
   })
 })

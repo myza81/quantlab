@@ -16,7 +16,7 @@
  */
 import { useEffect, useState } from 'react'
 import { fetchDrafts } from '../api/drafts'
-import { listBacktestRuns } from '../api/backtestRuns'
+import { listBacktestRuns, promoteDraftToBacktested } from '../api/backtestRuns'
 import { listForwardTestSessions } from '../api/forwardTests'
 import { listPaperTradingSessions } from '../api/paperTrading'
 import { computeGuidance, STAGE_LABELS } from '../lib/lifecycleGuidance'
@@ -143,9 +143,11 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
   const [btRuns,       setBtRuns]       = useState<BacktestRunListItem[]>([])
   const [ftSessions,   setFtSessions]   = useState<ForwardTestSessionSummary[]>([])
   const [ptSessions,   setPtSessions]   = useState<PaperTradingSessionSummary[]>([])
-  const [loading,      setLoading]      = useState(true)
-  const [error,        setError]        = useState<string | null>(null)
-  const [techExpanded, setTechExpanded] = useState(false)
+  const [loading,        setLoading]        = useState(true)
+  const [error,          setError]          = useState<string | null>(null)
+  const [techExpanded,   setTechExpanded]   = useState(false)
+  const [promoting,      setPromoting]      = useState(false)
+  const [promotionError, setPromotionError] = useState<string | null>(null)
 
   // Load drafts on mount
   useEffect(() => {
@@ -197,9 +199,6 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
         ),
       })
     : null
-
-  const navCallback = guidance ? resolveNav(guidance.navigateTarget, { onNavigateToComposer, onNavigateToHistory, onNavigateToForwardTest, onNavigateToPaperTrading }) : null
-  const blockers    = guidance?.blockers ?? []
 
   // Evidence helpers
   const latestCompletedBt = draftBtRuns
@@ -259,6 +258,37 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
     }
     return []
   })()
+
+  // ---------------------------------------------------------------------------
+  // Promotion handler + effective nav callback
+  // ---------------------------------------------------------------------------
+
+  // When the draft is 'validated' and a completed backtest exists, the dashboard
+  // can promote directly instead of just navigating to Backtest History. After a
+  // successful promotion the returned StrategyDraftData replaces the stale entry
+  // in `drafts` state — no extra re-fetch required.
+  async function handlePromoteToBacktested() {
+    if (!selectedId || !latestCompletedBt) return
+    setPromoting(true)
+    setPromotionError(null)
+    try {
+      const updated = await promoteDraftToBacktested(latestCompletedBt.run_id, selectedId)
+      setDrafts(prev => prev.map(d => d.draft_id === updated.draft_id ? updated : d))
+    } catch (err) {
+      setPromotionError(err instanceof Error ? err.message : 'Promotion failed')
+    } finally {
+      setPromoting(false)
+    }
+  }
+
+  // Use direct promotion when validation evidence is ready; fall back to
+  // navigation for all other cases (forward-test, paper-trading, etc.)
+  const canPromoteToBacktested = currentStatus === 'validated' && latestCompletedBt !== null
+  const navCallback = canPromoteToBacktested
+    ? handlePromoteToBacktested
+    : (guidance ? resolveNav(guidance.navigateTarget, { onNavigateToComposer, onNavigateToHistory, onNavigateToForwardTest, onNavigateToPaperTrading }) : null)
+
+  const blockers = guidance?.blockers ?? []
 
   // ---------------------------------------------------------------------------
   // Render
@@ -360,17 +390,29 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
                       {guidance.nextAction} — requires external review process.
                     </div>
                   ) : (
+                    <>
                     <button
                       data-testid="lcd-next-action-btn"
                       onClick={navCallback ?? undefined}
+                      disabled={promoting}
                       style={{
                         background: '#276749', border: 'none', borderRadius: 4,
-                        color: '#e2e8f0', cursor: 'pointer', fontSize: 12,
-                        fontFamily: 'inherit', padding: '6px 14px',
+                        color: '#e2e8f0', cursor: promoting ? 'not-allowed' : 'pointer',
+                        fontSize: 12, fontFamily: 'inherit', padding: '6px 14px',
+                        opacity: promoting ? 0.6 : 1,
                       }}
                     >
-                      {guidance.nextAction}
+                      {promoting ? 'Promoting…' : guidance.nextAction}
                     </button>
+                    {promotionError && (
+                      <div
+                        data-testid="lcd-promotion-error"
+                        style={{ marginTop: 6, fontSize: 11, color: '#ef5350' }}
+                      >
+                        {promotionError}
+                      </div>
+                    )}
+                    </>
                   )}
                 </div>
               </div>
