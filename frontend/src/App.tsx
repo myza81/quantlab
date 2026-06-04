@@ -87,6 +87,16 @@ export default function App() {
     [indicatorInstances]
   )
 
+  const instanceLabelMap = useMemo(
+    () => new Map(indicatorInstances.map(i => [i.instanceId, i.instanceLabel])),
+    [indicatorInstances]
+  )
+
+  const instanceVisibleMap = useMemo(
+    () => new Map(indicatorInstances.map(i => [i.instanceId, i.visible])),
+    [indicatorInstances]
+  )
+
   // Restore lightweight session context on mount
   useEffect(() => {
     const s = loadSession()
@@ -419,14 +429,8 @@ export default function App() {
                   overlay={overlay}
                   indicatorArtifacts={visibleArtifacts}
                   instanceColors={instanceColorMap}
-                  instanceLabels={useMemo(
-                    () => new Map(indicatorInstances.map(i => [i.instanceId, i.instanceLabel])),
-                    [indicatorInstances]
-                  )}
-                  instanceVisible={useMemo(
-                    () => new Map(indicatorInstances.map(i => [i.instanceId, i.visible])),
-                    [indicatorInstances]
-                  )}
+                  instanceLabels={instanceLabelMap}
+                  instanceVisible={instanceVisibleMap}
                   highlightedInstanceId={hoveredInstanceId}
                   onClearStrategyResults={clearStrategyResults}
                   onHoverInstance={setHoveredInstanceId}
