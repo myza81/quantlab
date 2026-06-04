@@ -3,6 +3,7 @@
  *
  * Fetches tool metadata from GET /tools.
  * Builds parameter inputs from ToolMetadataResponse.
+ * Auto-generates instance_id and display_name from parameters (Strategy-UX-1A).
  * Submits via POST /drafts/{id}/tools.
  *
  * No frontend validation — backend is authoritative.
@@ -11,6 +12,7 @@
 import { useEffect, useState } from 'react'
 import { fetchTools } from '../api/tools'
 import type { ToolMetadataResponse } from '../api/tools'
+import { generateInstanceIdBase, generateDisplayName } from '../lib/toolIdentityGeneration'
 
 interface Props {
   draftId: string
@@ -30,10 +32,13 @@ export function AddToolForm({ draftId: _draftId, onSubmit, onCancel }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [selectedToolId, setSelectedToolId] = useState('')
-  const [instanceId, setInstanceId] = useState('')
   const [params, setParams] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+
+  // Auto-generated (not shown to user, but displayed for reference)
+  const [generatedInstanceId, setGeneratedInstanceId] = useState('')
+  const [generatedDisplayName, setGeneratedDisplayName] = useState('')
 
   useEffect(() => {
     fetchTools()
@@ -56,16 +61,50 @@ export function AddToolForm({ draftId: _draftId, onSubmit, onCancel }: Props) {
           p.default !== null && p.default !== undefined ? String(p.default) : ''
       }
       setParams(defaults)
-      setInstanceId(toolId + '_1')
+      updateGeneratedIdentity(toolId, tool, defaults)
     }
   }
 
   function handleParamChange(name: string, value: string) {
-    setParams(prev => ({ ...prev, [name]: value }))
+    const updated = { ...params, [name]: value }
+    setParams(updated)
+    if (selectedTool) {
+      updateGeneratedIdentity(selectedToolId, selectedTool, updated)
+    }
+  }
+
+  function updateGeneratedIdentity(
+    toolId: string,
+    toolMeta: ToolMetadataResponse,
+    currentParams: Record<string, string>,
+  ) {
+    // Convert string params to their actual types for ID generation
+    const typed: Record<string, unknown> = {}
+    for (const p of toolMeta.parameters) {
+      const raw = currentParams[p.name] ?? ''
+      if (raw === '') continue
+      if (p.type_label === 'int') {
+        typed[p.name] = parseInt(raw, 10)
+      } else if (p.type_label === 'float') {
+        typed[p.name] = parseFloat(raw)
+      } else if (p.type_label === 'bool') {
+        typed[p.name] = raw === 'true'
+      } else {
+        typed[p.name] = raw
+      }
+    }
+
+    // Generate instance ID base
+    const baseId = generateInstanceIdBase(toolId, typed)
+    setGeneratedInstanceId(baseId)
+
+    // Generate display name
+    const displayName = generateDisplayName(toolId, toolMeta.name, typed)
+    setGeneratedDisplayName(displayName)
   }
 
   async function handleSubmit() {
-    if (!selectedTool || !instanceId.trim()) return
+    if (!selectedTool || !generatedInstanceId) return
 
     const coerced: Record<string, unknown> = {}
     for (const p of selectedTool.parameters) {
@@ -85,7 +124,11 @@ export function AddToolForm({ draftId: _draftId, onSubmit, onCancel }: Props) {
     setSubmitting(true)
     setSubmitError(null)
     try {
-      await onSubmit({ instance_id: instanceId.trim(), tool_id: selectedToolId, parameters: coerced })
+      await onSubmit({
+        instance_id: generatedInstanceId,
+        tool_id: selectedToolId,
+        parameters: coerced,
+      })
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to add tool')
     } finally {
@@ -122,15 +165,12 @@ export function AddToolForm({ draftId: _draftId, onSubmit, onCancel }: Props) {
 
       {selectedTool && (
         <>
-          <div style={s.row}>
-            <label style={s.label}>Instance ID</label>
-            <input
-              style={s.input}
-              value={instanceId}
-              onChange={e => setInstanceId(e.target.value)}
-              placeholder="e.g. sma_fast"
-            />
-          </div>
+          {generatedDisplayName && (
+            <div style={s.row}>
+              <label style={s.label}>Generated ID</label>
+              <span style={s.generatedText}>{generatedInstanceId}</span>
+            </div>
+          )}
 
           {selectedTool.parameters.map(p => (
             <div key={p.name} style={s.row}>
@@ -180,10 +220,10 @@ export function AddToolForm({ draftId: _draftId, onSubmit, onCancel }: Props) {
         <button
           style={{
             ...s.addBtn,
-            opacity: !selectedToolId || !instanceId.trim() || submitting ? 0.4 : 1,
+            opacity: !selectedToolId || !generatedInstanceId || submitting ? 0.4 : 1,
           }}
           onClick={handleSubmit}
-          disabled={!selectedToolId || !instanceId.trim() || submitting}
+          disabled={!selectedToolId || !generatedInstanceId || submitting}
         >
           {submitting ? 'Adding…' : 'Add Tool'}
         </button>
@@ -280,5 +320,14 @@ const s: Record<string, React.CSSProperties> = {
     color: '#ef5350',
     fontSize: 11,
     padding: '4px 0',
+  },
+  generatedText: {
+    color: '#8892a4',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    background: '#1a1a2e',
+    padding: '3px 8px',
+    borderRadius: 3,
+    flex: 1,
   },
 }
