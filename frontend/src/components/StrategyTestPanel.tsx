@@ -140,9 +140,9 @@ export function StrategyTestPanel({ candles, symbol, timeframe, sessionContext, 
             data-testid="goto-composer-btn"
             style={s.composerShortcut}
             onClick={onNavigateToComposer}
-            title="Open Composer"
+            title="Open Strategy Builder"
           >
-            + Composer
+            Strategy Builder
           </button>
         )}
       </div>
@@ -171,7 +171,7 @@ export function StrategyTestPanel({ candles, symbol, timeframe, sessionContext, 
         {listError   && <div style={s.error}>{listError}</div>}
         {!listLoading && !listError && (
           drafts.length === 0
-            ? <div style={s.hint}>No saved strategies. Create one in Composer.</div>
+            ? <div style={s.hint}>No saved strategies. Create one in the Strategy Builder.</div>
             : <select style={s.select} value={selectedId} onChange={e => setSelectedId(e.target.value)}>
                 <option value="">— select strategy —</option>
                 {drafts.map(d => (

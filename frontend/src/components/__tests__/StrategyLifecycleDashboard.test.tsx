@@ -416,7 +416,7 @@ describe('Evidence readiness panel — LCD (Phase UX-5)', () => {
 })
 
 describe('Next action per lifecycle stage', () => {
-  it('shows Validate in Composer for draft status', async () => {
+  it('shows Validate Strategy Setup for draft status', async () => {
     mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'draft' })], count: 1 })
     await renderAndWait()
     expect(screen.getByTestId('lcd-next-action-btn').textContent).toContain('Validate Strategy Setup')

@@ -277,7 +277,7 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
         <div data-testid="lcd-error" style={{ color: '#fc8181', fontSize: 13 }}>Error: {error}</div>
       ) : drafts.length === 0 ? (
         <div data-testid="lcd-no-drafts" style={{ color: '#718096', fontSize: 13 }}>
-          No strategies found. Open the Composer to create your first draft.
+          No strategies found. Open the Strategy Builder to create your first draft.
         </div>
       ) : (
         <>
@@ -480,7 +480,7 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
                   onClick={onNavigateToComposer}
                   style={navBtnStyle}
                 >
-                  Open Composer
+                  Open Strategy Builder
                 </button>
                 <button
                   data-testid="lcd-nav-history"

@@ -111,7 +111,7 @@ describe('LifecycleGuidanceCard', () => {
         currentStageLabel="Draft"
         nextAction="Validate"
         whyItMatters="Required."
-        blockers={['Draft has not been validated. Open the Composer to validate.']}
+        blockers={['Draft has not been validated. Open the Strategy Builder and run Validate on the draft.']}
       />,
     )
     const items = screen.getAllByTestId('lgc-blocker-item')
@@ -233,7 +233,7 @@ describe('computeGuidance', () => {
     const g = computeGuidance({ lifecycleStatus: 'draft' })
     expect(g.currentStageLabel).toBe('Draft')
     expect(g.nextAction).toBe('Validate Strategy Setup')
-    expect(g.blockers).toContain('Draft has not been validated. Open the Composer to validate.')
+    expect(g.blockers).toContain('Draft has not been validated. Open the Strategy Builder and run Validate on the draft.')
     expect(g.navigateTarget).toBe('composer')
     expect(g.navigateLocked).toBeFalsy()
   })

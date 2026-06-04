@@ -82,7 +82,7 @@ export function computeGuidance(ctx: GuidanceContext): GuidanceResult {
         currentStageLabel,
         nextAction:   'Validate Strategy Setup',
         whyItMatters: 'Validation confirms the strategy toolset and conditions are complete. It is required before lifecycle promotion.',
-        blockers:     ['Draft has not been validated. Open the Composer to validate.'],
+        blockers:     ['Draft has not been validated. Open the Strategy Builder and run Validate on the draft.'],
         navigateTarget: 'composer',
       }
 

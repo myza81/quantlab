@@ -94,7 +94,7 @@ export function BacktestHistoryPanel({ onReportLoaded }: Props) {
         <div style={s.heading}>Backtest History</div>
         <div style={s.state}>
           No backtest runs yet.<br />
-          Run a backtest from the Composer tab to see results here.
+          Run a backtest from the Strategy Builder tab to see results here.
         </div>
       </div>
     )
