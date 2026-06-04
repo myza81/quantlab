@@ -101,6 +101,15 @@ function makeInstanceLabel(
 }
 
 /**
+ * Controlled dropdown options for well-known string parameters.
+ * Prevents free-text entry for values that must come from a fixed set.
+ * Keyed by parameter name; value is the ordered list of accepted options.
+ */
+const CHART_PARAM_DROPDOWNS: Readonly<Record<string, readonly string[]>> = {
+  source: ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4'],
+}
+
+/**
  * Frontend UX defaults — override backend metadata defaults per tool_id.
  * Only applied at instance creation time; never overwrites existing or
  * restored instances.  Add new tool_ids here as needed.
@@ -500,22 +509,41 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
                   <div data-testid={`editor-${inst.instanceId}`} style={s.editor}>
                     {editableSpecs.map(spec => {
                       const val = currEdits[spec.name] ?? String(inst.parameters[spec.name] ?? '')
+                      const dropdownOptions = CHART_PARAM_DROPDOWNS[spec.name]
                       return (
                         <label key={spec.name} style={s.paramRow}>
                           <span style={s.paramName}>{spec.name}</span>
-                          <input
-                            data-testid={`param-${inst.instanceId}-${spec.name}`}
-                            type="number"
-                            value={val}
-                            min={spec.min_value ?? undefined}
-                            max={spec.max_value ?? undefined}
-                            step={spec.type_label === 'float' ? 0.1 : 1}
-                            onChange={e => setEditedParams(prev => ({
-                              ...prev,
-                              [inst.instanceId]: { ...(prev[inst.instanceId] ?? {}), [spec.name]: e.target.value },
-                            }))}
-                            style={s.paramInput}
-                          />
+                          {dropdownOptions ? (
+                            /* Controlled dropdown — prevents arbitrary string entry */
+                            <select
+                              data-testid={`param-${inst.instanceId}-${spec.name}`}
+                              value={val}
+                              onChange={e => setEditedParams(prev => ({
+                                ...prev,
+                                [inst.instanceId]: { ...(prev[inst.instanceId] ?? {}), [spec.name]: e.target.value },
+                              }))}
+                              style={s.paramInput}
+                            >
+                              {dropdownOptions.map(opt => (
+                                <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            /* Numeric input for int/float parameters */
+                            <input
+                              data-testid={`param-${inst.instanceId}-${spec.name}`}
+                              type="number"
+                              value={val}
+                              min={spec.min_value ?? undefined}
+                              max={spec.max_value ?? undefined}
+                              step={spec.type_label === 'float' ? 0.1 : 1}
+                              onChange={e => setEditedParams(prev => ({
+                                ...prev,
+                                [inst.instanceId]: { ...(prev[inst.instanceId] ?? {}), [spec.name]: e.target.value },
+                              }))}
+                              style={s.paramInput}
+                            />
+                          )}
                         </label>
                       )
                     })}

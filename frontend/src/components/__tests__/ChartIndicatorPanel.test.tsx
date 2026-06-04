@@ -73,9 +73,13 @@ const MOCK_META: ChartIndicatorsListResponse = {
       description: 'EMA.', category: 'Trend',
       chart_pane: 'price_overlay', render_type: 'line', series_kind: 'continuous',
       output_series: [{ series_id: 'ema', label: 'EMA', pane: 'price_overlay', render_type: 'line', default_color: '#3b82f6' }],
-      editable_parameters: ['period'],
+      // Chart-UX-3C.6B: source added to editable_parameters for EMA
+      editable_parameters: ['period', 'source'],
       // backend default is 20; UX default overrides to 9
-      parameters: [{ name: 'period', description: 'Window', type_label: 'int', required: true, default: 20, min_value: 1, max_value: null }],
+      parameters: [
+        { name: 'period', description: 'Window', type_label: 'int', required: true,  default: 20,      min_value: 1,    max_value: null },
+        { name: 'source', description: 'Price field.', type_label: 'str', required: false, default: 'close', min_value: null, max_value: null },
+      ],
       visible_on_chart: true,
     },
     {
@@ -607,5 +611,88 @@ describe('ChartIndicatorPanel', () => {
     expect(call.tool_id).toBe('rsi')
     // RSI has backend default 14, no UX override, so should be 14
     expect(call.parameters.period).toBe(14)
+  })
+
+  // ── Chart-UX-3C.6B: source dropdown ──────────────────────────────────────
+
+  it('39. EMA editor renders source as <select>, not free-text input', async () => {
+    renderPanel()
+    await addIndicator('ema')
+    await waitFor(() => screen.getByTestId(/settings-/))
+    fireEvent.click(screen.getByTestId(/settings-/))
+    await waitFor(() => screen.getByTestId(/editor-/))
+    // Find the source param control — must be a select, not a text input
+    const emaInstanceId = mockCompute.mock.calls[0][0].instance_id
+    const sourceControl = screen.getByTestId(`param-${emaInstanceId}-source`)
+    expect(sourceControl.tagName).toBe('SELECT')
+  })
+
+  it('40. EMA source dropdown contains all supported price fields', async () => {
+    renderPanel()
+    await addIndicator('ema')
+    await waitFor(() => screen.getByTestId(/settings-/))
+    fireEvent.click(screen.getByTestId(/settings-/))
+    await waitFor(() => screen.getByTestId(/editor-/))
+    const emaInstanceId = mockCompute.mock.calls[0][0].instance_id
+    const sourceSelect = screen.getByTestId(`param-${emaInstanceId}-source`) as HTMLSelectElement
+    const optionValues = Array.from(sourceSelect.querySelectorAll('option')).map(o => o.value)
+    expect(optionValues).toContain('close')
+    expect(optionValues).toContain('open')
+    expect(optionValues).toContain('high')
+    expect(optionValues).toContain('low')
+    expect(optionValues).toContain('hl2')
+    expect(optionValues).toContain('hlc3')
+    expect(optionValues).toContain('ohlc4')
+  })
+
+  it('41. EMA source defaults to "close" in editor', async () => {
+    renderPanel()
+    await addIndicator('ema')
+    await waitFor(() => screen.getByTestId(/settings-/))
+    fireEvent.click(screen.getByTestId(/settings-/))
+    await waitFor(() => screen.getByTestId(/editor-/))
+    const emaInstanceId = mockCompute.mock.calls[0][0].instance_id
+    const sourceSelect = screen.getByTestId(`param-${emaInstanceId}-source`) as HTMLSelectElement
+    expect(sourceSelect.value).toBe('close')
+  })
+
+  it('42. changing source does not recompute until Apply is clicked', async () => {
+    renderPanel()
+    await addIndicator('ema')
+    const callCountBefore = mockCompute.mock.calls.length
+    await waitFor(() => screen.getByTestId(/settings-/))
+    fireEvent.click(screen.getByTestId(/settings-/))
+    await waitFor(() => screen.getByTestId(/editor-/))
+    const emaInstanceId = mockCompute.mock.calls[0][0].instance_id
+    // Change source — should NOT trigger recompute
+    fireEvent.change(screen.getByTestId(`param-${emaInstanceId}-source`), { target: { value: 'open' } })
+    expect(mockCompute.mock.calls.length).toBe(callCountBefore)
+  })
+
+  it('43. Apply sends selected source to computeIndicatorArtifact', async () => {
+    renderPanel()
+    await addIndicator('ema')
+    await waitFor(() => screen.getByTestId(/settings-/))
+    fireEvent.click(screen.getByTestId(/settings-/))
+    await waitFor(() => screen.getByTestId(/editor-/))
+    const emaInstanceId = mockCompute.mock.calls[0][0].instance_id
+    // Change source to 'high'
+    fireEvent.change(screen.getByTestId(`param-${emaInstanceId}-source`), { target: { value: 'high' } })
+    // Click Apply
+    fireEvent.click(screen.getByTestId(`apply-${emaInstanceId}`))
+    await waitFor(() => {
+      const lastCall = mockCompute.mock.calls[mockCompute.mock.calls.length - 1][0]
+      expect(lastCall.parameters.source).toBe('high')
+    })
+  })
+
+  it('44. SMA has no source dropdown (source not in SMA editable_parameters)', async () => {
+    renderPanel()
+    await addIndicator('sma')
+    await waitFor(() => screen.getByTestId(/settings-/))
+    fireEvent.click(screen.getByTestId(/settings-/))
+    await waitFor(() => screen.getByTestId(/editor-/))
+    const smaInstanceId = mockCompute.mock.calls[0][0].instance_id
+    expect(screen.queryByTestId(`param-${smaInstanceId}-source`)).not.toBeInTheDocument()
   })
 })
