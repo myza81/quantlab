@@ -61,7 +61,7 @@ EMA_METADATA = ToolMetadata(
         ),
         ParameterSpec(
             name="source",
-            description="Price field to compute EMA over. Currently only 'close' is supported.",
+            description="Price field to compute EMA over. Accepted values: close (default), open, high, low, hl2 = (H+L)/2, hlc3 = (H+L+C)/3, ohlc4 = (O+H+L+C)/4.",
             type_label="str",
             required=False,
             default="close",

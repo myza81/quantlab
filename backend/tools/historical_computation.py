@@ -354,12 +354,77 @@ def _compute_sma_series(
 
 
 # ---------------------------------------------------------------------------
-# EMA computation (internal)
+# Source-field resolution helper — used by EMA (Tool-Backend-1A)
 # ---------------------------------------------------------------------------
 
-_EMA_CLOSE_FIELD = "close"
-_EMA_OUTPUT_NAME = "ema"  # matches EMA_METADATA.output_feature_names[0]
+_VALID_SOURCE_FIELDS = frozenset({"close", "open", "high", "low", "hl2", "hlc3", "ohlc4"})
+_EMA_OUTPUT_NAME     = "ema"  # matches EMA_METADATA.output_feature_names[0]
 
+
+def _require_price_field(
+    price_fields: dict[str, float],
+    field:        str,
+    instance_id:  str,
+    bar_index:    int,
+) -> float:
+    """Return price_fields[field] or raise ToolComputationError if absent."""
+    if field not in price_fields:
+        raise ToolComputationError(
+            f"instance '{instance_id}': "
+            f"price_fields missing '{field}' at bar_index={bar_index}"
+        )
+    return price_fields[field]
+
+
+def _resolve_source_value(
+    source:       str,
+    price_fields: dict[str, float],
+    instance_id:  str,
+    bar_index:    int,
+) -> float:
+    """
+    Return the scalar price value for `source` from a single bar's price_fields.
+
+    Supported sources:
+        close   — closing price
+        open    — opening price
+        high    — session high
+        low     — session low
+        hl2     — (high + low) / 2
+        hlc3    — (high + low + close) / 3
+        ohlc4   — (open + high + low + close) / 4
+
+    Raises:
+        ToolComputationError: unknown source value or required price field absent.
+    """
+    if source not in _VALID_SOURCE_FIELDS:
+        raise ToolComputationError(
+            f"instance '{instance_id}': invalid source '{source}'. "
+            f"Supported values: {sorted(_VALID_SOURCE_FIELDS)}"
+        )
+    get = _require_price_field  # brevity alias
+    if source == "hl2":
+        h = get(price_fields, "high",  instance_id, bar_index)
+        l = get(price_fields, "low",   instance_id, bar_index)
+        return (h + l) / 2.0
+    if source == "hlc3":
+        h = get(price_fields, "high",  instance_id, bar_index)
+        l = get(price_fields, "low",   instance_id, bar_index)
+        c = get(price_fields, "close", instance_id, bar_index)
+        return (h + l + c) / 3.0
+    if source == "ohlc4":
+        o = get(price_fields, "open",  instance_id, bar_index)
+        h = get(price_fields, "high",  instance_id, bar_index)
+        l = get(price_fields, "low",   instance_id, bar_index)
+        c = get(price_fields, "close", instance_id, bar_index)
+        return (o + h + l + c) / 4.0
+    # Simple named field: close, open, high, low
+    return get(price_fields, source, instance_id, bar_index)
+
+
+# ---------------------------------------------------------------------------
+# EMA computation (internal)
+# ---------------------------------------------------------------------------
 
 def _compute_ema_series(
     tool_config: ToolConfiguration,
@@ -370,37 +435,41 @@ def _compute_ema_series(
 
     Rules:
     - period extracted from tool_config.parameters["period"]
-    - source field: always "close" (price_fields["close"])
-    - seed: first valid EMA = SMA(close[0..period-1])
-    - recursion: EMA_t = alpha × close_t + (1 - alpha) × EMA_{t-1}
+    - source extracted from tool_config.parameters.get("source", "close")
+    - seed: first valid EMA = SMA(source[0..period-1])
+    - recursion: EMA_t = alpha × source_t + (1 - alpha) × EMA_{t-1},
+                 alpha = 2 / (period + 1)
     - warmup: first (period - 1) bars produce no output point
-    - no lookahead: bar N's EMA uses only closes at positions 0..N
+    - no lookahead: bar N uses only source values at positions 0..N
     - deterministic: identical inputs → identical outputs
     - state is purely local to this computation pass
 
+    Source values accepted:
+        close (default), open, high, low, hl2, hlc3, ohlc4
+
     Args:
-        tool_config: Validated EMA tool configuration with period parameter.
-        bars: Sorted (by bar_index) bar inputs; must have price_fields["close"].
+        tool_config: Validated EMA configuration with at least a "period" parameter.
+                     Optional "source" parameter selects the price field (default "close").
+        bars: Bar inputs sorted by bar_index; must include all price_fields required
+              by the selected source.
 
     Returns:
         List with one ToolOutputSeries (EMA produces one output: "ema").
 
     Raises:
-        ToolComputationError: if "close" is missing from any bar's price_fields.
+        ToolComputationError: invalid source value, or required price field absent.
     """
     period = int(tool_config.parameters["period"])
+    source = str(tool_config.parameters.get("source", "close"))
     warmup = _derive_period_warmup(period, tool_config.instance_id)
-    alpha = 2.0 / (period + 1)
+    alpha  = 2.0 / (period + 1)
 
-    # Extract close prices, validating presence
-    closes: list[float] = []
+    # Validate source and extract per-bar prices in one pass
+    prices: list[float] = []
     for bar in bars:
-        if _EMA_CLOSE_FIELD not in bar.price_fields:
-            raise ToolComputationError(
-                f"instance '{tool_config.instance_id}': "
-                f"price_fields missing '{_EMA_CLOSE_FIELD}' at bar_index={bar.bar_index}"
-            )
-        closes.append(bar.price_fields[_EMA_CLOSE_FIELD])
+        prices.append(
+            _resolve_source_value(source, bar.price_fields, tool_config.instance_id, bar.bar_index)
+        )
 
     points: list[ToolOutputPoint] = []
     ema_value: float | None = None
@@ -410,10 +479,10 @@ def _compute_ema_series(
             continue
 
         if ema_value is None:
-            # Seed: SMA of the first `period` closes (bars 0..period-1)
-            ema_value = sum(closes[:period]) / period
+            # Seed: SMA of the first `period` source values (bars 0..period-1)
+            ema_value = sum(prices[:period]) / period
         else:
-            ema_value = alpha * closes[i] + (1.0 - alpha) * ema_value
+            ema_value = alpha * prices[i] + (1.0 - alpha) * ema_value
 
         points.append(ToolOutputPoint(
             bar_index=bar.bar_index,

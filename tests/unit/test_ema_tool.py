@@ -885,3 +885,209 @@ class TestArchitectureGuards:
         # No signal-generation or portfolio fields exist on ToolMetadata
         assert not hasattr(EMA_METADATA, "generates_signals")
         assert not hasattr(EMA_METADATA, "manages_portfolio")
+
+
+# ===========================================================================
+# Source-aware EMA computation — Tool-Backend-1A
+# ===========================================================================
+
+def _bar_full(
+    bar_index: int,
+    open_: float,
+    high: float,
+    low: float,
+    close: float,
+) -> ToolComputationBarInput:
+    """Bar with all OHLCV price fields for source-aware computation tests."""
+    return ToolComputationBarInput(
+        bar_index=bar_index,
+        price_fields={"open": open_, "high": high, "low": low, "close": close, "volume": 0.0},
+    )
+
+
+def _ema_source_bars() -> list[ToolComputationBarInput]:
+    """
+    5 bars with distinct OHLCV values, designed so each source field produces
+    a unique series that can be verified against a known EMA computation.
+
+    Bar | open  | high  | low   | close | hl2   | hlc3  | ohlc4
+    ----|-------|-------|-------|-------|-------|-------|------
+      0 | 10.0  | 15.0  |  8.0  | 12.0  | 11.5  | 11.67 | 11.25
+      1 | 11.0  | 16.0  |  9.0  | 13.0  | 12.5  | 12.67 | 12.25
+      2 | 12.0  | 17.0  | 10.0  | 14.0  | 13.5  | 13.67 | 13.25
+      3 | 13.0  | 18.0  | 11.0  | 15.0  | 14.5  | 14.67 | 14.25
+      4 | 14.0  | 19.0  | 12.0  | 16.0  | 15.5  | 15.67 | 15.25
+    """
+    data = [
+        (10.0, 15.0,  8.0, 12.0),
+        (11.0, 16.0,  9.0, 13.0),
+        (12.0, 17.0, 10.0, 14.0),
+        (13.0, 18.0, 11.0, 15.0),
+        (14.0, 19.0, 12.0, 16.0),
+    ]
+    return [_bar_full(i, *row) for i, row in enumerate(data)]
+
+
+def _compute_ema_from_values(values: list[float], period: int) -> list[float]:
+    """Reference EMA: seed = SMA(values[:period]), alpha = 2/(period+1)."""
+    assert period <= len(values)
+    alpha  = 2.0 / (period + 1)
+    warmup = period - 1
+    result: list[float] = []
+    ema: float | None = None
+    for i, v in enumerate(values):
+        if i < warmup:
+            continue
+        if ema is None:
+            ema = sum(values[:period]) / period
+        else:
+            ema = alpha * v + (1.0 - alpha) * ema
+        result.append(ema)
+    return result
+
+
+class TestEmaSourceAware:
+    """Verify _compute_ema_series correctly dispatches to the selected source."""
+
+    PERIOD = 3  # enough bars to have at least one output point from 5 bars
+
+    def _run(self, source: str | None = None) -> tuple[list[float], ToolComputationBarInput]:
+        bars   = _ema_source_bars()
+        cfg    = _ema_config("e", self.PERIOD, source=source)
+        result = compute_tool_outputs_for_history(_toolset(cfg), bars, _REGISTRY)
+        pts    = [p.value for p in result.series[0].points]
+        return pts, bars
+
+    # ── Default / close ──────────────────────────────────────────────────────
+
+    def test_default_source_matches_close(self):
+        """Omitting source must give the same result as source='close'."""
+        pts_default, bars = self._run(source=None)
+        pts_close, _      = self._run(source="close")
+        assert pts_default == pytest.approx(pts_close, rel=1e-9)
+
+    def test_close_source_matches_reference(self):
+        closes   = [12.0, 13.0, 14.0, 15.0, 16.0]
+        expected = _compute_ema_from_values(closes, self.PERIOD)
+        pts, _   = self._run(source="close")
+        assert pts == pytest.approx(expected, rel=1e-9)
+
+    # ── Simple named fields ──────────────────────────────────────────────────
+
+    def test_open_source_matches_reference(self):
+        opens    = [10.0, 11.0, 12.0, 13.0, 14.0]
+        expected = _compute_ema_from_values(opens, self.PERIOD)
+        pts, _   = self._run(source="open")
+        assert pts == pytest.approx(expected, rel=1e-9)
+
+    def test_high_source_matches_reference(self):
+        highs    = [15.0, 16.0, 17.0, 18.0, 19.0]
+        expected = _compute_ema_from_values(highs, self.PERIOD)
+        pts, _   = self._run(source="high")
+        assert pts == pytest.approx(expected, rel=1e-9)
+
+    def test_low_source_matches_reference(self):
+        lows     = [8.0, 9.0, 10.0, 11.0, 12.0]
+        expected = _compute_ema_from_values(lows, self.PERIOD)
+        pts, _   = self._run(source="low")
+        assert pts == pytest.approx(expected, rel=1e-9)
+
+    # ── Composite fields ─────────────────────────────────────────────────────
+
+    def test_hl2_source_matches_reference(self):
+        # hl2 = (high + low) / 2
+        data = [(15.0, 8.0), (16.0, 9.0), (17.0, 10.0), (18.0, 11.0), (19.0, 12.0)]
+        hl2  = [(h + l) / 2.0 for h, l in data]
+        expected = _compute_ema_from_values(hl2, self.PERIOD)
+        pts, _   = self._run(source="hl2")
+        assert pts == pytest.approx(expected, rel=1e-9)
+
+    def test_hlc3_source_matches_reference(self):
+        # hlc3 = (high + low + close) / 3
+        data = [
+            (15.0,  8.0, 12.0),
+            (16.0,  9.0, 13.0),
+            (17.0, 10.0, 14.0),
+            (18.0, 11.0, 15.0),
+            (19.0, 12.0, 16.0),
+        ]
+        hlc3     = [(h + l + c) / 3.0 for h, l, c in data]
+        expected = _compute_ema_from_values(hlc3, self.PERIOD)
+        pts, _   = self._run(source="hlc3")
+        assert pts == pytest.approx(expected, rel=1e-9)
+
+    def test_ohlc4_source_matches_reference(self):
+        # ohlc4 = (open + high + low + close) / 4
+        data = [
+            (10.0, 15.0,  8.0, 12.0),
+            (11.0, 16.0,  9.0, 13.0),
+            (12.0, 17.0, 10.0, 14.0),
+            (13.0, 18.0, 11.0, 15.0),
+            (14.0, 19.0, 12.0, 16.0),
+        ]
+        ohlc4    = [(o + h + l + c) / 4.0 for o, h, l, c in data]
+        expected = _compute_ema_from_values(ohlc4, self.PERIOD)
+        pts, _   = self._run(source="ohlc4")
+        assert pts == pytest.approx(expected, rel=1e-9)
+
+    # ── Sources differ from each other ───────────────────────────────────────
+
+    def test_open_differs_from_close(self):
+        """Different sources must produce different EMA values."""
+        pts_close, _ = self._run(source="close")
+        pts_open, _  = self._run(source="open")
+        # All source values differ in the fixture so EMAs must differ
+        assert pts_close != pytest.approx(pts_open, rel=1e-6)
+
+    def test_hl2_differs_from_close(self):
+        pts_close, _ = self._run(source="close")
+        pts_hl2, _   = self._run(source="hl2")
+        assert pts_close != pytest.approx(pts_hl2, rel=1e-6)
+
+    # ── Invalid source ───────────────────────────────────────────────────────
+
+    def test_invalid_source_raises(self):
+        bars = _ema_source_bars()
+        cfg  = _ema_config("e", 2, source="vwap")
+        with pytest.raises(ToolComputationError, match="invalid source"):
+            compute_tool_outputs_for_history(_toolset(cfg), bars, _REGISTRY)
+
+    def test_invalid_source_error_names_the_bad_value(self):
+        bars = _ema_source_bars()
+        cfg  = _ema_config("e", 2, source="typical_price_typo")
+        with pytest.raises(ToolComputationError, match="typical_price_typo"):
+            compute_tool_outputs_for_history(_toolset(cfg), bars, _REGISTRY)
+
+    # ── Missing required field for composite source ──────────────────────────
+
+    def test_hl2_missing_high_raises(self):
+        """hl2 requires 'high'; bar with only close should raise."""
+        bars = [_bar_input(i, float(10 + i)) for i in range(4)]  # close-only bars
+        cfg  = _ema_config("e", 2, source="hl2")
+        with pytest.raises(ToolComputationError, match="missing 'high'"):
+            compute_tool_outputs_for_history(_toolset(cfg), bars, _REGISTRY)
+
+    def test_ohlc4_missing_open_raises(self):
+        """ohlc4 requires 'open'; bar without open should raise."""
+        bars = [
+            ToolComputationBarInput(
+                bar_index=i,
+                price_fields={"high": float(15 + i), "low": float(8 + i), "close": float(12 + i)},
+            )
+            for i in range(4)
+        ]
+        cfg = _ema_config("e", 2, source="ohlc4")
+        with pytest.raises(ToolComputationError, match="missing 'open'"):
+            compute_tool_outputs_for_history(_toolset(cfg), bars, _REGISTRY)
+
+    # ── Backward compatibility ───────────────────────────────────────────────
+
+    def test_existing_close_only_bars_still_work(self):
+        """Strategies using only close price_fields must still compute correctly."""
+        closes = [100.0, 102.0, 104.0, 103.0, 105.0]
+        bars   = [_bar_input(i, c) for i, c in enumerate(closes)]
+        cfg    = _ema_config("e", 3)  # no source parameter → defaults to close
+        result = compute_tool_outputs_for_history(_toolset(cfg), bars, _REGISTRY)
+        expected = _compute_ema_from_values(closes, 3)
+        pts = [p.value for p in result.series[0].points]
+        assert pts == pytest.approx(expected, rel=1e-9)
