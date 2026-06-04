@@ -110,23 +110,27 @@ const _UX_DEFAULTS: Record<string, Record<string, number | string>> = {
   ema:  { period: 9  },
   rsi:  { period: 14 },
   atr:  { period: 14 },
-  macd: { fast: 12, slow: 26, signal: 9 },
+  macd: { fast_period: 12, slow_period: 26, signal_period: 9 },
 }
 
 function getDefaultParameters(
   metadata: ChartIndicatorMetadata,
 ): Record<string, number | string> {
   const result: Record<string, number | string> = {}
+  // First pass: use backend defaults for all editable parameters
   for (const spec of metadata.parameters) {
     if (!metadata.editable_parameters.includes(spec.name)) continue
     if (spec.default !== null && spec.default !== undefined) {
       result[spec.name] = spec.default as number | string
     }
   }
-  // Apply UX overrides (only for params already present in result)
+  // Second pass: apply UX defaults (Chart-UX-3C.6A) to override backend defaults
   const overrides = _UX_DEFAULTS[metadata.tool_id] ?? {}
   for (const [key, val] of Object.entries(overrides)) {
-    if (key in result) result[key] = val
+    // Only apply override if the parameter is actually editable (in metadata.editable_parameters)
+    if (metadata.editable_parameters.includes(key)) {
+      result[key] = val
+    }
   }
   return result
 }

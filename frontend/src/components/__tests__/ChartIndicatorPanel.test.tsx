@@ -574,4 +574,38 @@ describe('ChartIndicatorPanel', () => {
     expect(firstCall.tool_id).toBe('sma')
     expect(firstCall.parameters.period).toBe(21)
   })
+
+  it('36. EMA instance created with period=9 (Chart-UX-3C.6A)', async () => {
+    mockCompute.mockClear()
+    renderPanel()
+    await addIndicator('ema')
+    await waitFor(() => expect(mockCompute).toHaveBeenCalled())
+    const call = mockCompute.mock.calls[0][0]
+    expect(call.tool_id).toBe('ema')
+    expect(call.parameters.period).toBe(9)
+  })
+
+  it('37. Multiple instances each receive correct defaults', async () => {
+    mockCompute.mockClear()
+    renderPanel()
+    await addIndicator('sma')
+    await addIndicator('ema')
+    await waitFor(() => expect(mockCompute).toHaveBeenCalledTimes(2))
+    const calls = mockCompute.mock.calls
+    const smaCall = calls.find(c => c[0].tool_id === 'sma')
+    const emaCall = calls.find(c => c[0].tool_id === 'ema')
+    expect(smaCall?.[0].parameters.period).toBe(21)
+    expect(emaCall?.[0].parameters.period).toBe(9)
+  })
+
+  it('38. RSI uses backend default since no UX override', async () => {
+    mockCompute.mockClear()
+    renderPanel()
+    await addIndicator('rsi')
+    await waitFor(() => expect(mockCompute).toHaveBeenCalled())
+    const call = mockCompute.mock.calls[0][0]
+    expect(call.tool_id).toBe('rsi')
+    // RSI has backend default 14, no UX override, so should be 14
+    expect(call.parameters.period).toBe(14)
+  })
 })
