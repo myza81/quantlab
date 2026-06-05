@@ -26,8 +26,8 @@ import { ForwardTestPanel } from '../ForwardTestPanel'
 // ---------------------------------------------------------------------------
 
 vi.mock('../../auth/AuthContext', () => ({ useAuth: vi.fn() }))
+vi.mock('../../context/StrategyContext', () => ({ useStrategyContext: vi.fn() }))
 vi.mock('../../api/forwardTests', () => ({
-  listForwardTestSessions:        vi.fn(),
   createForwardTestSession:       vi.fn(),
   getForwardTestSession:          vi.fn(),
   runForwardTestCycle:            vi.fn(),
@@ -42,8 +42,8 @@ vi.mock('../../api/credentials', () => ({ fetchCredentials: vi.fn() }))
 vi.mock('../../api/drafts',      () => ({ fetchDrafts:      vi.fn() }))
 
 import { useAuth } from '../../auth/AuthContext'
+import { useStrategyContext } from '../../context/StrategyContext'
 import {
-  listForwardTestSessions,
   listForwardTestSignals,
   listForwardTestBars,
   getForwardTestSession,
@@ -52,6 +52,7 @@ import {
 } from '../../api/forwardTests'
 import { fetchCredentials } from '../../api/credentials'
 import { fetchDrafts }      from '../../api/drafts'
+import type { StrategyContextValue } from '../../context/StrategyContext'
 import type {
   ForwardTestSessionStatus,
   ForwardTestSessionSummary,
@@ -60,15 +61,15 @@ import type {
 import type { CredentialMetadata } from '../../types/credentials'
 import type { StrategyDraftData }  from '../../types/drafts'
 
-const mockUseAuth            = vi.mocked(useAuth)
-const mockListSessions       = vi.mocked(listForwardTestSessions)
-const mockListSignals        = vi.mocked(listForwardTestSignals)
-const mockListBars           = vi.mocked(listForwardTestBars)
-const mockGetSession         = vi.mocked(getForwardTestSession)
-const mockCreate             = vi.mocked(createForwardTestSession)
-const mockFetchCredentials   = vi.mocked(fetchCredentials)
-const mockFetchDrafts        = vi.mocked(fetchDrafts)
-const mockPromote            = vi.mocked(promoteDraftToForwardTested)
+const mockUseAuth               = vi.mocked(useAuth)
+const mockUseStrategyContext    = vi.mocked(useStrategyContext)
+const mockListSignals           = vi.mocked(listForwardTestSignals)
+const mockListBars              = vi.mocked(listForwardTestBars)
+const mockGetSession            = vi.mocked(getForwardTestSession)
+const mockCreate                = vi.mocked(createForwardTestSession)
+const mockFetchCredentials      = vi.mocked(fetchCredentials)
+const mockFetchDrafts           = vi.mocked(fetchDrafts)
+const mockPromote               = vi.mocked(promoteDraftToForwardTested)
 
 const DRAFT_ID = 'cccccccc-0003-4003-8003-000000000003'
 
@@ -92,6 +93,28 @@ const MOCK_AUTH = {
   logout: vi.fn(),
   register: vi.fn(),
   refreshUser: vi.fn(),
+}
+
+function makeMockContext(overrides: Partial<StrategyContextValue> = {}): StrategyContextValue {
+  // Use hasOwnProperty so explicit null for draftId is respected (not treated as "missing")
+  const hasDraftId = Object.prototype.hasOwnProperty.call(overrides, 'draftId')
+  return {
+    draftId:        hasDraftId ? (overrides.draftId as string | null) : DRAFT_ID,
+    displayName:    overrides.displayName ?? 'Test Strategy',
+    lifecycleStatus: overrides.lifecycleStatus ?? 'backtested',
+    drafts:         overrides.drafts ?? [],
+    draftsLoading:  overrides.draftsLoading ?? false,
+    draftsError:    overrides.draftsError ?? null,
+    selectedDraft:  overrides.selectedDraft ?? null,
+    btRuns:         overrides.btRuns ?? [],
+    ftSessions:     overrides.ftSessions ?? [],
+    ptSessions:     overrides.ptSessions ?? [],
+    evidenceLoading: overrides.evidenceLoading ?? false,
+    evidenceError:  overrides.evidenceError ?? null,
+    selectDraft:    overrides.selectDraft ?? vi.fn(),
+    refreshDrafts:  overrides.refreshDrafts ?? vi.fn(),
+    updateDraft:    overrides.updateDraft ?? vi.fn(),
+  }
 }
 
 function makeSession(overrides: Partial<{
@@ -166,12 +189,14 @@ beforeEach(() => {
   mockFetchDrafts.mockResolvedValue({ drafts: [], count: 0 })
   mockGetSession.mockResolvedValue(makeSessionDetail())
   mockListBars.mockResolvedValue([])
+  mockUseStrategyContext.mockReturnValue(makeMockContext())
 })
 
 afterEach(() => { vi.clearAllMocks() })
 
-function setup() {
+function setup(contextOverrides: Partial<StrategyContextValue> = {}) {
   mockUseAuth.mockReturnValue(MOCK_AUTH as ReturnType<typeof useAuth>)
+  mockUseStrategyContext.mockReturnValue(makeMockContext(contextOverrides))
   return render(<ForwardTestPanel />)
 }
 
@@ -180,23 +205,22 @@ function setup() {
 // ---------------------------------------------------------------------------
 
 describe('ForwardTestPanel — loading & empty states', () => {
-  it('shows loading state while fetching', () => {
-    mockListSessions.mockReturnValue(new Promise(() => {}))
-    setup()
-    expect(screen.getByText(/loading sessions/i)).toBeTruthy()
+  it('shows empty state when no draft selected', async () => {
+    setup({ draftId: null })
+    await waitFor(() => {
+      expect(screen.getByText(/no strategy selected/i)).toBeTruthy()
+    })
   })
 
   it('shows empty state when no sessions', async () => {
-    mockListSessions.mockResolvedValue([])
-    setup()
+    setup({ ftSessions: [] })
     await waitFor(() => {
-      expect(screen.getByText(/no forward test sessions yet/i)).toBeTruthy()
+      expect(screen.getByText(/no forward test sessions/i)).toBeTruthy()
     })
   })
 
   it('shows error banner when fetch fails', async () => {
-    mockListSessions.mockRejectedValue(new Error('Network error'))
-    setup()
+    setup({ evidenceError: 'Network error' })
     await waitFor(() => {
       expect(screen.getByText(/network error/i)).toBeTruthy()
     })
@@ -205,8 +229,7 @@ describe('ForwardTestPanel — loading & empty states', () => {
 
 describe('ForwardTestPanel — session list', () => {
   it('renders session rows', async () => {
-    mockListSessions.mockResolvedValue([makeSession()])
-    setup()
+    setup({ ftSessions: [makeSession()] })
     await waitFor(() => {
       // Status badge renders lowercase text (CSS text-transform is visual only)
       expect(screen.getByText('pending')).toBeTruthy()
@@ -215,40 +238,35 @@ describe('ForwardTestPanel — session list', () => {
   })
 
   it('shows Activate button for pending session', async () => {
-    mockListSessions.mockResolvedValue([makeSession({ status: 'pending' })])
-    setup()
+    setup({ ftSessions: [makeSession({ status: 'pending' })] })
     await waitFor(() => {
       expect(screen.getByText('Activate')).toBeTruthy()
     })
   })
 
   it('shows Process Next Bar button for running session', async () => {
-    mockListSessions.mockResolvedValue([makeSession({ status: 'running' })])
-    setup()
+    setup({ ftSessions: [makeSession({ status: 'running' })] })
     await waitFor(() => {
       expect(screen.getByText('Process Next Bar')).toBeTruthy()
     })
   })
 
   it('shows Pause button only for running session', async () => {
-    mockListSessions.mockResolvedValue([makeSession({ status: 'running' })])
-    setup()
+    setup({ ftSessions: [makeSession({ status: 'running' })] })
     await waitFor(() => {
       expect(screen.getByText('Pause')).toBeTruthy()
     })
   })
 
   it('shows Resume button only for paused session', async () => {
-    mockListSessions.mockResolvedValue([makeSession({ status: 'paused' })])
-    setup()
+    setup({ ftSessions: [makeSession({ status: 'paused' })] })
     await waitFor(() => {
       expect(screen.getByText('Resume')).toBeTruthy()
     })
   })
 
   it('does not show action buttons for terminated session', async () => {
-    mockListSessions.mockResolvedValue([makeSession({ status: 'terminated' })])
-    setup()
+    setup({ ftSessions: [makeSession({ status: 'terminated' })] })
     await waitFor(() => {
       expect(screen.queryByText('Process Next Bar')).toBeNull()
       expect(screen.queryByText('Pause')).toBeNull()
@@ -259,7 +277,6 @@ describe('ForwardTestPanel — session list', () => {
 
 describe('ForwardTestPanel — create form', () => {
   it('shows + New Session button', async () => {
-    mockListSessions.mockResolvedValue([])
     setup()
     await waitFor(() => {
       expect(screen.getByText('+ New Session')).toBeTruthy()
@@ -267,7 +284,6 @@ describe('ForwardTestPanel — create form', () => {
   })
 
   it('clicking + New Session shows create form', async () => {
-    mockListSessions.mockResolvedValue([])
     setup()
     await waitFor(() => screen.getByText('+ New Session'))
     fireEvent.click(screen.getByText('+ New Session'))
@@ -276,7 +292,6 @@ describe('ForwardTestPanel — create form', () => {
   })
 
   it('Cancel button closes the form', async () => {
-    mockListSessions.mockResolvedValue([])
     setup()
     await waitFor(() => screen.getByText('+ New Session'))
     fireEvent.click(screen.getByText('+ New Session'))
@@ -289,9 +304,8 @@ describe('ForwardTestPanel — create form', () => {
 
 describe('ForwardTestPanel — signal view', () => {
   it('clicking session ID navigates to signal view', async () => {
-    mockListSessions.mockResolvedValue([makeSession()])
     mockListSignals.mockReturnValue(new Promise(() => {}))
-    setup()
+    setup({ ftSessions: [makeSession()] })
     await waitFor(() => screen.getByText('aaaaaaaa…'))
     fireEvent.click(screen.getByText('aaaaaaaa…'))
     // Header "Signals for {id}…" is shown before async load completes
@@ -299,10 +313,9 @@ describe('ForwardTestPanel — signal view', () => {
   })
 
   it('shows actionable no-signal explanation when no signals and session is pending', async () => {
-    mockListSessions.mockResolvedValue([makeSession()])
     mockListSignals.mockResolvedValue([])
     mockGetSession.mockResolvedValue(makeSessionDetail({ status: 'pending' }))
-    setup()
+    setup({ ftSessions: [makeSession()] })
     await waitFor(() => screen.getByText('aaaaaaaa…'))
     fireEvent.click(screen.getByText('aaaaaaaa…'))
     await waitFor(() => {
@@ -311,9 +324,8 @@ describe('ForwardTestPanel — signal view', () => {
   })
 
   it('Back button returns to session list', async () => {
-    mockListSessions.mockResolvedValue([makeSession()])
     mockListSignals.mockResolvedValue([])
-    setup()
+    setup({ ftSessions: [makeSession()] })
     await waitFor(() => screen.getByText('aaaaaaaa…'))
     fireEvent.click(screen.getByText('aaaaaaaa…'))
     await waitFor(() => screen.getByText('← Back'))
@@ -325,9 +337,9 @@ describe('ForwardTestPanel — signal view', () => {
 })
 
 describe('ForwardTestPanel — prefill from backtest context (Phase R5)', () => {
-  function setupWithPrefill(overrides: Partial<Parameters<typeof render>[0]> = {}) {
+  function setupWithPrefill() {
     mockUseAuth.mockReturnValue(MOCK_AUTH as ReturnType<typeof useAuth>)
-    mockListSessions.mockResolvedValue([])
+    mockUseStrategyContext.mockReturnValue(makeMockContext())
   }
 
   it('shows create form immediately when prefill prop provided', () => {
@@ -491,7 +503,7 @@ function makeDraft(overrides: Partial<StrategyDraftData> = {}): StrategyDraftDat
 describe('ForwardTestPanel — credential and draft pickers (Phase R6)', () => {
   function setupR6() {
     mockUseAuth.mockReturnValue(MOCK_AUTH as ReturnType<typeof useAuth>)
-    mockListSessions.mockResolvedValue([])
+    mockUseStrategyContext.mockReturnValue(makeMockContext())
   }
 
   it('credential select renders with None option when no credentials', async () => {
@@ -740,7 +752,7 @@ function makeSignal(overrides: Partial<{
 describe('ForwardTestPanel — operator view (Phase R7)', () => {
   function setupR7Session(sessionOverrides: Partial<ForwardTestSessionDetail> = {}) {
     mockUseAuth.mockReturnValue(MOCK_AUTH as ReturnType<typeof useAuth>)
-    mockListSessions.mockResolvedValue([makeSession()])
+    mockUseStrategyContext.mockReturnValue(makeMockContext({ ftSessions: [makeSession()] }))
     mockGetSession.mockResolvedValue(makeSessionDetail(sessionOverrides))
     mockListSignals.mockResolvedValue([])
     mockListBars.mockResolvedValue([])
@@ -905,7 +917,7 @@ describe('ForwardTestPanel — operator view (Phase R7)', () => {
 describe('ForwardTestPanel — forward-test promotion panel (Phase P1)', () => {
   function setupPromotion(sessionOverrides: Partial<ForwardTestSessionDetail> = {}) {
     mockUseAuth.mockReturnValue(MOCK_AUTH as ReturnType<typeof useAuth>)
-    mockListSessions.mockResolvedValue([makeSession()])
+    mockUseStrategyContext.mockReturnValue(makeMockContext({ ftSessions: [makeSession()] }))
     mockGetSession.mockResolvedValue(makeSessionDetail({
       lifecycle_status_at_activation: 'backtested',
       signal_eligible_bars_processed: 5,
@@ -1020,7 +1032,7 @@ describe('ForwardTestPanel — forward-test promotion panel (Phase P1)', () => {
 describe('ForwardTestPanel — FT evidence readiness panel (Phase UX-5)', () => {
   function setupEvidence(sessionOverrides: Partial<ForwardTestSessionDetail> = {}) {
     mockUseAuth.mockReturnValue(MOCK_AUTH as ReturnType<typeof useAuth>)
-    mockListSessions.mockResolvedValue([makeSession()])
+    mockUseStrategyContext.mockReturnValue(makeMockContext({ ftSessions: [makeSession()] }))
     mockGetSession.mockResolvedValue(makeSessionDetail({
       lifecycle_status_at_activation: 'backtested',
       ...sessionOverrides,

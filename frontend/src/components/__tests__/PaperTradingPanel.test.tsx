@@ -22,9 +22,9 @@ import { PaperTradingPanel } from '../PaperTradingPanel'
 // ---------------------------------------------------------------------------
 
 vi.mock('../../auth/AuthContext', () => ({ useAuth: vi.fn() }))
+vi.mock('../../context/StrategyContext', () => ({ useStrategyContext: vi.fn() }))
 vi.mock('../../api/paperTrading', () => ({
   createPaperTradingSession:    vi.fn(),
-  listPaperTradingSessions:     vi.fn(),
   getPaperTradingSession:       vi.fn(),
   getPaperTradingAccount:       vi.fn(),
   listPaperTradingOrders:       vi.fn(),
@@ -41,9 +41,9 @@ vi.mock('../../api/drafts',       () => ({ fetchDrafts:             vi.fn() }))
 vi.mock('../../api/forwardTests', () => ({ listForwardTestSessions: vi.fn() }))
 
 import { useAuth } from '../../auth/AuthContext'
+import { useStrategyContext } from '../../context/StrategyContext'
 import {
   createPaperTradingSession,
-  listPaperTradingSessions,
   getPaperTradingSession,
   getPaperTradingAccount,
   listPaperTradingOrders,
@@ -69,10 +69,11 @@ import type {
 } from '../../types/paperTrading'
 import type { StrategyDraftData } from '../../types/drafts'
 import type { ForwardTestSessionSummary } from '../../types/forwardTesting'
+import type { StrategyContextValue } from '../../context/StrategyContext'
 
-const mockUseAuth         = vi.mocked(useAuth)
-const mockListSessions    = vi.mocked(listPaperTradingSessions)
-const mockCreate          = vi.mocked(createPaperTradingSession)
+const mockUseAuth               = vi.mocked(useAuth)
+const mockUseStrategyContext    = vi.mocked(useStrategyContext)
+const mockCreate                = vi.mocked(createPaperTradingSession)
 const mockGetSession      = vi.mocked(getPaperTradingSession)
 const mockGetAccount      = vi.mocked(getPaperTradingAccount)
 const mockListOrders      = vi.mocked(listPaperTradingOrders)
@@ -337,14 +338,36 @@ function makeFTSession(overrides: Partial<ForwardTestSessionSummary> = {}): Forw
   }
 }
 
+function makeMockContext(overrides: Partial<StrategyContextValue> = {}): StrategyContextValue {
+  // Use hasOwnProperty so explicit null for draftId is respected (not treated as "missing")
+  const hasDraftId = Object.prototype.hasOwnProperty.call(overrides, 'draftId')
+  return {
+    draftId:        hasDraftId ? (overrides.draftId as string | null) : DRAFT_ID,
+    displayName:    overrides.displayName ?? 'My Strategy',
+    lifecycleStatus: overrides.lifecycleStatus ?? 'forward_tested',
+    drafts:         overrides.drafts ?? [],
+    draftsLoading:  overrides.draftsLoading ?? false,
+    draftsError:    overrides.draftsError ?? null,
+    selectedDraft:  overrides.selectedDraft ?? null,
+    btRuns:         overrides.btRuns ?? [],
+    ftSessions:     overrides.ftSessions ?? [],
+    ptSessions:     overrides.ptSessions ?? [],
+    evidenceLoading: overrides.evidenceLoading ?? false,
+    evidenceError:  overrides.evidenceError ?? null,
+    selectDraft:    overrides.selectDraft ?? vi.fn(),
+    refreshDrafts:  overrides.refreshDrafts ?? vi.fn(),
+    updateDraft:    overrides.updateDraft ?? vi.fn(),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
   mockUseAuth.mockReturnValue(MOCK_AUTH as ReturnType<typeof useAuth>)
+  mockUseStrategyContext.mockReturnValue(makeMockContext())
   // Sensible defaults — overridden per test
-  mockListSessions.mockResolvedValue([])
   mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft()], count: 1 })
   mockListFT.mockResolvedValue([])
   // P3 detail mocks
@@ -365,7 +388,8 @@ beforeEach(() => {
 
 afterEach(() => { vi.clearAllMocks() })
 
-function setup() {
+function setup(contextOverrides: Partial<StrategyContextValue> = {}) {
+  mockUseStrategyContext.mockReturnValue(makeMockContext(contextOverrides))
   return render(<PaperTradingPanel />)
 }
 
@@ -384,10 +408,9 @@ describe('PaperTradingPanel — panel renders', () => {
 
 describe('PaperTradingPanel — eligible draft picker', () => {
   it('shows draft picker when forward_tested draft is available', async () => {
-    mockListSessions.mockResolvedValue([])
     mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'forward_tested' })], count: 1 })
 
-    setup()
+    setup({ ptSessions: [] })
 
     // Navigate to create form
     await waitFor(() => expect(screen.getByTestId('pt-new-session-btn')).toBeTruthy())
@@ -402,7 +425,6 @@ describe('PaperTradingPanel — eligible draft picker', () => {
   })
 
   it('excludes backtested drafts from the picker', async () => {
-    mockListSessions.mockResolvedValue([])
     mockFetchDrafts.mockResolvedValue({
       drafts: [
         makeDraft({ draft_id: 'ft-draft', display_name: 'FT Draft',  lifecycle_status: 'forward_tested' }),
@@ -412,7 +434,7 @@ describe('PaperTradingPanel — eligible draft picker', () => {
       count: 3,
     })
 
-    setup()
+    setup({ ptSessions: [] })
 
     await waitFor(() => expect(screen.getByTestId('pt-new-session-btn')).toBeTruthy())
     fireEvent.click(screen.getByTestId('pt-new-session-btn'))
@@ -429,11 +451,10 @@ describe('PaperTradingPanel — eligible draft picker', () => {
 
 describe('PaperTradingPanel — FT session picker', () => {
   it('shows FT session picker when matching FT session exists for selected draft', async () => {
-    mockListSessions.mockResolvedValue([])
     mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft()], count: 1 })
     mockListFT.mockResolvedValue([makeFTSession()])
 
-    setup()
+    setup({ ptSessions: [] })
 
     await waitFor(() => expect(screen.getByTestId('pt-new-session-btn')).toBeTruthy())
     fireEvent.click(screen.getByTestId('pt-new-session-btn'))
@@ -444,11 +465,10 @@ describe('PaperTradingPanel — FT session picker', () => {
   })
 
   it('does not show FT session picker when matching session has no signal-eligible bars', async () => {
-    mockListSessions.mockResolvedValue([])
     mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft()], count: 1 })
     mockListFT.mockResolvedValue([makeFTSession({ signal_eligible_bars_processed: 0 })])
 
-    setup()
+    setup({ ptSessions: [] })
 
     await waitFor(() => expect(screen.getByTestId('pt-new-session-btn')).toBeTruthy())
     fireEvent.click(screen.getByTestId('pt-new-session-btn'))
@@ -462,12 +482,11 @@ describe('PaperTradingPanel — FT session picker', () => {
 
 describe('PaperTradingPanel — create session', () => {
   it('calls createPaperTradingSession with correct payload on submit', async () => {
-    mockListSessions.mockResolvedValue([])
     mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft()], count: 1 })
     mockListFT.mockResolvedValue([])
     mockCreate.mockResolvedValue(makePTDetail())
 
-    setup()
+    setup({ ptSessions: [] })
 
     await waitFor(() => expect(screen.getByTestId('pt-new-session-btn')).toBeTruthy())
     fireEvent.click(screen.getByTestId('pt-new-session-btn'))
@@ -491,9 +510,7 @@ describe('PaperTradingPanel — create session', () => {
 
 describe('PaperTradingPanel — session list', () => {
   it('renders existing sessions in pt-session-list', async () => {
-    mockListSessions.mockResolvedValue([makePTSession()])
-
-    setup()
+    setup({ ptSessions: [makePTSession()] })
 
     await waitFor(() => {
       expect(screen.getByTestId('pt-session-list')).toBeTruthy()
@@ -506,10 +523,9 @@ describe('PaperTradingPanel — account detail (P3 updated)', () => {
   it('renders account detail card with backend data when session selected', async () => {
     const session = makePTSession()
     const account = makeAccount()
-    mockListSessions.mockResolvedValue([session])
     mockGetAccount.mockResolvedValue(account)
 
-    setup()
+    setup({ ptSessions: [session] })
 
     await waitFor(() => expect(screen.getByTestId('pt-session-list')).toBeTruthy())
 
@@ -527,9 +543,7 @@ describe('PaperTradingPanel — account detail (P3 updated)', () => {
 
 describe('PaperTradingPanel — empty states', () => {
   it('shows empty state when no sessions exist', async () => {
-    mockListSessions.mockResolvedValue([])
-
-    setup()
+    setup({ ptSessions: [] })
 
     await waitFor(() => {
       expect(screen.getByTestId('pt-empty-state')).toBeTruthy()
@@ -537,13 +551,12 @@ describe('PaperTradingPanel — empty states', () => {
   })
 
   it('shows no-eligible-drafts notice when all drafts are below forward_tested', async () => {
-    mockListSessions.mockResolvedValue([])
     mockFetchDrafts.mockResolvedValue({
       drafts: [makeDraft({ lifecycle_status: 'backtested' })],
       count: 1,
     })
 
-    setup()
+    setup({ ptSessions: [] })
 
     await waitFor(() => expect(screen.getByTestId('pt-new-session-btn')).toBeTruthy())
     fireEvent.click(screen.getByTestId('pt-new-session-btn'))
@@ -556,10 +569,9 @@ describe('PaperTradingPanel — empty states', () => {
 
 describe('PaperTradingPanel — lifecycle messaging', () => {
   it('shows lifecycle notice in create form', async () => {
-    mockListSessions.mockResolvedValue([])
     mockFetchDrafts.mockResolvedValue({ drafts: [], count: 0 })
 
-    setup()
+    setup({ ptSessions: [] })
 
     await waitFor(() => expect(screen.getByTestId('pt-new-session-btn')).toBeTruthy())
     fireEvent.click(screen.getByTestId('pt-new-session-btn'))
@@ -573,9 +585,7 @@ describe('PaperTradingPanel — lifecycle messaging', () => {
 
 describe('PaperTradingPanel — error handling', () => {
   it('shows pt-list-error when session list fetch fails', async () => {
-    mockListSessions.mockRejectedValue(new Error('Network error'))
-
-    setup()
+    setup({ evidenceError: 'Network error' })
 
     await waitFor(() => {
       expect(screen.getByTestId('pt-list-error')).toBeTruthy()
@@ -588,8 +598,7 @@ describe('PaperTradingPanel — error handling', () => {
 // ---------------------------------------------------------------------------
 
 async function navigateToDetail() {
-  mockListSessions.mockResolvedValue([makePTSession()])
-  setup()
+  setup({ ptSessions: [makePTSession()] })
   await waitFor(() => expect(screen.getByTestId('pt-session-list')).toBeTruthy())
   fireEvent.click(screen.getByTestId(`pt-session-link-${SESSION_ID}`))
 }
@@ -952,10 +961,9 @@ describe('PaperTradingPanel — P6: regression', () => {
   })
 
   it('P3 create-session form opens and shows lifecycle notice', async () => {
-    mockListSessions.mockResolvedValue([])
     mockFetchDrafts.mockResolvedValue({ drafts: [], count: 0 })
 
-    setup()
+    setup({ ptSessions: [] })
 
     await waitFor(() => expect(screen.getByTestId('pt-new-session-btn')).toBeTruthy())
     fireEvent.click(screen.getByTestId('pt-new-session-btn'))

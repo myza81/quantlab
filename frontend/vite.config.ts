@@ -21,6 +21,7 @@ export default defineConfig({
       '/admin': 'http://localhost:8000',
       '/forward-tests': 'http://localhost:8000',
       '/paper-trading': 'http://localhost:8000',
+      '/chart': 'http://localhost:8000',
     },
   },
   test: {

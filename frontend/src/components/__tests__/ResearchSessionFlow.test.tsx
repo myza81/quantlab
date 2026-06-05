@@ -415,7 +415,7 @@ describe('BacktestReportPage source label and navigation', () => {
     expect(screen.queryByTestId('edit-strategy-btn')).toBeNull()
   })
 
-  it('Back to Chart button calls onBack', () => {
+  it('Back to Backtest button calls onBack', () => {
     const onBack = vi.fn()
     render(
       <BacktestReportPage
@@ -423,7 +423,7 @@ describe('BacktestReportPage source label and navigation', () => {
         onBack={onBack}
       />
     )
-    fireEvent.click(screen.getByText(/← Back to Chart/i))
+    fireEvent.click(screen.getByText(/← Back to Backtest/i))
     expect(onBack).toHaveBeenCalledOnce()
   })
 })

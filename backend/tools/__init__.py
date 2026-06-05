@@ -16,6 +16,7 @@ from backend.tools.historical_computation import (
 )
 from backend.tools.macd import MACD_METADATA, compute_macd
 from backend.tools.models import (
+    ChartSeriesSpec,
     ParameterSpec,
     ToolCategory,
     ToolMetadata,
@@ -53,6 +54,7 @@ def create_default_registry() -> ToolRegistry:
 
 __all__ = [
     # models
+    "ChartSeriesSpec",
     "ParameterSpec",
     "ToolCategory",
     "ToolMetadata",

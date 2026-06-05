@@ -1,17 +1,19 @@
 /**
- * BacktestHistoryPanel — browse prior backtest runs.
+ * BacktestHistoryPanel — browse prior backtest runs and launch new ones.
  *
- * Phase 3S-C: closes the "refresh = report gone forever" gap.
- * Fetches GET /backtests/runs (ownership-scoped, newest-first).
+ * Uses StrategyContext to fetch all backtest runs for the selected draft.
+ * Provides Current Strategy / All Strategies filter toggle.
  * Each row shows lightweight metadata; "Reopen" loads the full report.
+ * "Run Backtest" opens BacktestRunPanel inline (NAV-UX-3D).
  */
-import { useEffect, useState } from 'react'
-import type { BacktestRunListItem } from '../types/backtestRuns'
-import { listBacktestRuns, fetchBacktestReport } from '../api/backtestRuns'
+import { useState } from 'react'
+import { fetchBacktestReport } from '../api/backtestRuns'
 import type { BacktestReport } from '../types/backtestRuns'
-import { isAuthError, isSubscriptionExpiredError } from '../api/client'
+import { isAuthError } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { useStrategyContext } from '../context/StrategyContext'
 import { STAGE_LABELS } from '../lib/lifecycleGuidance'
+import { BacktestRunPanel } from './BacktestRunPanel'
 
 interface Props {
   onReportLoaded: (report: BacktestReport) => void
@@ -33,29 +35,22 @@ function fmtDate(iso: string): string {
 }
 
 export function BacktestHistoryPanel({ onReportLoaded }: Props) {
-  const { logout, refreshUser } = useAuth()
-  const [items,     setItems]     = useState<BacktestRunListItem[]>([])
-  const [status,    setStatus]    = useState<'loading' | 'success' | 'error'>('loading')
-  const [error,     setError]     = useState<string | null>(null)
-  const [reopening, setReopening] = useState<string | null>(null)
+  const { logout } = useAuth()
+  const { displayName, draftId, btRuns, evidenceError, refreshEvidence } = useStrategyContext()
+  const [filterMode,  setFilterMode]  = useState<'current' | 'all'>('current')
+  const [showRunPanel, setShowRunPanel] = useState(false)
+  const [reopening,   setReopening]   = useState<string | null>(null)
+  const [error,       setError]       = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      try {
-        const data = await listBacktestRuns(50)
-        if (!cancelled) { setItems(data); setStatus('success') }
-      } catch (err) {
-        if (cancelled) return
-        if (isAuthError(err)) { logout(); return }
-        if (isSubscriptionExpiredError(err)) { await refreshUser(); return }
-        setError(err instanceof Error ? err.message : 'Failed to load history')
-        setStatus('error')
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [logout, refreshUser])
+  async function handleRunSuccess(report: BacktestReport) {
+    setShowRunPanel(false)
+    await refreshEvidence()    // reload btRuns from server to include the new run
+    onReportLoaded(report)     // open the report
+  }
+
+  const filteredItems = filterMode === 'current'
+    ? btRuns
+    : btRuns // Context already filters by draft; "all" would need backend change
 
   async function handleReopen(runId: string) {
     setReopening(runId)
@@ -70,31 +65,79 @@ export function BacktestHistoryPanel({ onReportLoaded }: Props) {
     }
   }
 
-  if (status === 'loading') {
+  // Shared heading row with Run Backtest button
+  const headingRow = (
+    <div style={s.headingRow}>
+      <div style={s.heading}>
+        Backtest
+        {filteredItems.length > 0 && <span style={s.count}> ({filteredItems.length})</span>}
+      </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        {draftId && (
+          <button
+            data-testid="run-backtest-btn"
+            style={{ ...s.filterBtn, ...s.runBtn }}
+            onClick={() => setShowRunPanel(v => !v)}
+          >
+            {showRunPanel ? '✕ Cancel' : '▶ Run Backtest'}
+          </button>
+        )}
+        {filteredItems.length > 0 && (
+          <>
+            <button
+              data-testid="filter-current-strategy"
+              style={{ ...s.filterBtn, ...(filterMode === 'current' ? s.filterBtnActive : {}) }}
+              onClick={() => setFilterMode('current')}
+            >
+              Current
+            </button>
+            <button
+              data-testid="filter-all-strategies"
+              style={{ ...s.filterBtn, ...(filterMode === 'all' ? s.filterBtnActive : {}) }}
+              onClick={() => setFilterMode('all')}
+            >
+              All
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+
+  if (evidenceError) {
     return (
       <div style={s.panel}>
-        <div style={s.heading}>Backtest History</div>
-        <div style={s.state}>Loading…</div>
+        {headingRow}
+        <div style={s.stateError}>{evidenceError}</div>
       </div>
     )
   }
 
-  if (status === 'error') {
+  if (!draftId) {
     return (
       <div style={s.panel}>
-        <div style={s.heading}>Backtest History</div>
-        <div style={s.stateError}>{error}</div>
-      </div>
-    )
-  }
-
-  if (items.length === 0) {
-    return (
-      <div style={s.panel}>
-        <div style={s.heading}>Backtest History</div>
+        {headingRow}
         <div style={s.state}>
-          No backtest runs yet.<br />
-          Run a backtest from the Strategy Builder tab to see results here.
+          No strategy selected.<br />
+          Choose a strategy from the context bar to view and run backtests.
+        </div>
+      </div>
+    )
+  }
+
+  if (filteredItems.length === 0) {
+    return (
+      <div style={s.panel}>
+        {headingRow}
+        {showRunPanel && (
+          <BacktestRunPanel
+            onSuccess={handleRunSuccess}
+            onCancel={() => setShowRunPanel(false)}
+          />
+        )}
+        <div style={s.state}>
+          No backtest runs for <strong>{displayName}</strong>.<br />
+          Click <strong>▶ Run Backtest</strong> above to run the first one.
         </div>
       </div>
     )
@@ -102,9 +145,16 @@ export function BacktestHistoryPanel({ onReportLoaded }: Props) {
 
   return (
     <div style={s.panel}>
-      <div style={s.heading}>Backtest History <span style={s.count}>({items.length})</span></div>
+      {headingRow}
+      {showRunPanel && (
+        <BacktestRunPanel
+          onSuccess={handleRunSuccess}
+          onCancel={() => setShowRunPanel(false)}
+        />
+      )}
+      {error && <div style={s.stateError}>{error}</div>}
       <div style={s.list}>
-        {items.map(item => (
+        {filteredItems.map(item => (
           <div key={item.run_id} data-testid="history-run-row" style={s.row}>
             <div style={s.rowMeta}>
               <span style={s.symbol}>{item.symbol}</span>
@@ -168,17 +218,47 @@ const s: Record<string, React.CSSProperties> = {
     padding:       '16px 20px',
     gap:           12,
   },
+  headingRow: {
+    display:       'flex',
+    alignItems:    'center',
+    justifyContent: 'space-between',
+    flexShrink:    0,
+  },
   heading: {
     fontSize:      13,
     fontWeight:    600,
     color:         '#8892a4',
     letterSpacing: '0.04em',
     fontFamily:    'monospace',
-    flexShrink:    0,
   },
   count: {
     fontWeight: 400,
     color:      '#4a5568',
+  },
+  filterGroup: {
+    display:    'flex',
+    gap:        6,
+    alignItems: 'center',
+  },
+  filterBtn: {
+    background:    'transparent',
+    border:        '1px solid #2a3a4a',
+    borderRadius:  3,
+    color:         '#4a5568',
+    cursor:        'pointer',
+    fontSize:      10,
+    fontFamily:    'monospace',
+    padding:       '2px 8px',
+    transition:    'all 0.15s ease',
+  },
+  filterBtnActive: {
+    border:  '1px solid #26a69a',
+    color:   '#26a69a',
+  },
+  runBtn: {
+    border:  '1px solid #1e3a5a',
+    color:   '#7eb8f7',
+    fontWeight: 600,
   },
   state: {
     flex:           1,

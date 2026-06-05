@@ -31,7 +31,13 @@ import {
   useState,
 } from 'react'
 import { fetchDrafts } from '../api/drafts'
+import { listBacktestRuns } from '../api/backtestRuns'
+import { listForwardTestSessions } from '../api/forwardTests'
+import { listPaperTradingSessions } from '../api/paperTrading'
 import type { StrategyDraftData } from '../types/drafts'
+import type { BacktestRunListItem } from '../types/backtestRuns'
+import type { ForwardTestSessionSummary } from '../types/forwardTesting'
+import type { PaperTradingSessionSummary } from '../types/paperTrading'
 
 const LS_KEY = 'ql_selected_draft_id'
 
@@ -55,12 +61,21 @@ export interface StrategyContextValue {
   /** The full selected draft, derived from `drafts` + `draftId`. */
   selectedDraft: StrategyDraftData | null
 
+  /** Evidence lists for the selected draft (emptied when no draft selected). */
+  btRuns: BacktestRunListItem[]
+  ftSessions: ForwardTestSessionSummary[]
+  ptSessions: PaperTradingSessionSummary[]
+  evidenceLoading: boolean
+  evidenceError: string | null
+
   /** Select a draft by id; persists to localStorage. */
   selectDraft: (draftId: string) => void
   /** Re-fetch the draft list and reconcile the current selection. */
   refreshDrafts: () => Promise<void>
   /** Replace one draft in-place after a mutation (validate / promote / compose). */
   updateDraft: (updated: StrategyDraftData) => void
+  /** Re-fetch evidence (btRuns, ftSessions, ptSessions) for the current draft. */
+  refreshEvidence: () => Promise<void>
 }
 
 // Safe no-op default — used when a consumer renders outside a provider.
@@ -72,9 +87,15 @@ const DEFAULT_VALUE: StrategyContextValue = {
   draftsLoading:   false,
   draftsError:     null,
   selectedDraft:   null,
+  btRuns:          [],
+  ftSessions:      [],
+  ptSessions:      [],
+  evidenceLoading: false,
+  evidenceError:   null,
   selectDraft:     () => {},
   refreshDrafts:   async () => {},
   updateDraft:     () => {},
+  refreshEvidence: async () => {},
 }
 
 const StrategyContext = createContext<StrategyContextValue>(DEFAULT_VALUE)
@@ -109,10 +130,16 @@ function writePersistedId(id: string): void {
 // ---------------------------------------------------------------------------
 
 export function StrategyContextProvider({ children }: { children: React.ReactNode }) {
-  const [drafts,        setDrafts]        = useState<StrategyDraftData[]>([])
-  const [draftsLoading, setDraftsLoading] = useState(true)
-  const [draftsError,   setDraftsError]   = useState<string | null>(null)
-  const [draftId,       setDraftId]       = useState<string | null>(null)
+  const [drafts,         setDrafts]         = useState<StrategyDraftData[]>([])
+  const [draftsLoading,  setDraftsLoading]  = useState(true)
+  const [draftsError,    setDraftsError]    = useState<string | null>(null)
+  const [draftId,        setDraftId]        = useState<string | null>(null)
+
+  const [btRuns,         setBtRuns]         = useState<BacktestRunListItem[]>([])
+  const [ftSessions,     setFtSessions]     = useState<ForwardTestSessionSummary[]>([])
+  const [ptSessions,     setPtSessions]     = useState<PaperTradingSessionSummary[]>([])
+  const [evidenceLoading, setEvidenceLoading] = useState(false)
+  const [evidenceError,  setEvidenceError]  = useState<string | null>(null)
 
   const selectDraft = useCallback((id: string) => {
     setDraftId(id)
@@ -121,6 +148,36 @@ export function StrategyContextProvider({ children }: { children: React.ReactNod
 
   const updateDraft = useCallback((updated: StrategyDraftData) => {
     setDrafts(prev => prev.map(d => (d.draft_id === updated.draft_id ? updated : d)))
+  }, [])
+
+  const loadEvidence = useCallback(async (id: string | null) => {
+    // Clear evidence if no draft selected
+    if (!id) {
+      setBtRuns([])
+      setFtSessions([])
+      setPtSessions([])
+      setEvidenceError(null)
+      return
+    }
+
+    setEvidenceLoading(true)
+    setEvidenceError(null)
+    try {
+      const [btData, ftData, ptData] = await Promise.all([
+        listBacktestRuns(50),
+        listForwardTestSessions(),
+        listPaperTradingSessions(),
+      ])
+      // Filter to only the selected draft's evidence.
+      // BacktestRunListItem has draft_id directly; FT/PT summaries expose it via strategy_snapshot.
+      setBtRuns(btData.filter(r => r.draft_id === id))
+      setFtSessions(ftData.filter(s => s.strategy_snapshot.draft_id === id))
+      setPtSessions(ptData.filter(s => s.strategy_snapshot.draft_id === id))
+    } catch (e) {
+      setEvidenceError(e instanceof Error ? e.message : 'Failed to load evidence')
+    } finally {
+      setEvidenceLoading(false)
+    }
   }, [])
 
   const refreshDrafts = useCallback(async () => {
@@ -151,6 +208,15 @@ export function StrategyContextProvider({ children }: { children: React.ReactNod
     refreshDrafts()
   }, [refreshDrafts])
 
+  useEffect(() => {
+    loadEvidence(draftId)
+  }, [draftId, loadEvidence])
+
+  const refreshEvidence = useCallback(async () => {
+    // Uses the current draftId from closure; re-fetches all evidence for the selected draft.
+    await loadEvidence(draftId)
+  }, [draftId, loadEvidence])
+
   const selectedDraft = useMemo(
     () => drafts.find(d => d.draft_id === draftId) ?? null,
     [drafts, draftId],
@@ -164,10 +230,16 @@ export function StrategyContextProvider({ children }: { children: React.ReactNod
     draftsLoading,
     draftsError,
     selectedDraft,
+    btRuns,
+    ftSessions,
+    ptSessions,
+    evidenceLoading,
+    evidenceError,
     selectDraft,
     refreshDrafts,
     updateDraft,
-  }), [draftId, selectedDraft, drafts, draftsLoading, draftsError, selectDraft, refreshDrafts, updateDraft])
+    refreshEvidence,
+  }), [draftId, selectedDraft, drafts, draftsLoading, draftsError, btRuns, ftSessions, ptSessions, evidenceLoading, evidenceError, selectDraft, refreshDrafts, updateDraft, refreshEvidence])
 
   return (
     <StrategyContext.Provider value={value}>

@@ -165,7 +165,7 @@ const _CHART_THEME = {
     vertLines: { color: '#1a1a2e' },
     horzLines: { color: '#1a1a2e' },
   },
-  crosshair: { mode: 1 },
+  crosshair: { mode: 0 },
   rightPriceScale: { borderColor: '#2a2d3e' },
   timeScale: {
     borderColor:     '#2a2d3e',

@@ -13,9 +13,9 @@
 import { useEffect, useState } from 'react'
 import { isAuthError, isSubscriptionExpiredError } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { useStrategyContext } from '../context/StrategyContext'
 import {
   createForwardTestSession,
-  listForwardTestSessions,
   getForwardTestSession,
   runForwardTestCycle,
   pauseForwardTestSession,
@@ -742,49 +742,27 @@ export function ForwardTestPanel({
   onPrefillConsumed,
 }: ForwardTestPanelProps = {}) {
   const { logout, refreshUser } = useAuth()
-  const [sessions,     setSessions]     = useState<ForwardTestSessionSummary[]>([])
-  const [loading,      setLoading]      = useState(true)
-  const [error,        setError]        = useState<string | null>(null)
-  const [showCreate,   setShowCreate]   = useState(prefill != null)
-  const [busyId,       setBusyId]       = useState<string | null>(null)
-  const [cycleResult,  setCycleResult]  = useState<ForwardTestCycleResult | null>(null)
-  const [detailView,   setDetailView]   = useState<string | null>(null)
+  const { displayName, draftId, ftSessions, evidenceError } = useStrategyContext()
+  const [displayedSessions, setDisplayedSessions] = useState<ForwardTestSessionSummary[]>([])
+  const [filterMode,  setFilterMode]   = useState<'current' | 'all'>('current')
+  const [error,       setError]        = useState<string | null>(null)
+  const [showCreate,  setShowCreate]   = useState(prefill != null)
+  const [busyId,      setBusyId]       = useState<string | null>(null)
+  const [cycleResult, setCycleResult]  = useState<ForwardTestCycleResult | null>(null)
+  const [detailView,  setDetailView]   = useState<string | null>(null)
 
-  // If the parent sets a prefill while the panel is already mounted (e.g., user was
-  // already on the Forward Test tab), open the create form automatically.
+  // If the parent sets a prefill while the panel is already mounted, open the create form automatically.
   useEffect(() => {
     if (prefill != null) setShowCreate(true)
   }, [prefill])
 
-  async function loadSessions() {
-    setError(null)
-    try {
-      const data = await listForwardTestSessions()
-      setSessions(data)
-    } catch (err) {
-      if (isAuthError(err)) { logout(); return }
-      if (isSubscriptionExpiredError(err)) { await refreshUser(); return }
-      setError(err instanceof Error ? err.message : 'Failed to load sessions')
-    } finally {
-      setLoading(false)
-    }
-  }
-
+  // Keep displayedSessions in sync with ftSessions from context
   useEffect(() => {
-    let cancelled = false
-    listForwardTestSessions()
-      .then(data => { if (!cancelled) { setSessions(data); setLoading(false) } })
-      .catch(err => {
-        if (cancelled) return
-        if (isAuthError(err)) { logout(); return }
-        setError(err instanceof Error ? err.message : 'Failed to load sessions')
-        setLoading(false)
-      })
-    return () => { cancelled = true }
-  }, [logout]) // eslint-disable-line react-hooks/exhaustive-deps
+    setDisplayedSessions(ftSessions)
+  }, [ftSessions])
 
   function refreshSession(updated: ForwardTestSessionSummary) {
-    setSessions(prev => prev.map(s => s.session_id === updated.session_id ? updated : s))
+    setDisplayedSessions(prev => prev.map(s => s.session_id === updated.session_id ? updated : s))
   }
 
   async function handleRunCycle(sessionId: string) {
@@ -793,8 +771,6 @@ export function ForwardTestPanel({
     try {
       const result = await runForwardTestCycle(sessionId)
       setCycleResult(result)
-      // Refresh the single session in the list
-      await loadSessions()
     } catch (err) {
       if (isAuthError(err)) { logout(); return }
       if (isSubscriptionExpiredError(err)) { await refreshUser(); return }
@@ -862,7 +838,7 @@ export function ForwardTestPanel({
         <CreateForm
           initialValues={prefill}
           onCreated={(session) => {
-            setSessions(prev => [session, ...prev])
+            setDisplayedSessions(prev => [session, ...prev])
             setShowCreate(false)
             onPrefillConsumed?.()
           }}
@@ -879,14 +855,32 @@ export function ForwardTestPanel({
     <div style={s.panel}>
       <div style={s.topBar}>
         <span style={s.heading}>Forward Testing</span>
+        {draftId && (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button
+              data-testid="filter-current-strategy-ft"
+              style={{ ...s.filterBtn, ...(filterMode === 'current' ? s.filterBtnActive : {}) }}
+              onClick={() => setFilterMode('current')}
+            >
+              Current
+            </button>
+            <button
+              data-testid="filter-all-strategies-ft"
+              style={{ ...s.filterBtn, ...(filterMode === 'all' ? s.filterBtnActive : {}) }}
+              onClick={() => setFilterMode('all')}
+            >
+              All
+            </button>
+          </div>
+        )}
         <button style={s.btnPrimary} onClick={() => setShowCreate(true)}>
           + New Session
         </button>
       </div>
 
-      {error && (
+      {(error || evidenceError) && (
         <div style={s.error}>
-          {error}
+          {error || evidenceError}
           <button style={{ ...btnLink, marginLeft: 8, color: '#4a5568' }} onClick={() => setError(null)}>
             ×
           </button>
@@ -908,11 +902,18 @@ export function ForwardTestPanel({
         </div>
       )}
 
-      {loading && <div style={s.state}>Loading sessions…</div>}
-      {!loading && sessions.length === 0 && (
-        <div style={s.state}>No forward test sessions yet. Create one to get started.</div>
+      {!draftId && (
+        <div style={s.state}>
+          No strategy selected.<br />
+          Choose a strategy from the context bar to view forward test sessions.
+        </div>
       )}
-      {!loading && sessions.length > 0 && (
+      {draftId && displayedSessions.length === 0 && (
+        <div style={s.state}>
+          No forward test sessions for <strong>{displayName}</strong>. Create one to get started.
+        </div>
+      )}
+      {draftId && displayedSessions.length > 0 && (
         <div style={s.tableWrap}>
           <table style={s.table}>
             <thead>
@@ -923,7 +924,7 @@ export function ForwardTestPanel({
               </tr>
             </thead>
             <tbody>
-              {sessions.map(session => (
+              {displayedSessions.map(session => (
                 <SessionRow
                   key={session.session_id}
                   session={session}
@@ -1043,6 +1044,21 @@ const s = {
     cursor: 'pointer',
     fontSize: 12,
     fontFamily: 'monospace',
+  } as React.CSSProperties,
+  filterBtn: {
+    background: 'transparent',
+    border: '1px solid #2a3a4a',
+    borderRadius: 3,
+    color: '#4a5568',
+    cursor: 'pointer',
+    fontSize: 10,
+    fontFamily: 'monospace',
+    padding: '2px 8px',
+    transition: 'all 0.15s ease',
+  } as React.CSSProperties,
+  filterBtnActive: {
+    border: '1px solid #26a69a',
+    color: '#26a69a',
   } as React.CSSProperties,
   prefillNotice: {
     background:   '#1a1e2a',

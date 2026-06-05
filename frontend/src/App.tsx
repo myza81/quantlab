@@ -38,16 +38,16 @@ type Status     = 'idle' | 'loading' | 'success' | 'error'
 type ActiveView = 'chart' | 'composer' | 'credentials' | 'report' | 'admin' | 'datasets' | 'history' | 'forward-test' | 'paper-trading' | 'lifecycle'
 type AuthView   = 'login' | 'register'
 
-// Workflow pages where the persistent Strategy Context Bar is shown (NAV-UX-3A).
-// Hidden on Chart (symbol-centric, not strategy-centric), Credentials, Datasets,
-// and Admin (not strategy-scoped).
+// Workflow pages where the persistent Strategy Context Bar is shown (NAV-UX-3A/3B).
+// Hidden on Research (chart/symbol-centric), Settings (credentials/datasets),
+// and Admin (not strategy-scoped). Internal view keys are stable across nav label changes.
 const CONTEXT_BAR_VIEWS = new Set<ActiveView>([
-  'composer',       // Strategy Builder
-  'history',        // Backtest History
-  'forward-test',   // Forward Testing
-  'paper-trading',  // Paper Trading
-  'lifecycle',      // Lifecycle Dashboard
-  'report',         // Backtest Report (transient)
+  'composer',       // → Strategy
+  'history',        // → Backtest
+  'forward-test',   // → Forward Test
+  'paper-trading',  // → Paper Trading
+  'lifecycle',      // → Lifecycle
+  'report',         // Backtest Report (transient, not in nav)
 ])
 
 export default function App() {
@@ -215,10 +215,10 @@ export default function App() {
     setActiveView('report')
   }
 
-  async function handlePromoteDraft(runId: string, draftId: string): Promise<void> {
-    await promoteDraftToBacktested(runId, draftId)
-    // BacktestReportPage owns its own promotion UI state;
-    // no App-level state update required.
+  async function handlePromoteDraft(runId: string, draftId: string) {
+    // Returns the updated draft so BacktestReportPage can call ctx.updateDraft()
+    // to advance the context bar immediately (NAV-UX-3E).
+    return promoteDraftToBacktested(runId, draftId)
   }
 
   function handleStartForwardTest(prefill: ForwardTestPrefill): void {
@@ -273,17 +273,21 @@ export default function App() {
           <span style={st.logo}>QuantLab</span>
           <span style={st.tagline}>Research-first strategy platform</span>
           <div style={st.nav}>
-            <NavTab label="Chart"       active={activeView === 'chart'}       onClick={() => setActiveView('chart')} />
-            <NavTab label="Strategy Builder" active={activeView === 'composer'}    onClick={() => setActiveView('composer')} />
-            <NavTab label="Credentials" active={activeView === 'credentials'} onClick={() => setActiveView('credentials')} />
-            <NavTab label="Datasets"    active={activeView === 'datasets'}    onClick={() => setActiveView('datasets')} />
-            <NavTab label="Backtest History" active={activeView === 'history'} onClick={() => setActiveView('history')} />
-            <NavTab label="Forward Testing" active={activeView === 'forward-test'} onClick={() => setActiveView('forward-test')} />
+            <NavTab label="Research"     active={activeView === 'chart'}        onClick={() => setActiveView('chart')} />
+            <NavTab label="Strategy"     active={activeView === 'composer'}     onClick={() => setActiveView('composer')} />
+            <NavTab label="Backtest"     active={activeView === 'history' || activeView === 'report'} onClick={() => setActiveView('history')} />
+            <NavTab label="Forward Test" active={activeView === 'forward-test'} onClick={() => setActiveView('forward-test')} />
             <NavTab label="Paper Trading" active={activeView === 'paper-trading'} onClick={() => setActiveView('paper-trading')} />
-            <NavTab label="Lifecycle Dashboard" active={activeView === 'lifecycle'} onClick={() => setActiveView('lifecycle')} />
-            {backtestReport && (
-              <NavTab label="Report" active={activeView === 'report'} onClick={() => setActiveView('report')} />
-            )}
+            <NavTab label="Lifecycle"    active={activeView === 'lifecycle'}    onClick={() => setActiveView('lifecycle')} />
+            <NavTab
+              label="Settings"
+              active={activeView === 'credentials' || activeView === 'datasets'}
+              onClick={() => {
+                if (activeView !== 'credentials' && activeView !== 'datasets') {
+                  setActiveView('credentials')
+                }
+              }}
+            />
             {(user?.role === 'admin' || user?.role === 'superadmin') && (
               <NavTab label="Admin" active={activeView === 'admin'} onClick={() => setActiveView('admin')} />
             )}
@@ -364,17 +368,31 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Credentials ── */}
-        {activeView === 'credentials' && (
-          <div style={{ ...st.fill, overflowY: 'auto' }}>
-            <CredentialManager />
-          </div>
-        )}
-
-        {/* ── Datasets ── */}
-        {activeView === 'datasets' && (
-          <div style={{ ...st.fill, overflowY: 'auto' }}>
-            <CatalogManager onLoadIntoChart={handleCatalogLoad} />
+        {/* ── Settings (Data Providers + Dataset Catalog) ── */}
+        {(activeView === 'credentials' || activeView === 'datasets') && (
+          <div style={{ ...st.fill, flexDirection: 'column' }}>
+            <div style={st.settingsSubBar}>
+              <NavTab
+                label="Data Providers"
+                active={activeView === 'credentials'}
+                onClick={() => setActiveView('credentials')}
+              />
+              <NavTab
+                label="Dataset Catalog"
+                active={activeView === 'datasets'}
+                onClick={() => setActiveView('datasets')}
+              />
+            </div>
+            {activeView === 'credentials' && (
+              <div style={{ flex: 1, overflowY: 'auto' }}>
+                <CredentialManager />
+              </div>
+            )}
+            {activeView === 'datasets' && (
+              <div style={{ flex: 1, overflowY: 'auto' }}>
+                <CatalogManager onLoadIntoChart={handleCatalogLoad} />
+              </div>
+            )}
           </div>
         )}
 
@@ -385,12 +403,12 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Report ── */}
+        {/* ── Report (transient — not in nav, accessed via Backtest history or provenance strip) ── */}
         {activeView === 'report' && backtestReport && (
           <div style={st.fill}>
             <BacktestReportPage
               report={backtestReport}
-              onBack={() => setActiveView('chart')}
+              onBack={() => setActiveView('history')}
               sourceLabel={sourceLabel}
               onNavigateToComposer={() => setActiveView('composer')}
               onPromoteDraft={handlePromoteDraft}
@@ -645,6 +663,14 @@ const st: Record<string, React.CSSProperties> = {
     display:  'flex',
     overflow: 'hidden',
     minHeight: 0,
+  },
+  settingsSubBar: {
+    display:      'flex',
+    gap:          6,
+    padding:      '8px 16px',
+    background:   '#0a0a14',
+    borderBottom: '1px solid #1a1a28',
+    flexShrink:   0,
   },
   sidebar: {
     width:         272,

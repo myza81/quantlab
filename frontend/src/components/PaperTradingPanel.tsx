@@ -14,11 +14,9 @@
  *   - Metrics and unrealized P&L are display-only; backend is the authoritative calculation source
  */
 import { useEffect, useState } from 'react'
-import { isAuthError, isSubscriptionExpiredError } from '../api/client'
-import { useAuth } from '../auth/AuthContext'
+import { useStrategyContext } from '../context/StrategyContext'
 import {
   createPaperTradingSession,
-  listPaperTradingSessions,
   getPaperTradingSession,
   getPaperTradingAccount,
   listPaperTradingOrders,
@@ -1377,31 +1375,73 @@ function SessionList({
   sessions,
   onSelect,
   onNew,
+  filterMode,
+  onFilterChange,
+  strategyName,
 }: {
   sessions: PaperTradingSessionSummary[]
   onSelect: (session: PaperTradingSessionSummary) => void
   onNew: () => void
+  filterMode: 'current' | 'all'
+  onFilterChange: (mode: 'current' | 'all') => void
+  strategyName?: string | null
 }) {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <span style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0' }}>Paper Trading Sessions</span>
-        <button
-          data-testid="pt-new-session-btn"
-          onClick={onNew}
-          style={{
-            background: '#2b6cb0',
-            border: 'none',
-            borderRadius: 4,
-            color: '#e2e8f0',
-            cursor: 'pointer',
-            fontSize: 12,
-            fontFamily: 'inherit',
-            padding: '5px 12px',
-          }}
-        >
-          + New Session
-        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            data-testid="filter-current-strategy-pt"
+            style={{
+              background: filterMode === 'current' ? '#26a69a22' : 'transparent',
+              border: `1px solid ${filterMode === 'current' ? '#26a69a' : '#2a3a4a'}`,
+              borderRadius: 3,
+              color: filterMode === 'current' ? '#26a69a' : '#4a5568',
+              cursor: 'pointer',
+              fontSize: 10,
+              fontFamily: 'monospace',
+              padding: '2px 8px',
+              transition: 'all 0.15s ease',
+            }}
+            onClick={() => onFilterChange('current')}
+          >
+            Current
+          </button>
+          <button
+            data-testid="filter-all-strategies-pt"
+            style={{
+              background: filterMode === 'all' ? '#26a69a22' : 'transparent',
+              border: `1px solid ${filterMode === 'all' ? '#26a69a' : '#2a3a4a'}`,
+              borderRadius: 3,
+              color: filterMode === 'all' ? '#26a69a' : '#4a5568',
+              cursor: 'pointer',
+              fontSize: 10,
+              fontFamily: 'monospace',
+              padding: '2px 8px',
+              transition: 'all 0.15s ease',
+            }}
+            onClick={() => onFilterChange('all')}
+          >
+            All
+          </button>
+          <button
+            data-testid="pt-new-session-btn"
+            onClick={onNew}
+            style={{
+              background: '#2b6cb0',
+              border: 'none',
+              borderRadius: 4,
+              color: '#e2e8f0',
+              cursor: 'pointer',
+              fontSize: 12,
+              fontFamily: 'inherit',
+              padding: '5px 12px',
+            }}
+          >
+            + New Session
+          </button>
+        </div>
       </div>
 
       {sessions.length === 0 ? (
@@ -1413,7 +1453,9 @@ function SessionList({
           textAlign: 'center',
         }}>
           <div style={{ color: '#718096', fontSize: 13, marginBottom: 6 }}>
-            No paper trading sessions yet.
+            {strategyName
+              ? <>No paper trading sessions for <strong>{strategyName}</strong>.</>
+              : 'No paper trading sessions yet.'}
           </div>
           <div style={{ color: '#4a5568', fontSize: 11 }}>
             Create a session from a forward-tested draft to start paper trading.
@@ -1473,30 +1515,19 @@ function SessionList({
 type PanelView = 'list' | 'create' | 'detail'
 
 export function PaperTradingPanel() {
-  const { logout } = useAuth()
+  const { displayName, draftId, ptSessions, evidenceError } = useStrategyContext()
   const [view, setView]                           = useState<PanelView>('list')
-  const [sessions, setSessions]                   = useState<PaperTradingSessionSummary[]>([])
+  const [displayedSessions, setDisplayedSessions] = useState<PaperTradingSessionSummary[]>([])
+  const [filterMode, setFilterMode]               = useState<'current' | 'all'>('current')
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
-  const [loading, setLoading]                     = useState(true)
-  const [listError, setListError]                 = useState<string | null>(null)
 
-  function loadSessions() {
-    setLoading(true)
-    setListError(null)
-    listPaperTradingSessions()
-      .then(setSessions)
-      .catch((err: unknown) => {
-        if (isAuthError(err)) { logout(); return }
-        if (isSubscriptionExpiredError(err)) return
-        setListError(err instanceof Error ? err.message : 'Failed to load sessions')
-      })
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(() => { loadSessions() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Keep displayedSessions in sync with ptSessions from context
+  useEffect(() => {
+    setDisplayedSessions(ptSessions)
+  }, [ptSessions])
 
   function handleSessionCreated(session: PaperTradingSessionDetail) {
-    setSessions(prev => [session, ...prev])
+    setDisplayedSessions(prev => [session, ...prev])
     setSelectedSessionId(session.session_id)
     setView('detail')
   }
@@ -1515,21 +1546,27 @@ export function PaperTradingPanel() {
       background: '#1a202c',
       minHeight: '100%',
     }}>
-      {loading && view === 'list' && (
-        <div style={{ color: '#718096' }}>Loading paper trading sessions…</div>
-      )}
-
-      {listError && (
+      {evidenceError && (
         <div data-testid="pt-list-error" style={{ color: '#fc814a', marginBottom: 12 }}>
-          {listError}
+          {evidenceError}
         </div>
       )}
 
-      {!loading && view === 'list' && (
+      {!draftId && view === 'list' && (
+        <div data-testid="pt-no-strategy" style={{ color: '#718096' }}>
+          No strategy selected.<br />
+          Choose a strategy from the context bar to view paper trading sessions.
+        </div>
+      )}
+
+      {draftId && view === 'list' && (
         <SessionList
-          sessions={sessions}
+          sessions={displayedSessions}
           onSelect={handleSelectSession}
           onNew={() => setView('create')}
+          filterMode={filterMode}
+          onFilterChange={setFilterMode}
+          strategyName={displayName}
         />
       )}
 

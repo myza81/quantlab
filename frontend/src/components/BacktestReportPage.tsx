@@ -11,8 +11,10 @@
  */
 import { useState } from 'react'
 import type { BacktestReport, BacktestRunSummary } from '../types/backtestRuns'
+import type { StrategyDraftData } from '../types/drafts'
 import type { ForwardTestPrefill } from '../types/forwardTesting'
 import { downloadEquityCSV, downloadReportJSON, downloadTradesCSV } from '../api/backtestRuns'
+import { useStrategyContext } from '../context/StrategyContext'
 import { EquityCurveChart } from './EquityCurveChart'
 import { TradeLedgerTable } from './TradeLedgerTable'
 import { LifecycleBadge } from './LifecycleBadge'
@@ -26,8 +28,9 @@ interface Props {
   onBack:                () => void
   sourceLabel?:          string | null
   onNavigateToComposer?: () => void
-  /** Called when the user requests promotion of the draft to 'backtested'. */
-  onPromoteDraft?: (runId: string, draftId: string) => Promise<void>
+  /** Called when the user requests promotion of the draft to 'backtested'.
+   *  Returns the updated StrategyDraftData so the context bar can advance immediately. */
+  onPromoteDraft?: (runId: string, draftId: string) => Promise<StrategyDraftData | void>
   /** Called when the user wants to start a forward test from this report context. */
   onStartForwardTest?: (prefill: ForwardTestPrefill) => void
 }
@@ -90,6 +93,7 @@ const BACKTESTED_OR_BEYOND = new Set(['backtested', 'forward_tested', 'paper_tes
 
 export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToComposer, onPromoteDraft, onStartForwardTest }: Props) {
   const { run, metrics } = report
+  const { updateDraft } = useStrategyContext()
 
   // Promotion state — scoped to this report view
   const [promotionState, setPromotionState] = useState<'idle' | 'promoting' | 'success' | 'error'>('idle')
@@ -122,7 +126,9 @@ export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToCo
     setPromotionState('promoting')
     setPromotionError(null)
     try {
-      await onPromoteDraft(run.run_id, run.draft_id)
+      const updatedDraft = await onPromoteDraft(run.run_id, run.draft_id)
+      // Keep the context bar in sync: advance the lifecycle badge immediately
+      if (updatedDraft) updateDraft(updatedDraft)
       setPromotionState('success')
     } catch (err) {
       setPromotionState('error')
@@ -186,7 +192,7 @@ export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToCo
 
       {/* ── Header ── */}
       <div style={s.header}>
-        <button style={s.backBtn} onClick={onBack}>← Back to Chart</button>
+        <button style={s.backBtn} onClick={onBack}>← Back to Backtest</button>
         {onNavigateToComposer && (
           <button
             data-testid="edit-strategy-btn"
@@ -285,7 +291,9 @@ export function BacktestReportPage({ report, onBack, sourceLabel, onNavigateToCo
             <LifecycleBadge status={lifecycleAtRun!} />
             <span style={s.alreadyEligibleText}>
               This draft was already <strong>{lifecycleAtRun}</strong> when this run was executed.
-              Forward testing is available from the Forward Test tab.
+              {onStartForwardTest
+                ? ' Start a forward test session directly from this report.'
+                : ' Go to the Forward Test tab to create a session.'}
             </span>
             <button
               data-testid="forward-test-hint-btn"
