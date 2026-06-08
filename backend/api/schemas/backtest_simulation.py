@@ -23,9 +23,11 @@ class BacktestSimulationRequest(BaseModel):
         intent_batch: Ordered trade intent batch (from extract-trade-intents).
         price_bars:   Price bars covering the simulation period; must include all
                       bars referenced by intent bar_index values.
-        config:       Simulation configuration.
+                      For NEXT_BAR_OPEN (default), each bar must include 'open'.
+        config:       Simulation configuration (including execution_model).
 
-    The simulator uses bar close as execution price for all trades.
+    Default execution model is NEXT_BAR_OPEN: signal on Bar N fills at Bar N+1 open.
+    Use config.execution_model = "same_bar_close" to opt into same-bar-close fills.
     Price bars are sorted by bar_index inside the simulator.
     """
     model_config = ConfigDict(extra="forbid")

@@ -936,7 +936,7 @@ describe('ForwardTestPanel — forward-test promotion panel (Phase P1)', () => {
   }
 
   it('shows promote button when lifecycle_at_activation is backtested and evidence present', async () => {
-    await openOperatorPromotion({ signal_eligible_bars_processed: 3 })
+    await openOperatorPromotion({ signal_eligible_bars_processed: 20 })
     expect(screen.getByTestId('ft-promotion-panel')).toBeTruthy()
     expect(screen.getByTestId('promote-to-forward-tested-btn')).toBeTruthy()
   })
@@ -970,7 +970,7 @@ describe('ForwardTestPanel — forward-test promotion panel (Phase P1)', () => {
       lifecycle_status: 'forward_tested',
       semantics: null,
     } as import('../../types/drafts').StrategyDraftData)
-    await openOperatorPromotion({ signal_eligible_bars_processed: 2 })
+    await openOperatorPromotion({ signal_eligible_bars_processed: 20 })
 
     fireEvent.click(screen.getByTestId('promote-to-forward-tested-btn'))
 
@@ -996,7 +996,7 @@ describe('ForwardTestPanel — forward-test promotion panel (Phase P1)', () => {
       lifecycle_status: 'forward_tested',
       semantics: null,
     } as import('../../types/drafts').StrategyDraftData)
-    await openOperatorPromotion({ signal_eligible_bars_processed: 1 })
+    await openOperatorPromotion({ signal_eligible_bars_processed: 20 })
 
     fireEvent.click(screen.getByTestId('promote-to-forward-tested-btn'))
 
@@ -1008,7 +1008,7 @@ describe('ForwardTestPanel — forward-test promotion panel (Phase P1)', () => {
 
   it('surfaces backend error when promotion fails', async () => {
     mockPromote.mockRejectedValueOnce(new Error('Session has 0 signal-eligible bars'))
-    await openOperatorPromotion({ signal_eligible_bars_processed: 5 })
+    await openOperatorPromotion({ signal_eligible_bars_processed: 20 })
 
     fireEvent.click(screen.getByTestId('promote-to-forward-tested-btn'))
 
@@ -1062,7 +1062,7 @@ describe('ForwardTestPanel — FT evidence readiness panel (Phase UX-5)', () => 
   })
 
   it('shows erp-ready when signal_eligible_bars_processed is greater than 0', async () => {
-    await openView({ signal_eligible_bars_processed: 5 })
+    await openView({ signal_eligible_bars_processed: 20 })
     expect(screen.getByTestId('ft-evidence-panel')).toBeTruthy()
     expect(screen.getByTestId('erp-ready')).toBeTruthy()
     expect(screen.queryByTestId('erp-blocked')).toBeNull()

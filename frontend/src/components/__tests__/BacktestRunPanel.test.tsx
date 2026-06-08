@@ -1,5 +1,5 @@
 /**
- * BacktestRunPanel tests — NAV-UX-3D.
+ * BacktestRunPanel tests — NAV-UX-3D / NAV-UX-3D.1 (stabilization).
  *
  * Covers:
  *  1.  Shows blocked state when no strategy selected in context
@@ -13,6 +13,17 @@
  *  9.  runBacktest error shows error message
  * 10.  Busy state: submit button is disabled while running
  * 11.  Credentials are loaded and shown in the picker
+ * NAV-UX-3D.1 — stabilization:
+ * 12.  Default equity (10000) is valid: form submits without early return
+ * 13.  Default fraction % (95) is valid: form submits without early return
+ * 14.  Start > End shows error, does NOT call fetchOHLCV
+ * 15.  Asset class dropdown contains backend enum values (fx, future) not forex/futures
+ * 16.  Provider dropdown excludes csv and parquet
+ * 17.  Commission value input hidden when mode = none
+ * 18.  Commission value input shown and labelled when mode = percentage
+ * 19.  Commission value input shown and labelled when mode = fixed
+ * 20.  commission_value is submitted in btConfig
+ * 21.  exchange is NOT hardcoded to NASDAQ — fetchOHLCV called without exchange
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -320,5 +331,175 @@ describe('BacktestRunPanel — credentials', () => {
     })
     render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('My Yahoo Key')).toBeTruthy())
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NAV-UX-3D.1 — Backtest Run Form Stabilization
+// ---------------------------------------------------------------------------
+
+describe('BacktestRunPanel — NAV-UX-3D.1 stabilization', () => {
+
+  // ── Number constraint fixes ───────────────────────────────────────────────
+
+  it('default initial equity (10000) is valid: form proceeds to fetchOHLCV', async () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.submit(screen.getByTestId('bt-run-form'))
+    await waitFor(() => expect(mockFetchOHLCV).toHaveBeenCalledOnce())
+    // If equity default were invalid, JS validation would return early and fetchOHLCV would not be called
+  })
+
+  it('default fraction % (95) is valid: form proceeds to runBacktest', async () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.submit(screen.getByTestId('bt-run-form'))
+    await waitFor(() => expect(mockRunBacktest).toHaveBeenCalledOnce())
+    const config = mockRunBacktest.mock.calls[0][4]
+    expect(config.equity_fraction).toBeCloseTo(0.95)
+  })
+
+  it('bt-equity-input has step=100 (not 1000)', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    const input = screen.getByTestId('bt-equity-input') as HTMLInputElement
+    expect(input.step).toBe('100')
+  })
+
+  it('bt-fraction-input has step=1 (not 5)', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    const input = screen.getByTestId('bt-fraction-input') as HTMLInputElement
+    expect(input.step).toBe('1')
+  })
+
+  // ── Date range validation ─────────────────────────────────────────────────
+
+  it('Start > End shows validation error and does NOT call fetchOHLCV', async () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByTestId('bt-start-input'), { target: { value: '2026-12-31' } })
+    fireEvent.change(screen.getByTestId('bt-end-input'),   { target: { value: '2026-01-01' } })
+    fireEvent.submit(screen.getByTestId('bt-run-form'))
+    await waitFor(() => expect(screen.getByTestId('bt-run-error')).toBeTruthy())
+    expect(screen.getByTestId('bt-run-error').textContent).toMatch(/Start date must be before/)
+    expect(mockFetchOHLCV).not.toHaveBeenCalled()
+  })
+
+  it('Start === End is valid and proceeds to fetchOHLCV', async () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByTestId('bt-start-input'), { target: { value: '2026-06-01' } })
+    fireEvent.change(screen.getByTestId('bt-end-input'),   { target: { value: '2026-06-01' } })
+    fireEvent.submit(screen.getByTestId('bt-run-form'))
+    await waitFor(() => expect(mockFetchOHLCV).toHaveBeenCalledOnce())
+  })
+
+  // ── Asset class enum values ───────────────────────────────────────────────
+
+  it('asset class dropdown contains "fx" (not "forex")', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    const select = screen.getByTestId('bt-asset-class-select') as HTMLSelectElement
+    const values = Array.from(select.options).map(o => o.value)
+    expect(values).toContain('fx')
+    expect(values).not.toContain('forex')
+  })
+
+  it('asset class dropdown contains "future" (not "futures")', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    const select = screen.getByTestId('bt-asset-class-select') as HTMLSelectElement
+    const values = Array.from(select.options).map(o => o.value)
+    expect(values).toContain('future')
+    expect(values).not.toContain('futures')
+  })
+
+  it('submits "fx" asset_class when selected', async () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByTestId('bt-asset-class-select'), { target: { value: 'fx' } })
+    fireEvent.submit(screen.getByTestId('bt-run-form'))
+    await waitFor(() => expect(mockFetchOHLCV).toHaveBeenCalledOnce())
+    expect(mockFetchOHLCV.mock.calls[0][0].asset_class).toBe('fx')
+  })
+
+  // ── Provider dropdown ─────────────────────────────────────────────────────
+
+  it('provider dropdown does NOT include csv or parquet', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    const select = screen.getByTestId('bt-provider-select') as HTMLSelectElement
+    const values = Array.from(select.options).map(o => o.value)
+    expect(values).not.toContain('csv')
+    expect(values).not.toContain('parquet')
+  })
+
+  it('provider dropdown includes yahoo and polygon', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    const select = screen.getByTestId('bt-provider-select') as HTMLSelectElement
+    const values = Array.from(select.options).map(o => o.value)
+    expect(values).toContain('yahoo')
+    expect(values).toContain('polygon')
+  })
+
+  // ── Commission mode and value ─────────────────────────────────────────────
+
+  it('commission value input is hidden when mode = none (default)', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    expect(screen.queryByTestId('bt-commission-value-input')).toBeNull()
+  })
+
+  it('commission value input appears when mode = percentage', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByTestId('bt-commission-select'), { target: { value: 'percentage' } })
+    expect(screen.getByTestId('bt-commission-value-input')).toBeTruthy()
+  })
+
+  it('commission value input appears when mode = fixed', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByTestId('bt-commission-select'), { target: { value: 'fixed' } })
+    expect(screen.getByTestId('bt-commission-value-input')).toBeTruthy()
+  })
+
+  it('commission value label says "Commission (%)" for percentage mode', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByTestId('bt-commission-select'), { target: { value: 'percentage' } })
+    expect(screen.getByText('Commission (%)')).toBeTruthy()
+  })
+
+  it('commission value label says "Commission ($)" for fixed mode', () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByTestId('bt-commission-select'), { target: { value: 'fixed' } })
+    expect(screen.getByText('Commission ($)')).toBeTruthy()
+  })
+
+  it('commission_value is included in btConfig passed to runBacktest', async () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByTestId('bt-commission-select'), { target: { value: 'percentage' } })
+    fireEvent.change(screen.getByTestId('bt-commission-value-input'), { target: { value: '0.1' } })
+    fireEvent.submit(screen.getByTestId('bt-run-form'))
+    await waitFor(() => expect(mockRunBacktest).toHaveBeenCalledOnce())
+    const config = mockRunBacktest.mock.calls[0][4]
+    expect(config.commission_mode).toBe('percentage')
+    expect(config.commission_value).toBeCloseTo(0.1)
+  })
+
+  // ── Exchange not hardcoded ────────────────────────────────────────────────
+
+  it('fetchOHLCV is called without a hardcoded exchange field', async () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.submit(screen.getByTestId('bt-run-form'))
+    await waitFor(() => expect(mockFetchOHLCV).toHaveBeenCalledOnce())
+    const params = mockFetchOHLCV.mock.calls[0][0]
+    // exchange must not be the hardcoded 'NASDAQ' string
+    expect(params.exchange).not.toBe('NASDAQ')
+  })
+
+  it('fetchOHLCV exchange param is undefined (not passed)', async () => {
+    render(<BacktestRunPanel onSuccess={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.submit(screen.getByTestId('bt-run-form'))
+    await waitFor(() => expect(mockFetchOHLCV).toHaveBeenCalledOnce())
+    const params = mockFetchOHLCV.mock.calls[0][0]
+    expect(params.exchange).toBeUndefined()
+  })
+
+  // ── End-to-end run still works ────────────────────────────────────────────
+
+  it('successful run still calls onSuccess after stabilization changes', async () => {
+    const onSuccess = vi.fn()
+    render(<BacktestRunPanel onSuccess={onSuccess} onCancel={vi.fn()} />)
+    fireEvent.submit(screen.getByTestId('bt-run-form'))
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledOnce())
   })
 })

@@ -153,6 +153,10 @@ def _session_to_detail(session: ForwardTestSession) -> ForwardTestSessionDetailR
         error_category=session.error_category,
         exchange=session.exchange,
         asset_class=session.asset_class,
+        last_cycle_attempted_at=(
+            session.last_cycle_attempted_at.isoformat()
+            if session.last_cycle_attempted_at is not None else None
+        ),
     )
 
 
@@ -582,15 +586,17 @@ def promote_draft(
     session_id: str,
     request: PromoteDraftToForwardTestedRequest,
     ft_repository: ForwardTestRepository = Depends(get_forward_test_repository),
+    ft_bar_store: ForwardTestBarStore = Depends(get_forward_test_bar_store),
     draft_repository: DraftRepository = Depends(get_draft_repository),
     current_user: User = Depends(require_active_subscription),
 ) -> DraftResponse:
     """
     Promote a strategy draft to 'forward_tested' lifecycle status.
 
-    Requires a forward-test session with genuine evaluation evidence — the session
-    must have processed at least one signal-eligible bar (warmup completed + at
-    least one live market bar evaluated), owned by the same authenticated user.
+    Requires hardened forward-test evidence (FT-2B): the session must have
+    processed at least ft_min_eligible_bars signal-eligible bars across at least
+    ft_min_calendar_days distinct UTC calendar dates (defaults: 20 bars / 5 days).
+    Both thresholds are configurable via environment variables.
     This is the ONLY supported path for promoting a draft to 'forward_tested';
     the general PUT /drafts/{id} endpoint does not accept lifecycle_status.
 
@@ -608,6 +614,7 @@ def promote_draft(
             ft_repository=ft_repository,
             draft_repository=draft_repository,
             owner_id=current_user.user_id,
+            ft_bar_store=ft_bar_store,
             notes=request.notes,
         )
     except ForwardTestSessionNotFoundError as exc:
@@ -663,6 +670,11 @@ def list_signals(
             provider_name=sig.provider_name,
             catalog_id=sig.catalog_id,
             created_at=sig.created_at.isoformat(),
+            actionable_from_bar_timestamp=(
+                sig.actionable_from_bar_timestamp.isoformat()
+                if sig.actionable_from_bar_timestamp is not None
+                else None
+            ),
         )
         for sig in signals
     ]

@@ -23,11 +23,12 @@ export interface CompositionIndicatorPoint {
 }
 
 export interface CompositionIndicatorSeries {
-  name:   string
-  kind:   ToolOutputKind
-  pane:   ToolOutputPane
-  color:  string | null
-  points: CompositionIndicatorPoint[]
+  name:        string
+  kind:        ToolOutputKind
+  pane:        ToolOutputPane
+  price_scale: string          // "default" | "volume"
+  color:       string | null
+  points:      CompositionIndicatorPoint[]
 }
 
 export interface CompositionRunResponse {

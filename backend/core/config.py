@@ -71,6 +71,26 @@ class Settings(BaseSettings):
     # Override via FORWARD_TEST_BAR_FINALIZATION_BUFFER_SECONDS env var.
     forward_test_bar_finalization_buffer_seconds: int = 60
 
+    # Forward testing scheduler (FT-2).
+    # ft_scheduler_enabled: set False to disable the background scheduler entirely
+    #   (useful for test environments and manual-only workflows).
+    # ft_scheduler_interval_seconds: global tick cadence — how often the scheduler
+    #   wakes up and scans all RUNNING sessions.
+    # ft_scheduler_max_consecutive_failures: if a session's provider fails this many
+    #   times in a row the session is auto-paused to prevent silent staleness.
+    ft_scheduler_enabled: bool = True
+    ft_scheduler_interval_seconds: int = 60
+    ft_scheduler_max_consecutive_failures: int = 5
+
+    # Forward-test promotion evidence thresholds (FT-2B).
+    # Both gates must pass for a session to be promotion-eligible.
+    #   ft_min_eligible_bars:    minimum signal-eligible (non-warmup) bars processed.
+    #   ft_min_calendar_days:    minimum distinct UTC calendar dates among those bars.
+    # These defaults require roughly one trading week of daily data, or equivalent
+    # volume on shorter timeframes.  Override via environment variables.
+    ft_min_eligible_bars: int = 20
+    ft_min_calendar_days: int = 5
+
     # Polygon credential policy:
     #   False (default) — vault-only; Polygon requests without a credential_id are rejected.
     #   True            — allow ENV fallback (POLYGON_API_KEY). Disabled by default; must be

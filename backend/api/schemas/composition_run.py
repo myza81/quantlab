@@ -65,11 +65,12 @@ class CompositionIndicatorSeries(BaseModel):
     """Computed indicator series (SMA, EMA, etc.) for chart overlay rendering."""
     model_config = ConfigDict(frozen=True)
 
-    name:   str
-    kind:   str = "line"
-    pane:   str = "price"
-    color:  str | None = None
-    points: list[CompositionIndicatorPoint]
+    name:        str
+    kind:        str = "line"         # "line" | "histogram"
+    pane:        str = "price"        # "price" | "oscillator"
+    price_scale: str = "default"      # "default" | "volume"
+    color:       str | None = None
+    points:      list[CompositionIndicatorPoint]
 
 
 class CompositionRunResponse(BaseModel):

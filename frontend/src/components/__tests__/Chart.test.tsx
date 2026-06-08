@@ -1,5 +1,5 @@
 /**
- * Chart.test.tsx — Chart-UX-3C.4 (Logical Range Sync & Splitter Direction Fix).
+ * Chart.test.tsx — Chart-UX-4A (Data Inspector) + Chart-UX-3C.4 (carry-forward).
  *
  * Coverage:
  * Rendering / basic (carry-forward)
@@ -40,11 +40,29 @@
  * 32.  No document event listeners accumulated (pointer capture model)
  * 33.  Two distinct tool groups render two pane splitters
  * 34.  Removing oscillator indicator removes its pane splitter
+ * Volume histogram deduplication (volume + volume_ma active together)
+ * 61.  volume only → one HistogramSeries rendered
+ * 62.  volume_ma only (no MA) → one HistogramSeries rendered
+ * 63.  volume + volume_ma active → exactly one HistogramSeries total
+ * 64.  volume + volume_ma(20) active → MA line still rendered alongside single histogram
+ * 65.  no OscPane created when both volume and volume_ma active
+ * Strategy overlay rendering (volume outputs on volume scale)
+ * 66.  strategy-run volume output renders as HistogramSeries
+ * 67.  strategy-run volume histogram uses priceScaleId="volume"
+ * 68.  strategy-run volume scale margins applied (top: 0.75, bottom: 0)
+ * 69.  strategy-run volume_ma line uses priceScaleId="volume"
+ * 70.  strategy-run EMA/SMA uses normal price scale (no priceScaleId)
+ * 71.  strategy-run volume + EMA — histogram on volume scale, EMA on default
+ * 72.  strategy-run oscillator indicator triggers strategy oscillator pane label
+ * 73.  indicator artifact rendering unchanged when strategy overlay also active
  */
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Chart from '../Chart'
 import type { IndicatorArtifactResponse } from '../../types/chartIndicators'
+import type { OHLCVCandle } from '../../api/marketData'
+import type { StrategyOverlay } from '../../types/strategy'
+import type { ToolVisualizationSeries } from '../../types/toolVisualization'
 
 // ---------------------------------------------------------------------------
 // Global mocks
@@ -103,6 +121,9 @@ const mocks = vi.hoisted(() => {
   const removeSeries       = vi.fn()
   const applyOptions       = vi.fn()
   const chartRemove        = vi.fn()
+  // Volume price scale (volume_ma tool renders histogram on named 'volume' scale)
+  const priceScaleApplyOptions = vi.fn()
+  const priceScaleMock         = { applyOptions: priceScaleApplyOptions }
 
   function makeTimeScale() {
     return {
@@ -125,6 +146,10 @@ const mocks = vi.hoisted(() => {
       setData, applyOptions: vi.fn(),
       createPriceLine: vi.fn().mockReturnValue({}),
       removePriceLine: vi.fn(),
+      // Series-level priceScale() — used by volume histogram to configure scale margins
+      // after addSeries creates the named 'volume' scale.  Shares priceScaleMock so
+      // test 52 (priceScaleApplyOptions) still captures the call.
+      priceScale: vi.fn().mockReturnValue(priceScaleMock),
     }
   }
 
@@ -139,6 +164,7 @@ const mocks = vi.hoisted(() => {
       unsubscribeCrosshairMove: unsubCrosshair,
       clearCrosshairPosition:  vi.fn(),
       setCrosshairPosition:    vi.fn(),
+      priceScale:              vi.fn().mockReturnValue(priceScaleMock),
     }
   }
 
@@ -147,6 +173,7 @@ const mocks = vi.hoisted(() => {
     subTimeRange, unsubTimeRange, setVisibleRange, getVisibleRange,
     subCrosshair, unsubCrosshair, fitContent,
     setData, addSeries, removeSeries, applyOptions, chartRemove,
+    priceScaleApplyOptions, priceScaleMock,
     makeChart, makeTimeScale, makeSeries,
   }
 })
@@ -215,6 +242,65 @@ function makeOverlayArtifact(toolId: string, instanceId: string): IndicatorArtif
       pane: 'price_overlay', render_type: 'line', default_color: '#f59e0b',
       values: [{ timestamp: TS(0), value: null }, { timestamp: TS(1), value: 101.5 }],
     }],
+  }
+}
+
+/** Volume artifact with histogram series only (no MA) */
+function makeVolumeArtifact(instanceId = 'vol_1'): IndicatorArtifactResponse {
+  return {
+    tool_id: 'volume_ma', instance_id: instanceId,
+    display_name: 'Volume', pane: 'price_overlay',
+    render_type: 'histogram', parameters: {}, warmup_bars: 0, diagnostics: null,
+    series: [
+      {
+        series_id: 'volume', label: 'Volume',
+        pane: 'price_overlay', render_type: 'histogram', default_color: '#26a69a',
+        values: [
+          { timestamp: TS(0), value: 1000 },
+          { timestamp: TS(1), value: 2000 },
+          { timestamp: TS(2), value: 1500 },
+        ],
+      },
+      {
+        series_id: 'volume_ma', label: 'Vol MA',
+        pane: 'price_overlay', render_type: 'line', default_color: '#ff9800',
+        // All null — ma_length not configured
+        values: [
+          { timestamp: TS(0), value: null },
+          { timestamp: TS(1), value: null },
+          { timestamp: TS(2), value: null },
+        ],
+      },
+    ],
+  }
+}
+
+/** Volume artifact with both histogram and MA line */
+function makeVolumeArtifactWithMA(instanceId = 'vol_ma_1'): IndicatorArtifactResponse {
+  return {
+    tool_id: 'volume_ma', instance_id: instanceId,
+    display_name: 'Volume', pane: 'price_overlay',
+    render_type: 'histogram', parameters: { ma_length: 2 }, warmup_bars: 1, diagnostics: null,
+    series: [
+      {
+        series_id: 'volume', label: 'Volume',
+        pane: 'price_overlay', render_type: 'histogram', default_color: '#26a69a',
+        values: [
+          { timestamp: TS(0), value: 1000 },
+          { timestamp: TS(1), value: 2000 },
+          { timestamp: TS(2), value: 1500 },
+        ],
+      },
+      {
+        series_id: 'volume_ma', label: 'Vol MA',
+        pane: 'price_overlay', render_type: 'line', default_color: '#ff9800',
+        values: [
+          { timestamp: TS(0), value: null },    // warmup
+          { timestamp: TS(1), value: 1500.0 },  // SMA(2): (1000+2000)/2
+          { timestamp: TS(2), value: 1750.0 },  // SMA(2): (2000+1500)/2
+        ],
+      },
+    ],
   }
 }
 
@@ -695,5 +781,423 @@ describe('Chart', () => {
     renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
     const splitter = screen.getByTestId('pane-splitter')
     expect(splitter.style.padding).toBeTruthy()
+  })
+
+  // ── CHART-UX-4A: Data Inspector integration ────────────────────────────
+
+  it('43. inspector renders with symbol / timeframe', () => {
+    renderChart({ symbol: 'TSLA', timeframe: '1h' })
+    const meta = screen.getByTestId('inspector-meta').textContent ?? ''
+    expect(meta).toContain('TSLA')
+    expect(meta).toContain('1h')
+  })
+
+  it('44. inspector renders exchange when provided', () => {
+    renderChart({ symbol: 'AAPL', timeframe: '1d', exchange: 'NASDAQ' })
+    expect(screen.getByTestId('inspector-meta').textContent).toContain('NASDAQ')
+  })
+
+  it('45. initial render shows latest candle OHLC', () => {
+    // makeCandles(5): last candle close = 102+4 = 106; token text is "C 106.00"
+    renderChart({ candles: makeCandles(5) })
+    const close = screen.getByTestId('inspector-close').textContent ?? ''
+    expect(close).toContain('106.00')
+  })
+
+  it('46. crosshair move callback fires for price chart', () => {
+    renderChart()
+    // subscribeCrosshairMove called on the price chart
+    expect(mocks.subCrosshair).toHaveBeenCalled()
+  })
+
+  it('47. mouse leave resets inspector to latest candle', async () => {
+    renderChart({ candles: makeCandles(5) })
+    // Simulate crosshair leaving: pass null/empty to the registered handler
+    const handler = mocks.subCrosshair.mock.calls[0]?.[0]
+    if (handler) {
+      handler(null)
+    }
+    await waitFor(() => {
+      const close = screen.getByTestId('inspector-close').textContent ?? ''
+      expect(close).toContain('106.00')  // back to latest
+    })
+  })
+
+  it('48. inspector does not render date/time strings', () => {
+    renderChart({ symbol: 'AAPL', timeframe: '1d' })
+    const text = screen.getByTestId('chart-data-inspector').textContent ?? ''
+    expect(text).not.toMatch(/\b20\d{2}\b/)        // no year
+    expect(text).not.toMatch(/\d{2}:\d{2}/)        // no HH:MM
+  })
+
+  it('49. inspector present with no candles (empty state)', () => {
+    renderChart({ candles: [] })
+    expect(screen.getByTestId('chart-data-inspector')).toBeInTheDocument()
+  })
+
+  // ── Volume histogram rendering (volume_ma tool) ───────────────────────────
+
+  it('50. volume histogram: HistogramSeries created in price pane (not OscPane)', () => {
+    renderChart({ indicatorArtifacts: [makeVolumeArtifact()] })
+    // HistogramSeries added with priceScaleId='volume' — no pane splitter expected
+    expect(screen.queryByTestId('pane-splitter')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('osc-pane-wrapper')).not.toBeInTheDocument()
+  })
+
+  it('51. volume histogram: addSeries called with HistogramSeries token', () => {
+    renderChart({ indicatorArtifacts: [makeVolumeArtifact()] })
+    const calls = mocks.addSeries.mock.calls
+    const histCalls = calls.filter(([seriesType]: [string, ...unknown[]]) => seriesType === 'HistogramSeries')
+    expect(histCalls.length).toBeGreaterThan(0)
+  })
+
+  it('52. volume histogram: priceScale("volume") applyOptions called for scale margins', () => {
+    renderChart({ indicatorArtifacts: [makeVolumeArtifact()] })
+    expect(mocks.priceScaleApplyOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ scaleMargins: expect.any(Object) })
+    )
+  })
+
+  it('53. volume MA line absent when volume_ma series all null (ma_length not set)', () => {
+    // makeVolumeArtifact() has volume_ma series with all-null values
+    renderChart({ indicatorArtifacts: [makeVolumeArtifact()] })
+    // addSeries called for volume histogram; volume_ma line skipped (all null)
+    const calls = mocks.addSeries.mock.calls
+    const lineCalls = calls.filter(([type, opts]: [string, { priceScaleId?: string }]) =>
+      type === 'LineSeries' && opts?.priceScaleId === 'volume'
+    )
+    expect(lineCalls.length).toBe(0)
+  })
+
+  it('54. volume MA line rendered on volume scale when ma values present', () => {
+    renderChart({ indicatorArtifacts: [makeVolumeArtifactWithMA()] })
+    const calls = mocks.addSeries.mock.calls
+    const volumeLineCalls = calls.filter(([type, opts]: [string, { priceScaleId?: string }]) =>
+      type === 'LineSeries' && opts?.priceScaleId === 'volume'
+    )
+    expect(volumeLineCalls.length).toBeGreaterThan(0)
+  })
+
+  it('55. volume artifact does not create OscPane or pane splitter', () => {
+    renderChart({ indicatorArtifacts: [makeVolumeArtifactWithMA()] })
+    expect(screen.queryByTestId('pane-splitter')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('osc-pane-wrapper')).not.toBeInTheDocument()
+  })
+
+  it('56. existing line overlays still rendered correctly alongside volume', () => {
+    renderChart({ indicatorArtifacts: [makeVolumeArtifact(), makeOverlayArtifact('sma', 'sma_1')] })
+    const calls = mocks.addSeries.mock.calls
+    // SMA overlay: LineSeries WITHOUT priceScaleId='volume'
+    const smaLineCalls = calls.filter(([type, opts]: [string, { priceScaleId?: string }]) =>
+      type === 'LineSeries' && opts?.priceScaleId !== 'volume'
+    )
+    expect(smaLineCalls.length).toBeGreaterThan(0)
+    // Volume histogram still present
+    const histCalls = calls.filter(([t]: [string]) => t === 'HistogramSeries')
+    expect(histCalls.length).toBeGreaterThan(0)
+  })
+
+  // ── Volume histogram directional coloring ─────────────────────────────────
+  //
+  // Candle sequence used for tests 57-60:
+  //   Bar 0: close=100  → first bar, no prev  → neutral/green (#26a69a)
+  //   Bar 1: close=110  → 110 >= 100           → green  (#26a69a)
+  //   Bar 2: close=90   → 90  <  110           → red    (#ef5350)
+  //   Bar 3: close=105  → 105 >= 90            → green  (#26a69a)
+  //   Bar 4: close=100  → 100 <  105           → red    (#ef5350)
+
+  /** Candles with a known up/down close sequence for coloring assertions. */
+  function makeDirectionalCandles(): OHLCVCandle[] {
+    const closes = [100, 110, 90, 105, 100]
+    return closes.map((close, i) => ({
+      timestamp: TS(i),
+      open:  close - 2,
+      high:  close + 3,
+      low:   close - 3,
+      close,
+      volume: 1000 * (i + 1),
+    }))
+  }
+
+  /** Volume artifact whose timestamps align with a given candle array. */
+  function makeVolumeArtifactForCandles(candles: OHLCVCandle[]): IndicatorArtifactResponse {
+    return {
+      tool_id: 'volume_ma', instance_id: 'vol_dir',
+      display_name: 'Volume', pane: 'price_overlay',
+      render_type: 'histogram', parameters: {}, warmup_bars: 0, diagnostics: null,
+      series: [
+        {
+          series_id: 'volume', label: 'Volume',
+          pane: 'price_overlay', render_type: 'histogram', default_color: '#26a69a',
+          values: candles.map(c => ({ timestamp: c.timestamp, value: c.volume })),
+        },
+        {
+          series_id: 'volume_ma', label: 'Vol MA',
+          pane: 'price_overlay', render_type: 'line', default_color: '#ff9800',
+          values: candles.map(c => ({ timestamp: c.timestamp, value: null })),
+        },
+      ],
+    }
+  }
+
+  /** Find the setData call whose data points carry a `color` property (histogram data). */
+  function findHistogramSetData(): Array<{ time: number; value: number; color: string }> | undefined {
+    return mocks.setData.mock.calls
+      .map(c => c[0] as Array<{ time: number; value: number; color?: string }>)
+      .find(arr => arr.length > 0 && typeof arr[0].color === 'string') as
+      Array<{ time: number; value: number; color: string }> | undefined
+  }
+
+  it('57. volume: first bar gets neutral green color (no previous close exists)', () => {
+    const candles = makeDirectionalCandles()
+    renderChart({ candles, indicatorArtifacts: [makeVolumeArtifactForCandles(candles)] })
+    const data = findHistogramSetData()
+    expect(data).toBeDefined()
+    expect(data![0].color).toBe('#26a69a')
+  })
+
+  it('58. volume: green bar when close >= previous close', () => {
+    const candles = makeDirectionalCandles()
+    // Bar 1: close=110 >= close=100 (bar 0) → green
+    renderChart({ candles, indicatorArtifacts: [makeVolumeArtifactForCandles(candles)] })
+    const data = findHistogramSetData()!
+    expect(data[1].color).toBe('#26a69a')
+    // Bar 3: close=105 >= close=90 (bar 2) → green
+    expect(data[3].color).toBe('#26a69a')
+  })
+
+  it('59. volume: red bar when close < previous close', () => {
+    const candles = makeDirectionalCandles()
+    // Bar 2: close=90 < close=110 (bar 1) → red
+    renderChart({ candles, indicatorArtifacts: [makeVolumeArtifactForCandles(candles)] })
+    const data = findHistogramSetData()!
+    expect(data[2].color).toBe('#ef5350')
+    // Bar 4: close=100 < close=105 (bar 3) → red
+    expect(data[4].color).toBe('#ef5350')
+  })
+
+  it('60. volume: full alternating sequence green/green/red/green/red', () => {
+    const candles = makeDirectionalCandles()
+    renderChart({ candles, indicatorArtifacts: [makeVolumeArtifactForCandles(candles)] })
+    const data = findHistogramSetData()!
+    expect(data.map(p => p.color)).toEqual([
+      '#26a69a', // bar 0 — neutral/green (no prev)
+      '#26a69a', // bar 1 — 110 >= 100
+      '#ef5350', // bar 2 — 90  <  110
+      '#26a69a', // bar 3 — 105 >= 90
+      '#ef5350', // bar 4 — 100 <  105
+    ])
+  })
+
+  // ── Volume histogram deduplication (volume + volume_ma active together) ─────
+  //
+  // When both the raw 'volume' tool and the 'volume_ma' tool are active they each
+  // expose a histogram series in the price pane.  Rendering both produces duplicate
+  // overlapping bars.  The chart should render exactly one histogram and still render
+  // any MA line from volume_ma.
+
+  /** Artifact for the raw 'volume' tool — histogram only, no MA series. */
+  function makeRawVolumeArtifact(instanceId = 'raw_vol'): IndicatorArtifactResponse {
+    return {
+      tool_id: 'volume', instance_id: instanceId,
+      display_name: 'Volume', pane: 'price_overlay',
+      render_type: 'histogram', parameters: {}, warmup_bars: 0, diagnostics: null,
+      series: [
+        {
+          series_id: 'volume', label: 'Volume',
+          pane: 'price_overlay', render_type: 'histogram', default_color: '#26a69a',
+          values: [
+            { timestamp: TS(0), value: 1000 },
+            { timestamp: TS(1), value: 2000 },
+            { timestamp: TS(2), value: 1500 },
+          ],
+        },
+      ],
+    }
+  }
+
+  it('61. volume only → one HistogramSeries rendered', () => {
+    renderChart({ indicatorArtifacts: [makeRawVolumeArtifact()] })
+    const histCalls = mocks.addSeries.mock.calls.filter(
+      ([t]: [string]) => t === 'HistogramSeries'
+    )
+    expect(histCalls.length).toBe(1)
+  })
+
+  it('62. volume_ma only (no MA) → one HistogramSeries rendered', () => {
+    renderChart({ indicatorArtifacts: [makeVolumeArtifact()] })
+    const histCalls = mocks.addSeries.mock.calls.filter(
+      ([t]: [string]) => t === 'HistogramSeries'
+    )
+    expect(histCalls.length).toBe(1)
+  })
+
+  it('63. volume + volume_ma active → exactly one HistogramSeries total (deduplication)', () => {
+    renderChart({
+      indicatorArtifacts: [makeRawVolumeArtifact(), makeVolumeArtifact()],
+    })
+    const histCalls = mocks.addSeries.mock.calls.filter(
+      ([t]: [string]) => t === 'HistogramSeries'
+    )
+    expect(histCalls.length).toBe(1)
+  })
+
+  it('64. volume + volume_ma(20) active → single histogram and MA line both rendered', () => {
+    renderChart({
+      indicatorArtifacts: [makeRawVolumeArtifact(), makeVolumeArtifactWithMA()],
+    })
+    const calls = mocks.addSeries.mock.calls
+    const histCalls = calls.filter(([t]: [string]) => t === 'HistogramSeries')
+    const maLineCalls = calls.filter(([t, opts]: [string, { priceScaleId?: string }]) =>
+      t === 'LineSeries' && opts?.priceScaleId === 'volume'
+    )
+    expect(histCalls.length).toBe(1)
+    expect(maLineCalls.length).toBeGreaterThan(0)
+  })
+
+  it('65. no OscPane created when both volume and volume_ma active', () => {
+    renderChart({
+      indicatorArtifacts: [makeRawVolumeArtifact(), makeVolumeArtifactWithMA()],
+    })
+    expect(screen.queryByTestId('pane-splitter')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('osc-pane-wrapper')).not.toBeInTheDocument()
+  })
+
+  // ── Strategy overlay rendering (66–73) ─────────────────────────────────────
+  //
+  // When a strategy run produces volume/volume_ma outputs, Chart.tsx must render
+  // them on the dedicated "volume" price scale, not the OHLC price scale.
+  // Volume values (~millions) would explode the price axis if treated as price lines.
+
+  function makeStrategyOverlay(indicators: ToolVisualizationSeries[]): StrategyOverlay {
+    return { signals: [], forecast: null, indicators }
+  }
+
+  function makeVolumeStrategyIndicator(): ToolVisualizationSeries {
+    return {
+      name: 'vol_1.volume', kind: 'histogram', pane: 'price',
+      price_scale: 'volume', color: null,
+      points: [
+        { timestamp: TS(0), value: 1000 },
+        { timestamp: TS(1), value: 2000 },
+        { timestamp: TS(2), value: 1500 },
+      ],
+    }
+  }
+
+  function makeVolumeMaStrategyIndicator(): ToolVisualizationSeries {
+    return {
+      name: 'vma_1.volume_ma', kind: 'line', pane: 'price',
+      price_scale: 'volume', color: null,
+      points: [
+        { timestamp: TS(1), value: 1500 },
+        { timestamp: TS(2), value: 1750 },
+      ],
+    }
+  }
+
+  function makeEmaStrategyIndicator(): ToolVisualizationSeries {
+    return {
+      name: 'ema_1.ema', kind: 'line', pane: 'price',
+      price_scale: 'default', color: '#ff5500',
+      points: [
+        { timestamp: TS(0), value: 101 },
+        { timestamp: TS(1), value: 101.5 },
+      ],
+    }
+  }
+
+  function makeRsiStrategyIndicator(): ToolVisualizationSeries {
+    return {
+      name: 'rsi_1.rsi', kind: 'line', pane: 'oscillator',
+      price_scale: 'default', color: null,
+      points: [
+        { timestamp: TS(0), value: 55 },
+        { timestamp: TS(1), value: 60 },
+      ],
+    }
+  }
+
+  it('66. strategy-run volume output renders as HistogramSeries', () => {
+    renderChart({ overlay: makeStrategyOverlay([makeVolumeStrategyIndicator()]) })
+    const histCalls = mocks.addSeries.mock.calls.filter(
+      ([t]: [string]) => t === 'HistogramSeries'
+    )
+    expect(histCalls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('67. strategy-run volume histogram uses priceScaleId="volume"', () => {
+    renderChart({ overlay: makeStrategyOverlay([makeVolumeStrategyIndicator()]) })
+    const histCall = mocks.addSeries.mock.calls.find(
+      ([t]: [string]) => t === 'HistogramSeries'
+    )
+    expect(histCall).toBeDefined()
+    expect(histCall![1]?.priceScaleId).toBe('volume')
+  })
+
+  it('68. strategy-run volume scale margins applied (top: 0.75, bottom: 0)', () => {
+    renderChart({ overlay: makeStrategyOverlay([makeVolumeStrategyIndicator()]) })
+    expect(mocks.priceScaleApplyOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ scaleMargins: { top: 0.75, bottom: 0 } })
+    )
+  })
+
+  it('69. strategy-run volume_ma line uses priceScaleId="volume"', () => {
+    renderChart({ overlay: makeStrategyOverlay([makeVolumeMaStrategyIndicator()]) })
+    const volumeLineCall = mocks.addSeries.mock.calls.find(
+      ([t, opts]: [string, Record<string, unknown>]) =>
+        t === 'LineSeries' && opts?.priceScaleId === 'volume'
+    )
+    expect(volumeLineCall).toBeDefined()
+  })
+
+  it('70. strategy-run EMA uses normal price scale (no priceScaleId)', () => {
+    renderChart({ overlay: makeStrategyOverlay([makeEmaStrategyIndicator()]) })
+    const lineCall = mocks.addSeries.mock.calls.find(
+      ([t]: [string]) => t === 'LineSeries'
+    )
+    expect(lineCall).toBeDefined()
+    expect(lineCall![1]?.priceScaleId).toBeUndefined()
+  })
+
+  it('71. strategy-run volume + EMA — histogram on volume scale, EMA on default scale', () => {
+    renderChart({
+      overlay: makeStrategyOverlay([makeVolumeStrategyIndicator(), makeEmaStrategyIndicator()])
+    })
+    const histCall = mocks.addSeries.mock.calls.find(
+      ([t]: [string]) => t === 'HistogramSeries'
+    )
+    const emaLineCall = mocks.addSeries.mock.calls.find(
+      ([t, opts]: [string, Record<string, unknown>]) =>
+        t === 'LineSeries' && !opts?.priceScaleId
+    )
+    expect(histCall).toBeDefined()
+    expect(emaLineCall).toBeDefined()
+    // EMA must NOT be on volume scale
+    expect(emaLineCall![1]?.priceScaleId).toBeUndefined()
+  })
+
+  it('72. strategy-run oscillator indicator triggers strategy oscillator pane label', () => {
+    renderChart({ overlay: makeStrategyOverlay([makeRsiStrategyIndicator()]) })
+    // showOscillator = true → strategy oscillator label rendered in the pane div
+    expect(screen.getByText('oscillator')).toBeInTheDocument()
+  })
+
+  it('73. indicator artifact rendering unchanged when strategy overlay also active', () => {
+    renderChart({
+      indicatorArtifacts: [makeOverlayArtifact('sma', 'sma_1')],
+      overlay: makeStrategyOverlay([makeVolumeStrategyIndicator()]),
+    })
+    // Both artifact SMA line and strategy volume histogram should render without crash
+    const histCalls = mocks.addSeries.mock.calls.filter(
+      ([t]: [string]) => t === 'HistogramSeries'
+    )
+    const lineCalls = mocks.addSeries.mock.calls.filter(
+      ([t]: [string]) => t === 'LineSeries'
+    )
+    expect(histCalls.length).toBeGreaterThanOrEqual(1)
+    expect(lineCalls.length).toBeGreaterThanOrEqual(1)
+    // No oscillator pane splitter (neither artifact is oscillator, RSI not in overlay)
+    expect(screen.queryByTestId('pane-splitter')).not.toBeInTheDocument()
   })
 })

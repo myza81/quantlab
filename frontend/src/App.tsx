@@ -14,6 +14,7 @@ import { StrategyLifecycleDashboard } from './components/StrategyLifecycleDashbo
 import { SessionProvenanceStrip } from './components/SessionProvenanceStrip'
 import { StrategyContextProvider } from './context/StrategyContext'
 import { StrategyContextBar } from './components/StrategyContextBar'
+import { Sidebar } from './components/navigation/Sidebar'
 import { LoginPage } from './components/LoginPage'
 import { RegisterPage } from './components/RegisterPage'
 import { AuthGuard } from './components/AuthGuard'
@@ -194,11 +195,12 @@ export default function App() {
         })),
       forecast: null,
       indicators: result.indicators.map(ind => ({
-        name:   ind.name,
-        kind:   ind.kind,
-        pane:   ind.pane,
-        color:  ind.color,
-        points: ind.points
+        name:        ind.name,
+        kind:        ind.kind,
+        pane:        ind.pane,
+        price_scale: ind.price_scale,
+        color:       ind.color,
+        points:      ind.points
           .filter(p => p.timestamp !== null)
           .map(p => ({ timestamp: p.timestamp as string, value: p.value })),
       })),
@@ -272,26 +274,6 @@ export default function App() {
         <header style={st.header}>
           <span style={st.logo}>QuantLab</span>
           <span style={st.tagline}>Research-first strategy platform</span>
-          <div style={st.nav}>
-            <NavTab label="Research"     active={activeView === 'chart'}        onClick={() => setActiveView('chart')} />
-            <NavTab label="Strategy"     active={activeView === 'composer'}     onClick={() => setActiveView('composer')} />
-            <NavTab label="Backtest"     active={activeView === 'history' || activeView === 'report'} onClick={() => setActiveView('history')} />
-            <NavTab label="Forward Test" active={activeView === 'forward-test'} onClick={() => setActiveView('forward-test')} />
-            <NavTab label="Paper Trading" active={activeView === 'paper-trading'} onClick={() => setActiveView('paper-trading')} />
-            <NavTab label="Lifecycle"    active={activeView === 'lifecycle'}    onClick={() => setActiveView('lifecycle')} />
-            <NavTab
-              label="Settings"
-              active={activeView === 'credentials' || activeView === 'datasets'}
-              onClick={() => {
-                if (activeView !== 'credentials' && activeView !== 'datasets') {
-                  setActiveView('credentials')
-                }
-              }}
-            />
-            {(user?.role === 'admin' || user?.role === 'superadmin') && (
-              <NavTab label="Admin" active={activeView === 'admin'} onClick={() => setActiveView('admin')} />
-            )}
-          </div>
           {user && (
             <div style={st.userArea}>
               <span style={st.username}>{user.username}</span>
@@ -300,193 +282,206 @@ export default function App() {
           )}
         </header>
 
-        {/* ── Session provenance strip ── */}
-        <SessionProvenanceStrip
-          session={session}
-          onNavigateToReport={backtestReport ? () => setActiveView('report') : undefined}
-          onResumeReport={resumableRunId && !backtestReport ? handleResumeReport : undefined}
-          resuming={resuming}
-        />
-
-        {/* ── Persistent strategy context bar (workflow pages only) ── */}
-        {CONTEXT_BAR_VIEWS.has(activeView) && (
-          <StrategyContextBar
-            onStrategyChange={() => {
-              // Changing strategy invalidates a report belonging to the previous
-              // strategy. Navigate back to Backtest History to avoid showing a
-              // report that no longer matches the selected strategy.
-              if (activeView === 'report') {
-                setBacktestReport(null)
-                setActiveView('history')
-              }
-            }}
+        {/* ── Sidebar + Content Layout ── */}
+        <div style={st.mainLayout}>
+          <Sidebar
+            activeView={activeView}
+            onNavigate={(view) => setActiveView(view as ActiveView)}
+            isAdmin={user?.role === 'admin' || user?.role === 'superadmin' || false}
           />
-        )}
 
-        {/* ── History ── */}
-        {activeView === 'history' && (
-          <div style={st.fill}>
-            <BacktestHistoryPanel
-              onReportLoaded={(report) => { setBacktestReport(report); setActiveView('report') }}
+          {/* ── Main content area ── */}
+          <div style={st.content}>
+            {/* ── Session provenance strip ── */}
+            <SessionProvenanceStrip
+              session={session}
+              onNavigateToReport={backtestReport ? () => setActiveView('report') : undefined}
+              onResumeReport={resumableRunId && !backtestReport ? handleResumeReport : undefined}
+              resuming={resuming}
             />
-          </div>
-        )}
 
-        {/* ── Forward Testing ── */}
-        {activeView === 'forward-test' && (
-          <div style={{ ...st.fill, overflowY: 'auto' }}>
-            <ForwardTestPanel
-              prefill={forwardTestPrefill}
-              onPrefillConsumed={handlePrefillConsumed}
-            />
-          </div>
-        )}
-
-        {/* ── Paper Trading ── */}
-        {activeView === 'paper-trading' && (
-          <div style={{ ...st.fill, overflowY: 'auto' }}>
-            <PaperTradingPanel />
-          </div>
-        )}
-
-        {/* ── Strategy Lifecycle Dashboard ── */}
-        {activeView === 'lifecycle' && (
-          <div style={{ ...st.fill, overflowY: 'auto' }}>
-            <StrategyLifecycleDashboard
-              onNavigateToComposer={() => setActiveView('composer')}
-              onNavigateToHistory={() => setActiveView('history')}
-              onNavigateToForwardTest={() => setActiveView('forward-test')}
-              onNavigateToPaperTrading={() => setActiveView('paper-trading')}
-            />
-          </div>
-        )}
-
-        {/* ── Composer ── */}
-        {activeView === 'composer' && (
-          <div style={st.fill}>
-            <DraftWorkspace />
-          </div>
-        )}
-
-        {/* ── Settings (Data Providers + Dataset Catalog) ── */}
-        {(activeView === 'credentials' || activeView === 'datasets') && (
-          <div style={{ ...st.fill, flexDirection: 'column' }}>
-            <div style={st.settingsSubBar}>
-              <NavTab
-                label="Data Providers"
-                active={activeView === 'credentials'}
-                onClick={() => setActiveView('credentials')}
+            {/* ── Persistent strategy context bar (workflow pages only) ── */}
+            {CONTEXT_BAR_VIEWS.has(activeView) && (
+              <StrategyContextBar
+                onStrategyChange={() => {
+                  // Changing strategy invalidates a report belonging to the previous
+                  // strategy. Navigate back to Backtest History to avoid showing a
+                  // report that no longer matches the selected strategy.
+                  if (activeView === 'report') {
+                    setBacktestReport(null)
+                    setActiveView('history')
+                  }
+                }}
               />
-              <NavTab
-                label="Dataset Catalog"
-                active={activeView === 'datasets'}
-                onClick={() => setActiveView('datasets')}
-              />
-            </div>
-            {activeView === 'credentials' && (
-              <div style={{ flex: 1, overflowY: 'auto' }}>
-                <CredentialManager />
+            )}
+
+            {/* ── History ── */}
+            {activeView === 'history' && (
+              <div style={st.fill}>
+                <BacktestHistoryPanel
+                  onReportLoaded={(report) => { setBacktestReport(report); setActiveView('report') }}
+                />
               </div>
             )}
-            {activeView === 'datasets' && (
-              <div style={{ flex: 1, overflowY: 'auto' }}>
-                <CatalogManager onLoadIntoChart={handleCatalogLoad} />
+
+            {/* ── Forward Testing ── */}
+            {activeView === 'forward-test' && (
+              <div style={{ ...st.fill, overflowY: 'auto' }}>
+                <ForwardTestPanel
+                  prefill={forwardTestPrefill}
+                  onPrefillConsumed={handlePrefillConsumed}
+                />
               </div>
             )}
-          </div>
-        )}
 
-        {/* ── Admin Console — visible only when role === 'admin' or 'superadmin' ── */}
-        {activeView === 'admin' && (
-          <div style={st.fill}>
-            <AdminConsole />
-          </div>
-        )}
-
-        {/* ── Report (transient — not in nav, accessed via Backtest history or provenance strip) ── */}
-        {activeView === 'report' && backtestReport && (
-          <div style={st.fill}>
-            <BacktestReportPage
-              report={backtestReport}
-              onBack={() => setActiveView('history')}
-              sourceLabel={sourceLabel}
-              onNavigateToComposer={() => setActiveView('composer')}
-              onPromoteDraft={handlePromoteDraft}
-              onStartForwardTest={handleStartForwardTest}
-            />
-          </div>
-        )}
-
-        {/*
-          ── Chart view ──
-          Kept in the DOM at all times (display:none when inactive) so the
-          lightweight-charts instance, candle data, and overlay survive view switches.
-        */}
-        <div style={{ ...st.fill, display: activeView === 'chart' ? 'flex' : 'none' }}>
-
-          {/* Left sidebar */}
-          <aside style={st.sidebar}>
-            <Controls onFetch={handleFetch} loading={status === 'loading'} />
-            <StrategyTestPanel
-              candles={candles}
-              symbol={catalogMeta?.entry.symbol ?? params?.symbol ?? ''}
-              timeframe={catalogMeta?.entry.timeframe ?? params?.timeframe ?? ''}
-              sessionContext={session}
-              onResult={handleCompositionResult}
-              onBacktestResult={handleBacktestResult}
-              onNavigateToComposer={() => setActiveView('composer')}
-            />
-            {/* Chart-UX-3C.1: Indicator panel lives in sidebar */}
-            <ChartIndicatorPanel
-              ref={indicatorPanelRef}
-              key={params ? `${params.symbol}|${params.timeframe}|${params.start}` : 'catalog'}
-              hasData={status === 'success' && candles.length > 0}
-              params={params}
-              onInstancesChange={setIndicatorInstances}
-              highlightedInstanceId={hoveredInstanceId}
-              onHoverInstance={setHoveredInstanceId}
-            />
-          </aside>
-
-          {/* Chart area */}
-          <div style={st.chartArea}>
-            {status === 'idle' && (
-              <div style={st.placeholder}>Select a symbol and click Fetch to load chart data.</div>
+            {/* ── Paper Trading ── */}
+            {activeView === 'paper-trading' && (
+              <div style={{ ...st.fill, overflowY: 'auto' }}>
+                <PaperTradingPanel />
+              </div>
             )}
-            {status === 'loading' && (
-              <div style={st.placeholder}>Loading…</div>
+
+            {/* ── Strategy Lifecycle Dashboard ── */}
+            {activeView === 'lifecycle' && (
+              <div style={{ ...st.fill, overflowY: 'auto' }}>
+                <StrategyLifecycleDashboard
+                  onNavigateToComposer={() => setActiveView('composer')}
+                  onNavigateToHistory={() => setActiveView('history')}
+                  onNavigateToForwardTest={() => setActiveView('forward-test')}
+                  onNavigateToPaperTrading={() => setActiveView('paper-trading')}
+                  onNavigateToForwardTestWithPrefill={handleStartForwardTest}
+                />
+              </div>
             )}
-            {status === 'error' && (
-              <div style={{ ...st.placeholder, color: '#ef5350' }}>Error: {error}</div>
+
+            {/* ── Composer ── */}
+            {activeView === 'composer' && (
+              <div style={st.fill}>
+                <DraftWorkspace />
+              </div>
             )}
-            {status === 'success' && candles.length === 0 && (
-              <div style={st.placeholder}>No candles returned for this symbol / timeframe / date range.</div>
-            )}
-            {status === 'success' && candles.length > 0 && (
-              <>
-                {fetchMetadata && (
-                  <DatasetMetaBadge metadata={fetchMetadata} candleCount={candles.length} />
+
+            {/* ── Settings (Data Providers + Dataset Catalog) ── */}
+            {(activeView === 'credentials' || activeView === 'datasets') && (
+              <div style={{ ...st.fill, flexDirection: 'column' }}>
+                <div style={st.settingsSubBar}>
+                  <NavTab
+                    label="Data Providers"
+                    active={activeView === 'credentials'}
+                    onClick={() => setActiveView('credentials')}
+                  />
+                  <NavTab
+                    label="Dataset Catalog"
+                    active={activeView === 'datasets'}
+                    onClick={() => setActiveView('datasets')}
+                  />
+                </div>
+                {activeView === 'credentials' && (
+                  <div style={{ flex: 1, overflowY: 'auto' }}>
+                    <CredentialManager />
+                  </div>
                 )}
-                {catalogMeta && (
-                  <CatalogMetaBadge response={catalogMeta.response} entry={catalogMeta.entry} candleCount={candles.length} />
+                {activeView === 'datasets' && (
+                  <div style={{ flex: 1, overflowY: 'auto' }}>
+                    <CatalogManager onLoadIntoChart={handleCatalogLoad} />
+                  </div>
                 )}
-                <Chart
+              </div>
+            )}
+
+            {/* ── Admin Console — visible only when role === 'admin' or 'superadmin' ── */}
+            {activeView === 'admin' && (
+              <div style={st.fill}>
+                <AdminConsole />
+              </div>
+            )}
+
+            {/* ── Report (transient — not in nav, accessed via Backtest history or provenance strip) ── */}
+            {activeView === 'report' && backtestReport && (
+              <div style={st.fill}>
+                <BacktestReportPage
+                  report={backtestReport}
+                  onBack={() => setActiveView('history')}
+                  sourceLabel={sourceLabel}
+                  onNavigateToComposer={() => setActiveView('composer')}
+                  onPromoteDraft={handlePromoteDraft}
+                  onStartForwardTest={handleStartForwardTest}
+                />
+              </div>
+            )}
+
+            {/*
+              ── Chart view ──
+              Kept in the DOM at all times (display:none when inactive) so the
+              lightweight-charts instance, candle data, and overlay survive view switches.
+            */}
+            <div style={{ ...st.fill, display: activeView === 'chart' ? 'flex' : 'none' }}>
+
+              {/* Left sidebar */}
+              <aside style={st.sidebar}>
+                <Controls onFetch={handleFetch} loading={status === 'loading'} />
+                <StrategyTestPanel
                   candles={candles}
                   symbol={catalogMeta?.entry.symbol ?? params?.symbol ?? ''}
                   timeframe={catalogMeta?.entry.timeframe ?? params?.timeframe ?? ''}
-                  overlay={overlay}
-                  indicatorArtifacts={visibleArtifacts}
-                  instanceColors={instanceColorMap}
-                  instanceLabels={instanceLabelMap}
-                  instanceVisible={instanceVisibleMap}
-                  highlightedInstanceId={hoveredInstanceId}
-                  onClearStrategyResults={clearStrategyResults}
-                  onHoverInstance={setHoveredInstanceId}
-                  onIndicatorToggle={id => indicatorPanelRef.current?.toggleVisible(id)}
-                  onIndicatorRemove={id => indicatorPanelRef.current?.removeInstance(id)}
+                  sessionContext={session}
+                  onResult={handleCompositionResult}
+                  onBacktestResult={handleBacktestResult}
+                  onNavigateToComposer={() => setActiveView('composer')}
                 />
-              </>
-            )}
+                {/* Chart-UX-3C.1: Indicator panel lives in sidebar */}
+                <ChartIndicatorPanel
+                  ref={indicatorPanelRef}
+                  key={params ? `${params.symbol}|${params.timeframe}|${params.start}` : 'catalog'}
+                  hasData={status === 'success' && candles.length > 0}
+                  params={params}
+                  onInstancesChange={setIndicatorInstances}
+                  highlightedInstanceId={hoveredInstanceId}
+                  onHoverInstance={setHoveredInstanceId}
+                />
+              </aside>
+
+              {/* Chart area */}
+              <div style={st.chartArea}>
+                {status === 'idle' && (
+                  <div style={st.placeholder}>Select a symbol and click Fetch to load chart data.</div>
+                )}
+                {status === 'loading' && (
+                  <div style={st.placeholder}>Loading…</div>
+                )}
+                {status === 'error' && (
+                  <div style={{ ...st.placeholder, color: '#ef5350' }}>Error: {error}</div>
+                )}
+                {status === 'success' && candles.length === 0 && (
+                  <div style={st.placeholder}>No candles returned for this symbol / timeframe / date range.</div>
+                )}
+                {status === 'success' && candles.length > 0 && (
+                  <>
+                    {fetchMetadata && (
+                      <DatasetMetaBadge metadata={fetchMetadata} candleCount={candles.length} />
+                    )}
+                    {catalogMeta && (
+                      <CatalogMetaBadge response={catalogMeta.response} entry={catalogMeta.entry} candleCount={candles.length} />
+                    )}
+                    <Chart
+                      candles={candles}
+                      symbol={catalogMeta?.entry.symbol ?? params?.symbol ?? ''}
+                      timeframe={catalogMeta?.entry.timeframe ?? params?.timeframe ?? ''}
+                      overlay={overlay}
+                      indicatorArtifacts={visibleArtifacts}
+                      instanceColors={instanceColorMap}
+                      instanceLabels={instanceLabelMap}
+                      instanceVisible={instanceVisibleMap}
+                      highlightedInstanceId={hoveredInstanceId}
+                      onClearStrategyResults={clearStrategyResults}
+                      onHoverInstance={setHoveredInstanceId}
+                      onIndicatorToggle={id => indicatorPanelRef.current?.toggleVisible(id)}
+                      onIndicatorRemove={id => indicatorPanelRef.current?.removeInstance(id)}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -632,9 +627,18 @@ const st: Record<string, React.CSSProperties> = {
     color:    '#2a3040',
     flex:     1,
   },
-  nav: {
-    display: 'flex',
-    gap:     6,
+  mainLayout: {
+    flex:      1,
+    display:   'flex',
+    overflow:  'hidden',
+    minHeight: 0,
+  },
+  content: {
+    flex:           1,
+    display:        'flex',
+    flexDirection:  'column',
+    overflow:       'hidden',
+    minHeight:      0,
   },
   userArea: {
     display:    'flex',

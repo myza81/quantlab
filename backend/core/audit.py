@@ -163,6 +163,13 @@ class AuditEventKind(str, Enum):
     # Access / governance (2)
     PT_SESSION_EXPORTED                 = "pt_session_exported"
     PT_SESSION_REVIEWED                 = "pt_session_reviewed"
+    # FT-2 — Forward Test Scheduler events
+    FT_SCHEDULER_TICK_STARTED           = "ft_scheduler_tick_started"
+    FT_SCHEDULER_TICK_COMPLETED         = "ft_scheduler_tick_completed"
+    FT_SCHEDULER_SESSION_EVALUATED      = "ft_scheduler_session_evaluated"
+    FT_SCHEDULER_SESSION_SKIPPED        = "ft_scheduler_session_skipped"
+    FT_SCHEDULER_SESSION_AUTO_PAUSED    = "ft_scheduler_session_auto_paused"
+    FT_SCHEDULER_RECOVERY               = "ft_scheduler_recovery"
 
 
 # ---------------------------------------------------------------------------

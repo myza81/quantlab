@@ -51,6 +51,7 @@ import type { ToolVisualizationSeries } from '../types/toolVisualization'
 import type { StrategyOverlay } from '../types/strategy'
 import type { IndicatorArtifactResponse, IndicatorSeriesPoint } from '../types/chartIndicators'
 import { ChartLegendOverlay } from './ChartLegendOverlay'
+import ChartDataInspector, { type InspectorCandle, type InspectorIndicatorValues } from './ChartDataInspector'
 
 // ---------------------------------------------------------------------------
 // Props
@@ -60,6 +61,7 @@ interface ChartProps {
   candles:               OHLCVCandle[]
   symbol:                string
   timeframe:             string
+  exchange?:             string
   overlay?:              StrategyOverlay | null
   indicatorArtifacts?:   IndicatorArtifactResponse[]
   instanceColors?:       Map<string, string>
@@ -79,11 +81,15 @@ interface ChartProps {
 // Constants
 // ---------------------------------------------------------------------------
 
-const _DEFAULT_COLORS   = ['#2196f3', '#ff9800', '#9c27b0', '#00bcd4', '#4caf50']
-const MIN_OSC_HEIGHT    = 100
-const MAX_OSC_HEIGHT    = 600
+const _DEFAULT_COLORS    = ['#2196f3', '#ff9800', '#9c27b0', '#00bcd4', '#4caf50']
+const MIN_OSC_HEIGHT     = 100
+const MAX_OSC_HEIGHT     = 600
 const DEFAULT_OSC_HEIGHT = 130
 const STORAGE_KEY        = 'ql_pane_heights'
+
+// Volume histogram directional colors — close-to-close comparison (TradingView convention)
+const VOLUME_UP_COLOR   = '#26a69a'
+const VOLUME_DOWN_COLOR = '#ef5350'
 
 // ---------------------------------------------------------------------------
 // Pane height persistence
@@ -144,6 +150,26 @@ function buildAlignedHistData(
       ? ({ time: ts as Time, value: val, color: val >= 0 ? '#26a69a' : '#ef5350' } as HistogramData<Time>)
       : ({ time: ts as Time } as WhitespaceData<Time>)
   })
+}
+
+/**
+ * Build a timestamp → hex-color map for volume histogram bars using
+ * close-to-close directional coloring (TradingView convention):
+ *   close[i] >= close[i-1]  →  VOLUME_UP_COLOR   (green)
+ *   close[i] <  close[i-1]  →  VOLUME_DOWN_COLOR  (red)
+ *   first bar (no previous)  →  VOLUME_UP_COLOR   (neutral/green)
+ */
+function buildVolumeColorMap(candles: OHLCVCandle[]): Map<UTCTimestamp, string> {
+  const sorted = [...candles].sort((a, b) => toUTCTimestamp(a.timestamp) - toUTCTimestamp(b.timestamp))
+  const map    = new Map<UTCTimestamp, string>()
+  for (let i = 0; i < sorted.length; i++) {
+    const ts    = toUTCTimestamp(sorted[i].timestamp)
+    const color = i === 0 || sorted[i].close >= sorted[i - 1].close
+      ? VOLUME_UP_COLOR
+      : VOLUME_DOWN_COLOR
+    map.set(ts, color)
+  }
+  return map
 }
 
 function resyncRange(oscChart: IChartApi, priceChart: IChartApi | null) {
@@ -638,7 +664,7 @@ const oscPaneChartStyle: React.CSSProperties = {
 // ---------------------------------------------------------------------------
 
 export default function Chart({
-  candles, symbol, timeframe, overlay,
+  candles, symbol, timeframe, exchange, overlay,
   indicatorArtifacts, instanceColors, instanceLabels, instanceVisible,
   highlightedInstanceId, onClearStrategyResults,
   onHoverInstance, onIndicatorToggle, onIndicatorRemove,
@@ -648,8 +674,8 @@ export default function Chart({
   const candleSeriesRef           = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const markerApiRef              = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const forecastSeriesRef         = useRef<ISeriesApi<'Line'> | null>(null)
-  const priceSeriesMapRef         = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
-  const artifactPriceSeriesMapRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
+  const priceSeriesMapRef         = useRef<Map<string, AnySeriesApi>>(new Map())
+  const artifactPriceSeriesMapRef = useRef<Map<string, AnySeriesApi>>(new Map())
 
   const [priceChartApi, setPriceChartApi] = useState<IChartApi | null>(null)
 
@@ -670,10 +696,59 @@ export default function Chart({
   const [crosshairValues, setCrosshairValues] =
     useState<Map<string, Map<string, number | null>>>(new Map())
 
+  // ── Inspector state ───────────────────────────────────────────────────────
+  // null = show latest candle (mouse left chart or no hover yet)
+  const [inspectorCandle, setInspectorCandle] = useState<InspectorCandle | null>(null)
+  // Pre-indexed all indicator series values by timestamp (built when artifacts change)
+  const allIndicatorValsByTsRef = useRef<Map<string, Map<string, Map<number, number | null>>>>(new Map())
+  // Combined inspector values for current crosshair position
+  const [inspectorIndVals, setInspectorIndVals] = useState<InspectorIndicatorValues>(new Map())
+
   const candleTimestamps = useMemo(
     () => normalizeChartData(candles.map(c => ({ time: toUTCTimestamp(c.timestamp) }))).map(d => d.time),
     [candles]
   )
+
+  // Pre-index candles by UTC timestamp (seconds) for O(1) inspector lookup
+  const candleByTs = useMemo(() => {
+    const m = new Map<number, { candle: OHLCVCandle; prevClose: number | undefined }>()
+    const sorted = [...candles].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    for (let i = 0; i < sorted.length; i++) {
+      const ts = toUTCTimestamp(sorted[i].timestamp) as number
+      m.set(ts, { candle: sorted[i], prevClose: i > 0 ? sorted[i - 1].close : undefined })
+    }
+    return m
+  }, [candles])
+
+  // Derive the "latest" candle for the inspector's fallback state
+  const latestInspectorCandle = useMemo((): InspectorCandle | null => {
+    if (candles.length === 0) return null
+    const sorted = [...candles].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    const last = sorted[sorted.length - 1]
+    const prev = sorted.length > 1 ? sorted[sorted.length - 2] : undefined
+    const change    = prev ? last.close - prev.close : undefined
+    const changePct = (change !== undefined && prev) ? (change / prev.close) * 100 : undefined
+    return { open: last.open, high: last.high, low: last.low, close: last.close, volume: last.volume, change, changePct }
+  }, [candles])
+
+  // Pre-index ALL artifact series values (both price_overlay and oscillator_pane)
+  // by instance_id → series_id → UTCTimestamp(s) → value|null
+  // Built once per artifact change; used in O(1) inspector lookups during crosshair.
+  useEffect(() => {
+    const byTs = new Map<string, Map<string, Map<number, number | null>>>()
+    for (const artifact of indicatorArtifacts ?? []) {
+      const seriesMap = new Map<string, Map<number, number | null>>()
+      for (const series of artifact.series) {
+        const tsMap = new Map<number, number | null>()
+        for (const pt of series.values) {
+          if (pt.timestamp) tsMap.set(toUTCTimestamp(pt.timestamp) as number, pt.value)
+        }
+        seriesMap.set(series.series_id, tsMap)
+      }
+      byTs.set(artifact.instance_id, seriesMap)
+    }
+    allIndicatorValsByTsRef.current = byTs
+  }, [indicatorArtifacts])
 
   const oscArtifactGroups = useMemo(() => {
     if (!indicatorArtifacts || indicatorArtifacts.length === 0) return []
@@ -789,9 +864,14 @@ export default function Chart({
 
     const onCrosshair = (param: MouseEventParams | null) => {
       if (!param || !param.time) {
+        // Mouse left chart — revert inspector to latest candle, clear indicator vals
         setCrosshairValues(new Map())
+        setInspectorCandle(null)
+        setInspectorIndVals(new Map())
         return
       }
+
+      // ── Legend overlay values (price pane series) ───────────────────
       const newVals = new Map<string, Map<string, number | null>>()
       for (const artifact of indicatorArtifacts ?? []) {
         const svMap = new Map<string, number | null>()
@@ -806,11 +886,38 @@ export default function Chart({
         if (svMap.size > 0) newVals.set(artifact.instance_id, svMap)
       }
       setCrosshairValues(newVals)
+
+      // ── Inspector candle update ─────────────────────────────────────
+      const ts = param.time as number
+      const entry = candleByTs.get(ts)
+      if (entry) {
+        const { candle, prevClose } = entry
+        const change    = prevClose !== undefined ? candle.close - prevClose : undefined
+        const changePct = (change !== undefined && prevClose !== undefined)
+          ? (change / prevClose) * 100
+          : undefined
+        setInspectorCandle({
+          open: candle.open, high: candle.high, low: candle.low,
+          close: candle.close, volume: candle.volume,
+          change, changePct,
+        })
+      }
+
+      // ── Inspector indicator values (all series, by pre-indexed ts) ──
+      const indVals = new Map<string, Map<string, number | null>>()
+      for (const [instId, seriesMap] of allIndicatorValsByTsRef.current) {
+        const svMap = new Map<string, number | null>()
+        for (const [seriesId, tsMap] of seriesMap) {
+          svMap.set(seriesId, tsMap.get(ts) ?? null)
+        }
+        indVals.set(instId, svMap)
+      }
+      setInspectorIndVals(indVals)
     }
 
     chart.subscribeCrosshairMove(onCrosshair)
     return () => { chart.unsubscribeCrosshairMove(onCrosshair) }
-  }, [indicatorArtifacts])
+  }, [indicatorArtifacts, candleByTs])
 
   // ── Update candlestick data ───────────────────────────────────────────────
   useEffect(() => {
@@ -854,14 +961,63 @@ export default function Chart({
     const priceIndicators = indicators.filter(ind => ind.pane !== 'oscillator')
     const oscIndicators   = indicators.filter(ind => ind.pane === 'oscillator')
 
+    const strategyVolumeColorMap = buildVolumeColorMap(candles)
+
     priceIndicators.forEach((ind, idx) => {
       const color = ind.color ?? _DEFAULT_COLORS[idx % _DEFAULT_COLORS.length]
-      const s = priceChart.addSeries(LineSeries, {
-        color, lineWidth: 1, crosshairMarkerVisible: false,
-        lastValueVisible: true, priceLineVisible: false, title: ind.name,
-      })
-      s.setData(normalizeChartData(ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value }))))
-      priceSeriesMapRef.current.set(ind.name, s)
+
+      if (ind.kind === 'histogram') {
+        // Volume-style histogram: dedicated scale so it floats at the bottom of the
+        // price pane without distorting OHLC price scaling (same as indicator path).
+        const pts = normalizeChartData(
+          ind.points.map(p => ({
+            time:  toUTCTimestamp(p.timestamp),
+            value: p.value,
+            color: strategyVolumeColorMap.get(toUTCTimestamp(p.timestamp)) ?? VOLUME_UP_COLOR,
+          }))
+        )
+        if (pts.length === 0) return
+        const s = priceChart.addSeries(HistogramSeries, {
+          color,
+          priceFormat:      { type: 'volume' },
+          priceScaleId:     'volume',
+          lastValueVisible: false,
+          priceLineVisible: false,
+          title:            ind.name,
+        })
+        s.priceScale().applyOptions({ scaleMargins: { top: 0.75, bottom: 0 } })
+        s.setData(pts as HistogramData[])
+        priceSeriesMapRef.current.set(ind.name, s)
+      } else if (ind.price_scale === 'volume') {
+        // Volume MA line: on the volume scale so it aligns with the histogram.
+        const pts = normalizeChartData(
+          ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value }))
+        )
+        if (pts.length === 0) return
+        const s = priceChart.addSeries(LineSeries, {
+          color,
+          lineWidth:              1,
+          priceScaleId:           'volume',
+          crosshairMarkerVisible: false,
+          lastValueVisible:       false,
+          priceLineVisible:       false,
+          title:                  ind.name,
+        })
+        s.setData(pts as LineData[])
+        priceSeriesMapRef.current.set(ind.name, s)
+      } else {
+        // Normal price overlay (EMA, SMA, Bollinger, etc.) — default price scale.
+        const pts = normalizeChartData(
+          ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value }))
+        )
+        if (pts.length === 0) return
+        const s = priceChart.addSeries(LineSeries, {
+          color, lineWidth: 1, crosshairMarkerVisible: false,
+          lastValueVisible: true, priceLineVisible: false, title: ind.name,
+        })
+        s.setData(pts as LineData[])
+        priceSeriesMapRef.current.set(ind.name, s)
+      }
     })
 
     if (oscChart && oscIndicators.length > 0) {
@@ -932,28 +1088,100 @@ export default function Chart({
     artifactPriceSeriesMapRef.current.clear()
     if (!indicatorArtifacts || indicatorArtifacts.length === 0) return
 
+    // Lazy color map: built once on first histogram encountered per render.
+    // Uses close-to-close comparison from current candle data.
+    let colorMap: Map<UTCTimestamp, string> | null = null
+    const getVolumeColorMap = () => {
+      if (!colorMap) colorMap = buildVolumeColorMap(candles)
+      return colorMap
+    }
+
+    // Deduplication flag: tracks whether any artifact has already rendered a volume
+    // histogram in this pass. When both 'volume' and 'volume_ma' are active, they each
+    // expose a histogram series — rendering both would produce identical overlapping bars.
+    // Only the first histogram encountered is rendered; MA lines always render.
+    let hasRenderedVolumeHistogram = false
+
     for (const artifact of indicatorArtifacts) {
       const priceSeries    = artifact.series.filter(s => s.pane === 'price_overlay')
       const isSingleSeries = priceSeries.length === 1
       const instanceColor  = instanceColors?.get(artifact.instance_id)
 
+      // Volume-style artifacts: any artifact that has a histogram series in the price
+      // pane uses a named 'volume' price scale so the histogram floats at the bottom
+      // of the price chart (TradingView-style) without interfering with candle scaling.
+      const hasVolumeHistogram = priceSeries.some(s => s.render_type === 'histogram')
+
       for (const series of priceSeries) {
         const key   = `${artifact.instance_id}.${series.series_id}`
         const color = (isSingleSeries && instanceColor) ? instanceColor : series.default_color
-        const pts   = normalizeChartData(
-          series.values.filter(p => p.value !== null && p.timestamp)
-            .map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value as number }))
-        )
-        if (pts.length === 0) continue
-        const s = priceChart.addSeries(LineSeries, {
-          color, lineWidth: 1, crosshairMarkerVisible: false,
-          lastValueVisible: true, priceLineVisible: false, title: series.label,
-        })
-        s.setData(pts)
-        artifactPriceSeriesMapRef.current.set(key, s)
+
+        if (series.render_type === 'histogram') {
+          // Skip duplicate volume histograms. When 'volume' and 'volume_ma' are both
+          // active, the second histogram is visually identical to the first; skip it so
+          // only one histogram layer floats on the price chart (TradingView behaviour).
+          if (hasRenderedVolumeHistogram) continue
+          hasRenderedVolumeHistogram = true
+          // Volume histogram: per-bar directional coloring via close-to-close comparison.
+          // color property on each HistogramData point overrides the series-level default.
+          const cm  = getVolumeColorMap()
+          const pts = normalizeChartData(
+            series.values
+              .filter(p => p.value !== null && p.timestamp)
+              .map(p => ({
+                time:  toUTCTimestamp(p.timestamp),
+                value: p.value as number,
+                color: cm.get(toUTCTimestamp(p.timestamp)) ?? VOLUME_UP_COLOR,
+              }))
+          )
+          if (pts.length === 0) continue
+          const s = priceChart.addSeries(HistogramSeries, {
+            color,
+            priceFormat: { type: 'volume' },
+            priceScaleId: 'volume',
+            lastValueVisible: false,
+            priceLineVisible: false,
+            title: series.label,
+          })
+          // The 'volume' price scale is created by addSeries — configure it here,
+          // after the scale exists.  s.priceScale() is the canonical way to reach
+          // the named scale without relying on chart.priceScale('volume') which
+          // throws if called before the first series with that ID is added.
+          s.priceScale().applyOptions({ scaleMargins: { top: 0.75, bottom: 0 } })
+          s.setData(pts as HistogramData[])
+          artifactPriceSeriesMapRef.current.set(key, s)
+        } else {
+          const pts = normalizeChartData(
+            series.values.filter(p => p.value !== null && p.timestamp)
+              .map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value as number }))
+          )
+          if (pts.length === 0) continue
+          if (hasVolumeHistogram) {
+            // Volume MA line: also on the 'volume' scale so it aligns with the histogram.
+            const s = priceChart.addSeries(LineSeries, {
+              color,
+              lineWidth: 1,
+              priceScaleId: 'volume',
+              crosshairMarkerVisible: false,
+              lastValueVisible: false,
+              priceLineVisible: false,
+              title: series.label,
+            })
+            s.setData(pts as LineData[])
+            artifactPriceSeriesMapRef.current.set(key, s)
+          } else {
+            // Regular line overlay (SMA, EMA, Bollinger, etc.)
+            const s = priceChart.addSeries(LineSeries, {
+              color, lineWidth: 1, crosshairMarkerVisible: false,
+              lastValueVisible: true, priceLineVisible: false, title: series.label,
+            })
+            s.setData(pts as LineData[])
+            artifactPriceSeriesMapRef.current.set(key, s)
+          }
+        }
       }
     }
-  }, [indicatorArtifacts, instanceColors])
+  }, [indicatorArtifacts, instanceColors, candles])
 
   // ── Commit handler: save to localStorage ─────────────────────────────────
   const commitHeight = (key: string, h: number) => {
@@ -971,9 +1199,22 @@ export default function Chart({
 
   return (
     <div style={styles.wrapper}>
-      {candles.length > 0 && (
-        <div style={styles.header}>
-          <span>{symbol} · {timeframe} · {candles.length} candles</span>
+      {/* ── Data Inspector (replaces old header row) ─────────────────── */}
+      <ChartDataInspector
+        symbol={symbol}
+        timeframe={timeframe}
+        exchange={exchange}
+        candle={inspectorCandle ?? latestInspectorCandle}
+        indicatorArtifacts={indicatorArtifacts}
+        instanceLabels={instanceLabels}
+        instanceColors={instanceColors}
+        instanceVisible={instanceVisible}
+        indicatorValues={inspectorCandle !== null ? inspectorIndVals : undefined}
+      />
+
+      {/* ── Strategy results toolbar (hidden when no results) ────────── */}
+      {hasStrategyResults && (
+        <div style={styles.toolbar}>
           {priceIndCount > 0 && <span style={styles.badge}>{priceIndCount} overlay{priceIndCount !== 1 ? 's' : ''}</span>}
           {oscIndCount   > 0 && <span style={{ ...styles.badge, color: '#7e57c2' }}>{oscIndCount} oscillator{oscIndCount !== 1 ? 's' : ''}</span>}
           {signalCount   > 0 && <span style={styles.badge}>{signalCount} signal{signalCount !== 1 ? 's' : ''}</span>}
@@ -985,8 +1226,7 @@ export default function Chart({
           <button
             type="button"
             onClick={onClearStrategyResults}
-            disabled={!hasStrategyResults}
-            style={{ ...styles.clearBtn, opacity: hasStrategyResults ? 1 : 0.45, cursor: hasStrategyResults ? 'pointer' : 'default' }}
+            style={{ ...styles.clearBtn, marginLeft: 'auto' }}
           >
             Clear Strategy Results
           </button>
@@ -1058,10 +1298,10 @@ function clearOscillatorReferenceGuides(guides: Map<string, ReferenceGuideBindin
 
 const styles: Record<string, React.CSSProperties> = {
   wrapper: { flex: 1, display: 'flex', flexDirection: 'column', background: '#0f0f1a', minHeight: 0, overflowY: 'auto' },
-  header: {
-    padding: '8px 16px', fontSize: '12px', color: '#8892a4', fontFamily: 'monospace',
-    letterSpacing: '0.04em', borderBottom: '1px solid #1a1a2e', display: 'flex',
-    alignItems: 'center', gap: '12px', flexShrink: 0,
+  toolbar: {
+    padding: '4px 10px', fontSize: '11px', color: '#8892a4', fontFamily: 'monospace',
+    borderBottom: '1px solid #1a1a2e', display: 'flex',
+    alignItems: 'center', gap: '8px', flexShrink: 0,
   },
   priceWrapper: { flex: 1, position: 'relative', minHeight: 200 },
   priceChart: { width: '100%', height: '100%' },
@@ -1069,5 +1309,5 @@ const styles: Record<string, React.CSSProperties> = {
   oscLabel: { position: 'absolute', top: 4, left: 8, fontSize: 9, color: '#2a2a3e', fontFamily: 'monospace', letterSpacing: '0.07em', pointerEvents: 'none', zIndex: 1 },
   oscChart: { width: '100%', height: '100%' },
   badge: { fontSize: '11px', color: '#ffa726', background: '#1a1a2e', padding: '2px 8px', borderRadius: '4px' },
-  clearBtn: { marginLeft: 'auto', background: '#111827', border: '1px solid #2a2d3e', borderRadius: 4, color: '#9aa4b8', fontFamily: 'monospace', fontSize: 11, padding: '3px 9px' },
+  clearBtn: { background: '#111827', border: '1px solid #2a2d3e', borderRadius: 4, color: '#9aa4b8', fontFamily: 'monospace', fontSize: 11, padding: '3px 9px', cursor: 'pointer' },
 }

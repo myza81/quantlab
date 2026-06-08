@@ -27,11 +27,14 @@ from datetime import datetime, timezone
 import pytest
 
 from backend.backtesting.models import (
+    BacktestExecutionModel,
     BacktestRejectionReason,
     BacktestSimulationConfig,
     PositionSizeMode,
     SimulationPriceBar,
 )
+
+_SBC = BacktestExecutionModel.SAME_BAR_CLOSE  # shorthand for backward-compat tests
 from backend.backtesting.position_tracker import (
     PositionState,
     process_intent,
@@ -109,6 +112,7 @@ def _equity_fraction_config(
         initial_cash=cash,
         position_size_mode=PositionSizeMode.EQUITY_FRACTION,
         equity_fraction=fraction,
+        execution_model=_SBC,
     )
 
 
@@ -640,6 +644,7 @@ class TestSimulationIntegrationEquityFraction:
             initial_cash=100.0,
             position_size_mode=PositionSizeMode.EQUITY_FRACTION,
             equity_fraction=0.1,
+            execution_model=_SBC,
         )
         intent = _make_intent("i1", 0, TradeIntentAction.OPEN_LONG)
         batch  = _make_batch(intent)
@@ -748,7 +753,8 @@ class TestEquityCurveWithSizing:
 
 class TestFixedQuantityUnchanged:
     def test_fixed_quantity_default_behavior_preserved(self):
-        cfg = BacktestSimulationConfig(initial_cash=10_000.0, fixed_quantity=3.0)
+        cfg = BacktestSimulationConfig(initial_cash=10_000.0, fixed_quantity=3.0,
+                                       execution_model=_SBC)
         intent = _make_intent("i1", 0, TradeIntentAction.OPEN_LONG)
         batch  = _make_batch(intent)
         bars   = [_price_bar(0, 100.0)]
@@ -756,7 +762,8 @@ class TestFixedQuantityUnchanged:
         assert result.trades[0].quantity == 3.0
 
     def test_fixed_quantity_audit_fields_in_simulation(self):
-        cfg = BacktestSimulationConfig(initial_cash=10_000.0, fixed_quantity=5.0)
+        cfg = BacktestSimulationConfig(initial_cash=10_000.0, fixed_quantity=5.0,
+                                       execution_model=_SBC)
         intent = _make_intent("i1", 0, TradeIntentAction.OPEN_LONG)
         batch  = _make_batch(intent)
         bars   = [_price_bar(0, 100.0)]
@@ -766,7 +773,8 @@ class TestFixedQuantityUnchanged:
         assert trade.sizing_value == 5.0
 
     def test_fixed_quantity_no_regression_pnl(self):
-        cfg = BacktestSimulationConfig(initial_cash=10_000.0, fixed_quantity=1.0)
+        cfg = BacktestSimulationConfig(initial_cash=10_000.0, fixed_quantity=1.0,
+                                       execution_model=_SBC)
         open_intent  = _make_intent("i1", 0, TradeIntentAction.OPEN_LONG)
         close_intent = _make_intent("i2", 1, TradeIntentAction.CLOSE_LONG)
         batch = _make_batch(open_intent, close_intent)

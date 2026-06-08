@@ -274,8 +274,9 @@ export function StrategyTestPanel({ candles, symbol, timeframe, sessionContext, 
             <div style={s.btBody}>
               <ConfigField label="Initial Equity ($)">
                 <input
+                  data-testid="stp-equity-input"
                   type="number" style={s.cfgInput}
-                  value={btConfig.initial_equity} min={100} step={1000}
+                  value={btConfig.initial_equity} min={100} step={100}
                   onChange={e => setBtConfig(c => ({ ...c, initial_equity: parseFloat(e.target.value) || 10000 }))}
                 />
               </ConfigField>
@@ -294,9 +295,10 @@ export function StrategyTestPanel({ candles, symbol, timeframe, sessionContext, 
                   </select>
                   {btConfig.position_size_mode === 'equity_fraction' ? (
                     <input
+                      data-testid="stp-fraction-input"
                       type="number" style={{ ...s.cfgInput, width: 52 }}
                       value={Math.round((btConfig.equity_fraction ?? 0.95) * 100)}
-                      min={1} max={100} step={5}
+                      min={1} max={100} step={1}
                       onChange={e => setBtConfig(c => ({ ...c, equity_fraction: parseFloat(e.target.value) / 100 || 0.95 }))}
                     />
                   ) : (

@@ -1,9 +1,10 @@
 """
-Backtest Simulation Domain Models — Phase 2P.6 / updated Phase 2P.7 / updated Phase 2P.8.
+Backtest Simulation Domain Models — Phase 2P.6 / updated Phase 2P.7 / updated Phase 2P.8 / updated EXEC-1.
 
 Foundational models for the long-only backtest simulation layer.
 Phase 2P.7 adds deterministic cost modeling (commission + slippage).
 Phase 2P.8 adds equity-fraction position sizing.
+EXEC-1 adds NEXT_BAR_OPEN execution model (signal on Bar N → fill at Bar N+1 open).
 
 Critical separations maintained:
     TradeIntent    ≠  Order
@@ -11,9 +12,9 @@ Critical separations maintained:
     SimulatedTrade ≠  BrokerFill
     SimulatedTrade ≠  LiveTrade
 
-Execution assumptions:
-    execution_price = bar close ± slippage  (direction-aware)
-    commission applied per trade
+Execution models:
+    NEXT_BAR_OPEN (default): signal on Bar N → fill at Bar N+1 open ± slippage
+    SAME_BAR_CLOSE:          signal on Bar N → fill at Bar N close ± slippage
     No order book. No latency. No stochastic fills.
 
 Scope constraints — NOT implemented:
@@ -41,6 +42,30 @@ from backend.backtesting.cost_model import (
     SlippageMode,
     TradeCostBreakdown,
 )
+
+
+# ---------------------------------------------------------------------------
+# Execution model
+# ---------------------------------------------------------------------------
+
+class BacktestExecutionModel(str, Enum):
+    """
+    Execution timing model for backtest simulation.
+
+    NEXT_BAR_OPEN (default):
+        Signal on Bar N → fill at Bar N+1 open ± slippage.
+        Realistic for EOD strategies where signals are evaluated at close
+        and orders execute at the next session's open.
+        Requires SimulationPriceBar.open to be populated.
+
+    SAME_BAR_CLOSE:
+        Signal on Bar N → fill at Bar N close ± slippage.
+        Optimistic — assumes execution in the same session the signal fires.
+        Available for explicit research/backward-compatibility use only.
+        Do NOT use as the default in new production code.
+    """
+    NEXT_BAR_OPEN  = "next_bar_open"
+    SAME_BAR_CLOSE = "same_bar_close"
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +109,9 @@ class BacktestSimulationConfig(BaseModel):
     position_size_mode: PositionSizeMode = PositionSizeMode.FIXED_QUANTITY
     fixed_quantity:     float = 1.0
     equity_fraction:    float | None = None  # required when mode=EQUITY_FRACTION
+
+    # Execution model (EXEC-1) — default is NEXT_BAR_OPEN (realistic for EOD strategies)
+    execution_model: BacktestExecutionModel = BacktestExecutionModel.NEXT_BAR_OPEN
 
     # Cost model — all default to zero-cost (backward-compatible)
     commission_mode:  CommissionMode = CommissionMode.NONE
@@ -132,16 +160,28 @@ class BacktestSimulationConfig(BaseModel):
 
 class SimulationPriceBar(BaseModel):
     """
-    Minimal bar record supplying price to the simulation engine.
+    Bar record supplying price to the simulation engine.
 
-    close is the raw bar close; the cost model adjusts execution price
-    by applying slippage before any trade is simulated.
+    open  is used as the fill price for NEXT_BAR_OPEN execution (required for NBO mode).
+    close is used as the fill price for SAME_BAR_CLOSE execution and always for
+          unrealized PnL / equity curve calculation.
+
+    open must be populated for all bars when execution_model=NEXT_BAR_OPEN.
+    The simulator raises ValueError at runtime if open is None when a NBO fill is attempted.
     """
     model_config = ConfigDict(frozen=True)
 
     bar_index: int
     timestamp: datetime | None = None
+    open:      float | None = None  # required for NEXT_BAR_OPEN fills
     close:     float
+
+    @field_validator("open")
+    @classmethod
+    def open_must_be_positive(cls, v: float | None) -> float | None:
+        if v is not None and v <= 0:
+            raise ValueError(f"open price must be positive; got {v}")
+        return v
 
     @field_validator("close")
     @classmethod
@@ -157,12 +197,16 @@ class SimulationPriceBar(BaseModel):
 
 class BacktestRejectionReason(str, Enum):
     """Enumeration of reasons a trade intent may be rejected by the simulator."""
-    ALREADY_LONG       = "already_long"       # open_long while position open
-    ALREADY_FLAT       = "already_flat"       # close_long while flat
-    INSUFFICIENT_CASH  = "insufficient_cash"  # cash < total cost (price + costs)
-    MISSING_PRICE      = "missing_price"      # no price bar for intent's bar_index
-    UNSUPPORTED_ACTION = "unsupported_action" # action not handled by long-only tracker
-    ZERO_QUANTITY      = "zero_quantity"      # equity_fraction sizing resolved to 0 units
+    ALREADY_LONG             = "already_long"             # open_long while position open
+    ALREADY_FLAT             = "already_flat"             # close_long while flat (fill time)
+    INSUFFICIENT_CASH        = "insufficient_cash"        # cash < total cost (price + costs)
+    MISSING_PRICE            = "missing_price"            # no price bar for intent's bar_index
+    UNSUPPORTED_ACTION       = "unsupported_action"       # action not handled by long-only tracker
+    ZERO_QUANTITY            = "zero_quantity"            # equity_fraction sizing resolved to 0 units
+    FINAL_BAR_NO_FILL        = "final_bar_no_fill"        # NEXT_BAR_OPEN: signal on last bar, no subsequent bar for fill
+    # Conflict policy (EXEC-2D): exit suppressed when position is flat at signal time.
+    # Distinct from ALREADY_FLAT which fires at fill time in the position tracker.
+    CONFLICT_EXIT_SUPPRESSED = "conflict_exit_suppressed" # close_long rejected: flat at signal time
 
 
 class BacktestRejection(BaseModel):
@@ -196,12 +240,23 @@ class SimulatedTrade(BaseModel):
         - execution instructions
         - live trade records
 
-    price is the adjusted execution price (after slippage).
-    cost_breakdown provides full audit of slippage and commission.
+    Execution timing fields (EXEC-1):
+        signal_bar_index / signal_timestamp:
+            Bar where the strategy signal was generated (intent.source.bar_index).
+        execution_bar_index / execution_timestamp:
+            Bar where the fill actually occurs.
+            For NEXT_BAR_OPEN: execution_bar_index = signal_bar_index + 1 (next bar in sequence).
+            For SAME_BAR_CLOSE: execution_bar_index == signal_bar_index.
+        execution_model:
+            The timing model that was active when this trade was filled.
+
+    price is the adjusted execution price (after slippage):
+        NEXT_BAR_OPEN:  execution bar's open ± slippage
+        SAME_BAR_CLOSE: signal bar's close ± slippage
 
     realized_pnl is all-in net PnL (includes both commissions and slippage):
-        realized_pnl = (close_adjusted_price - entry_adjusted_price) × qty
-                       - commission_close - commission_open
+        realized_pnl = (exit_adjusted_price - entry_adjusted_price) × qty
+                       - commission_exit - commission_entry
     This is populated only on close trades; None for open trades.
 
     position_after records the quantity held after this trade (0.0 for closes).
@@ -215,22 +270,30 @@ class SimulatedTrade(BaseModel):
     """
     model_config = ConfigDict(frozen=True)
 
-    trade_id:           str                   # deterministic: f"trade:{source_intent_id}"
+    trade_id:           str                    # deterministic: f"trade:{source_intent_id}"
     source_intent_id:   str
     action:             Literal["open_long", "close_long"]
-    bar_index:          int
-    timestamp:          datetime | None
-    quantity:           float                 # resolved (actual) units traded
-    price:              float                 # adjusted execution price (after slippage)
+
+    # Signal origin (where the strategy condition fired)
+    signal_bar_index:   int
+    signal_timestamp:   datetime | None
+
+    # Execution location (where the fill actually occurred)
+    execution_bar_index:  int
+    execution_timestamp:  datetime | None
+    execution_model:      BacktestExecutionModel
+
+    quantity:           float                  # resolved (actual) units traded
+    price:              float                  # adjusted execution price (after slippage)
     cash_before:        float
     cash_after:         float
-    realized_pnl:       float | None          # None for open; all-in net PnL for close
-    position_after:     float                 # quantity held after trade
-    cost_breakdown:     TradeCostBreakdown    # explicit per-trade cost audit
+    realized_pnl:       float | None           # None for open; all-in net PnL for close
+    position_after:     float                  # quantity held after trade
+    cost_breakdown:     TradeCostBreakdown     # explicit per-trade cost audit
 
     # Sizing audit (Phase 2P.8)
-    position_size_mode: PositionSizeMode      # sizing mode used
-    sizing_value:       float                 # configured sizing parameter
+    position_size_mode: PositionSizeMode       # sizing mode used
+    sizing_value:       float                  # configured sizing parameter
 
 
 # ---------------------------------------------------------------------------

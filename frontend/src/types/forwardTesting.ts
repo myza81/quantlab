@@ -48,6 +48,8 @@ export interface ForwardTestSessionDetail extends ForwardTestSessionSummary {
   error_category: string | null
   exchange: string
   asset_class: string
+  /** Set by the FT-2 scheduler; null until the scheduler has run at least once. */
+  last_cycle_attempted_at: string | null
 }
 
 export interface ForwardTestCycleResult {
@@ -86,6 +88,8 @@ export interface ForwardTestSignal {
   provider_name: string | null
   catalog_id: string | null
   created_at: string
+  /** Timestamp of the next bar after signal bar; null when signal fires on the final bar in the cycle. */
+  actionable_from_bar_timestamp: string | null
 }
 
 export interface ForwardTestBar {

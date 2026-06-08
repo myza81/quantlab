@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +39,25 @@ from backend.forward_testing.exceptions import ForwardTestPersistenceError
 from backend.forward_testing.models import ForwardTestBar, ForwardTestSignal
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """
+    Write content to path via temp-file + os.replace() (atomic on POSIX).
+
+    Crash between write and replace leaves a harmless .tmp file that is
+    ignored on next read. The target file is never partially written.
+    """
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +103,7 @@ class ForwardTestSignalStore:
         self._ensure_dirs()
         path = self._signal_path(session_id)
         try:
-            path.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+            _atomic_write(path, json.dumps(records, ensure_ascii=False))
         except OSError as exc:
             raise ForwardTestPersistenceError(
                 f"failed to write signal file for session '{session_id}': {exc}"
@@ -193,7 +213,7 @@ class ForwardTestBarStore:
         self._ensure_dirs()
         path = self._bar_path(session_id)
         try:
-            path.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+            _atomic_write(path, json.dumps(records, ensure_ascii=False))
         except OSError as exc:
             raise ForwardTestPersistenceError(
                 f"failed to write bar file for session '{session_id}': {exc}"

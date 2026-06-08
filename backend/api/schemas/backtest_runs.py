@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 from backend.api.schemas.composition_run import CompositionRunBar
 from backend.backtesting.cost_model import CommissionMode, SlippageMode
-from backend.backtesting.models import PositionSizeMode
+from backend.backtesting.models import BacktestExecutionModel, PositionSizeMode
 
 
 # ---------------------------------------------------------------------------
@@ -24,14 +24,15 @@ from backend.backtesting.models import PositionSizeMode
 class BacktestRunConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    initial_equity:     float            = 10_000.0
-    position_size_mode: PositionSizeMode = PositionSizeMode.EQUITY_FRACTION
-    equity_fraction:    float | None     = 0.95
-    fixed_quantity:     float            = 1.0
-    commission_mode:    CommissionMode   = CommissionMode.NONE
-    commission_value:   float            = 0.0
-    slippage_mode:      SlippageMode     = SlippageMode.NONE
-    slippage_value:     float            = 0.0
+    initial_equity:     float                  = 10_000.0
+    position_size_mode: PositionSizeMode       = PositionSizeMode.EQUITY_FRACTION
+    equity_fraction:    float | None           = 0.95
+    fixed_quantity:     float                  = 1.0
+    execution_model:    BacktestExecutionModel = BacktestExecutionModel.NEXT_BAR_OPEN
+    commission_mode:    CommissionMode         = CommissionMode.NONE
+    commission_value:   float                  = 0.0
+    slippage_mode:      SlippageMode           = SlippageMode.NONE
+    slippage_value:     float                  = 0.0
 
 
 # ---------------------------------------------------------------------------

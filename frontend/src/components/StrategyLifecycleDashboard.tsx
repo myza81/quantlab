@@ -1,18 +1,27 @@
 /**
- * StrategyLifecycleDashboard — Phase UX-2.
+ * StrategyLifecycleDashboard — NAV-UX-3F (Lifecycle as Workflow Orchestrator).
  *
- * Central command view for strategy lifecycle progression.
- * Shows: lifecycle stage track, current stage, next recommended action,
- * evidence summary per stage, blockers, quick navigation, technical details.
+ * Command center for the selected strategy's lifecycle:
+ *   - Stage track: visual pipeline showing where the strategy is
+ *   - Primary CTA: one obvious next action (promote / navigate / explain)
+ *   - Evidence cards: count + latest item + actionable "View →" link per phase
+ *   - Blockers: what's preventing the next step
+ *   - Evidence readiness panel: checklist of promotion gates
+ *   - Quick navigation: shortcut buttons to all phase pages
+ *   - Technical details: draft ID, timestamps (collapsible)
  *
  * Data sources:
- *   GET /drafts                  — all owned drafts (for picker)
- *   GET /backtests/runs          — filter by draft_id client-side
- *   GET /forward-tests           — filter by strategy_snapshot.draft_id
- *   GET /paper-trading/sessions  — filter by strategy_snapshot.draft_id
+ *   All evidence (btRuns, ftSessions, ptSessions) comes from StrategyContext,
+ *   which loads it once for the selected draft and keeps it in sync.
+ *   The component also fetches drafts locally so the picker can show all drafts
+ *   independently of what other tabs have loaded.
  *
- * Frontend displays. Backend decides. No lifecycle logic duplicated here.
- * No strategy_json in any response. No broker integration.
+ * Design contracts:
+ *   - Frontend displays. Backend decides. No lifecycle logic duplicated here.
+ *   - No strategy_json in any response. No broker integration.
+ *   - Promotion calls the existing promote API; no auto-promotion.
+ *   - After promotion: ctx.updateDraft + ctx.refreshEvidence to keep context bar
+ *     and evidence counts consistent without a full page reload.
  */
 import { useEffect, useState } from 'react'
 import { fetchDrafts } from '../api/drafts'
@@ -28,16 +37,23 @@ import type { StrategyDraftData } from '../types/drafts'
 import type { BacktestRunListItem } from '../types/backtestRuns'
 import type { ForwardTestSessionSummary } from '../types/forwardTesting'
 import type { PaperTradingSessionSummary } from '../types/paperTrading'
+import type { ForwardTestPrefill } from '../types/forwardTesting'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 interface Props {
-  onNavigateToComposer: () => void
-  onNavigateToHistory:  () => void
+  onNavigateToComposer:    () => void
+  onNavigateToHistory:     () => void
   onNavigateToForwardTest: () => void
   onNavigateToPaperTrading: () => void
+  /**
+   * Optional: when provided, navigating to Forward Test from a backtested
+   * strategy will carry the draft context as a prefill so the create form
+   * opens pre-populated. Falls back to onNavigateToForwardTest if absent.
+   */
+  onNavigateToForwardTestWithPrefill?: (prefill: ForwardTestPrefill) => void
 }
 
 type StageState = 'complete' | 'current' | 'locked'
@@ -138,7 +154,13 @@ function EvidenceSection({ title, testId, children }: { title: string; testId: s
 // Main component
 // ---------------------------------------------------------------------------
 
-export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToHistory, onNavigateToForwardTest, onNavigateToPaperTrading }: Props) {
+export function StrategyLifecycleDashboard({
+  onNavigateToComposer,
+  onNavigateToHistory,
+  onNavigateToForwardTest,
+  onNavigateToPaperTrading,
+  onNavigateToForwardTestWithPrefill,
+}: Props) {
   // Shared strategy context (NAV-UX-3A). No-op defaults outside a provider.
   const ctx = useStrategyContext()
   const [drafts,       setDrafts]       = useState<StrategyDraftData[]>([])
@@ -228,7 +250,7 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
     s => (s.status === 'terminated' || s.status === 'completed') && s.last_processed_bar_timestamp !== null,
   )
 
-  // Evidence readiness items — stage-specific, used by EvidenceReadinessPanel below evidence summaries
+  // Evidence readiness items — stage-specific, used by EvidenceReadinessPanel
   const evidenceReadinessItems: EvidenceItem[] = (() => {
     if (currentStatus === 'validated') {
       return [
@@ -279,10 +301,6 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
   // Promotion handler + effective nav callback
   // ---------------------------------------------------------------------------
 
-  // When the draft is 'validated' and a completed backtest exists, the dashboard
-  // can promote directly instead of just navigating to Backtest History. After a
-  // successful promotion the returned StrategyDraftData replaces the stale entry
-  // in `drafts` state — no extra re-fetch required.
   async function handlePromoteToBacktested() {
     if (!selectedId || !latestCompletedBt) return
     setPromoting(true)
@@ -290,7 +308,8 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
     try {
       const updated = await promoteDraftToBacktested(latestCompletedBt.run_id, selectedId)
       setDrafts(prev => prev.map(d => d.draft_id === updated.draft_id ? updated : d))
-      ctx.updateDraft(updated)  // context bar badge reflects promoted stage
+      ctx.updateDraft(updated)       // context bar badge reflects promoted stage
+      ctx.refreshEvidence()          // keep context evidence counts in sync
     } catch (err) {
       setPromotionError(err instanceof Error ? err.message : 'Promotion failed')
     } finally {
@@ -298,14 +317,39 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
     }
   }
 
-  // Use direct promotion when validation evidence is ready; fall back to
-  // navigation for all other cases (forward-test, paper-trading, etc.)
   const canPromoteToBacktested = currentStatus === 'validated' && latestCompletedBt !== null
-  const navCallback = canPromoteToBacktested
-    ? handlePromoteToBacktested
-    : (guidance ? resolveNav(guidance.navigateTarget, { onNavigateToComposer, onNavigateToHistory, onNavigateToForwardTest, onNavigateToPaperTrading }) : null)
 
-  const blockers = guidance?.blockers ?? []
+  // Build the primary CTA callback.
+  // Priority: direct promotion > prefill-nav for FT > standard nav.
+  function buildNavCallback(): (() => void) | null {
+    if (canPromoteToBacktested) return handlePromoteToBacktested
+    if (!guidance || guidance.navigateLocked) return null
+
+    const target = guidance.navigateTarget
+
+    // When routing to Forward Test from a backtested strategy, carry the
+    // draft context as a prefill if the caller supports it.
+    if (
+      target === 'forward-test' &&
+      onNavigateToForwardTestWithPrefill &&
+      selectedId
+    ) {
+      return () => onNavigateToForwardTestWithPrefill({
+        draft_id:   selectedId,
+        draft_name: selectedDraft?.display_name ?? undefined,
+      })
+    }
+
+    return resolveNav(target, {
+      onNavigateToComposer,
+      onNavigateToHistory,
+      onNavigateToForwardTest,
+      onNavigateToPaperTrading,
+    })
+  }
+
+  const navCallback = buildNavCallback()
+  const blockers    = guidance?.blockers ?? []
 
   // ---------------------------------------------------------------------------
   // Render
@@ -324,7 +368,16 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
         <div data-testid="lcd-error" style={{ color: '#fc8181', fontSize: 13 }}>Error: {error}</div>
       ) : drafts.length === 0 ? (
         <div data-testid="lcd-no-drafts" style={{ color: '#718096', fontSize: 13 }}>
-          No strategies found. Open the Strategy Builder to create your first draft.
+          <div style={{ marginBottom: 10 }}>
+            No strategies found. Create your first draft to start the lifecycle journey.
+          </div>
+          <button
+            data-testid="lcd-cta-create-strategy"
+            onClick={onNavigateToComposer}
+            style={ctaStyle}
+          >
+            Open Strategy Builder
+          </button>
         </div>
       ) : (
         <>
@@ -353,7 +406,14 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
 
           {!selectedDraft ? (
             <div data-testid="lcd-no-draft-selected" style={{ color: '#718096', fontSize: 13 }}>
-              Select a strategy to view its lifecycle.
+              <div style={{ marginBottom: 10 }}>Select a strategy to view its lifecycle.</div>
+              <button
+                data-testid="lcd-cta-go-to-composer"
+                onClick={onNavigateToComposer}
+                style={ctaStyle}
+              >
+                Open Strategy Builder
+              </button>
             </div>
           ) : (
             <>
@@ -394,7 +454,7 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
                   </div>
                 </div>
 
-                {/* Next action card */}
+                {/* Next action card — primary command area */}
                 <div
                   data-testid="lcd-next-action"
                   style={{ background: '#0d1117', border: '1px solid #21262d', borderRadius: 6, padding: '10px 16px', flex: '2 1 240px' }}
@@ -412,27 +472,32 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
                     </div>
                   ) : (
                     <>
-                    <button
-                      data-testid="lcd-next-action-btn"
-                      onClick={navCallback ?? undefined}
-                      disabled={promoting}
-                      style={{
-                        background: '#276749', border: 'none', borderRadius: 4,
-                        color: '#e2e8f0', cursor: promoting ? 'not-allowed' : 'pointer',
-                        fontSize: 12, fontFamily: 'inherit', padding: '6px 14px',
-                        opacity: promoting ? 0.6 : 1,
-                      }}
-                    >
-                      {promoting ? 'Promoting…' : guidance.nextAction}
-                    </button>
-                    {promotionError && (
-                      <div
-                        data-testid="lcd-promotion-error"
-                        style={{ marginTop: 6, fontSize: 11, color: '#ef5350' }}
+                      <button
+                        data-testid="lcd-next-action-btn"
+                        onClick={navCallback ?? undefined}
+                        disabled={promoting}
+                        style={{
+                          background: '#276749', border: 'none', borderRadius: 4,
+                          color: '#e2e8f0', cursor: promoting ? 'not-allowed' : 'pointer',
+                          fontSize: 12, fontFamily: 'inherit', padding: '6px 14px',
+                          opacity: promoting ? 0.6 : 1,
+                        }}
                       >
-                        {promotionError}
-                      </div>
-                    )}
+                        {promoting ? 'Promoting…' : guidance.nextAction}
+                      </button>
+                      {guidance.whyItMatters && (
+                        <div style={{ marginTop: 6, fontSize: 11, color: '#718096', lineHeight: 1.4 }}>
+                          {guidance.whyItMatters}
+                        </div>
+                      )}
+                      {promotionError && (
+                        <div
+                          data-testid="lcd-promotion-error"
+                          style={{ marginTop: 6, fontSize: 11, color: '#ef5350' }}
+                        >
+                          {promotionError}
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -461,7 +526,7 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
                 )}
               </div>
 
-              {/* Evidence summary */}
+              {/* Evidence summary — actionable cards */}
               <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
                 {/* Backtest evidence */}
                 <EvidenceSection title="Backtest Evidence" testId="lcd-evidence-backtest">
@@ -484,6 +549,13 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
                       )}
                     </div>
                   )}
+                  <button
+                    data-testid="lcd-ev-view-backtests"
+                    onClick={onNavigateToHistory}
+                    style={evidenceActionStyle}
+                  >
+                    View Backtests →
+                  </button>
                 </EvidenceSection>
 
                 {/* Forward-test evidence */}
@@ -503,6 +575,13 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
                       )}
                     </div>
                   )}
+                  <button
+                    data-testid="lcd-ev-view-ft"
+                    onClick={onNavigateToForwardTest}
+                    style={evidenceActionStyle}
+                  >
+                    View Forward Tests →
+                  </button>
                 </EvidenceSection>
 
                 {/* Paper-trading evidence */}
@@ -522,6 +601,13 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
                       </div>
                     </div>
                   )}
+                  <button
+                    data-testid="lcd-ev-view-pt"
+                    onClick={onNavigateToPaperTrading}
+                    style={evidenceActionStyle}
+                  >
+                    View Paper Sessions →
+                  </button>
                 </EvidenceSection>
               </div>
 
@@ -605,12 +691,36 @@ export function StrategyLifecycleDashboard({ onNavigateToComposer, onNavigateToH
 }
 
 const navBtnStyle: React.CSSProperties = {
-  background: '#161b22',
-  border: '1px solid #30363d',
+  background:   '#161b22',
+  border:       '1px solid #30363d',
   borderRadius: 4,
-  color: '#a0aec0',
-  cursor: 'pointer',
-  fontSize: 11,
-  fontFamily: 'inherit',
-  padding: '5px 12px',
+  color:        '#a0aec0',
+  cursor:       'pointer',
+  fontSize:     11,
+  fontFamily:   'inherit',
+  padding:      '5px 12px',
+}
+
+const evidenceActionStyle: React.CSSProperties = {
+  background:   'none',
+  border:       'none',
+  borderRadius: 3,
+  color:        '#4a9eed',
+  cursor:       'pointer',
+  fontSize:     11,
+  fontFamily:   'inherit',
+  padding:      '4px 0',
+  marginTop:    6,
+  textAlign:    'left',
+}
+
+const ctaStyle: React.CSSProperties = {
+  background:   '#276749',
+  border:       'none',
+  borderRadius: 4,
+  color:        '#e2e8f0',
+  cursor:       'pointer',
+  fontSize:     12,
+  fontFamily:   'inherit',
+  padding:      '7px 16px',
 }

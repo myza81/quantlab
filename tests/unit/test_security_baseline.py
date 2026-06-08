@@ -296,6 +296,13 @@ class TestAuditEvent:
             "pt_catchup_threshold_exceeded",
             "pt_session_exported",
             "pt_session_reviewed",
+            # FT-2 — Forward Test Scheduler events
+            "ft_scheduler_tick_started",
+            "ft_scheduler_tick_completed",
+            "ft_scheduler_session_evaluated",
+            "ft_scheduler_session_skipped",
+            "ft_scheduler_session_auto_paused",
+            "ft_scheduler_recovery",
         }
         actual = {e.value for e in AuditEventKind}
         assert expected == actual

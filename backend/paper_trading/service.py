@@ -646,9 +646,15 @@ class PaperTradingService:
         last_new_bar_ts: datetime | None = None
 
         # Process each new bar
-        for bar_index, bar in indexed_new_bars:
+        for _bar_pos, (bar_index, bar) in enumerate(indexed_new_bars):
             is_warmup = bar_index < warmup_bars_required
             is_signal_eligible = not is_warmup
+            # EXEC-2B: next bar's timestamp from actual data; None on final bar
+            _next_bar_ts: datetime | None = (
+                indexed_new_bars[_bar_pos + 1][1].timestamp  # type: ignore[union-attr]
+                if _bar_pos + 1 < len(indexed_new_bars)
+                else None
+            )
 
             # ── Step 1: Resolve NEXT_BAR_OPEN pending orders at bar.open ──────
             account = self._account_store.load_by_session_id(session_id)
@@ -747,6 +753,7 @@ class PaperTradingService:
                             provider_name=session.provider_name,
                             catalog_id=session.catalog_id,
                             created_at=now_utc,
+                            actionable_from_bar_timestamp=_next_bar_ts,
                         ))
                         if was_new:
                             signals_generated += 1
@@ -789,6 +796,7 @@ class PaperTradingService:
                             provider_name=session.provider_name,
                             catalog_id=session.catalog_id,
                             created_at=now_utc,
+                            actionable_from_bar_timestamp=_next_bar_ts,
                         ))
                         if was_new:
                             signals_generated += 1
@@ -1095,36 +1103,94 @@ class PaperTradingService:
 
         bar_close: float = bar.close  # type: ignore[union-attr]
 
-        # Validate intent: max_positions check
+        # Guard 1: Duplicate long entry — matches backtest ALREADY_LONG rejection.
+        # An open position for this symbol already exists; do not scale in.
         existing_pos = self._find_open_position(session_id, session.symbol)
-        if existing_pos is None:
-            open_count = self._position_store.count_open(session_id)
-            if open_count >= assumptions.max_concurrent_positions:
-                rejected_order = PaperBrokerAdapter.reject_order(
-                    session_id=session_id,
-                    account_id=account_id,
-                    user_id=session.user_id,
-                    symbol=session.symbol,
-                    direction=OrderDirection.BUY,
-                    quantity=1,  # placeholder; real qty unknown at rejection
-                    fill_timing_model=assumptions.fill_timing_model,
-                    signal_bar_timestamp=bar.timestamp,  # type: ignore[union-attr]
-                    rejection_reason=RejectionReason.MAX_POSITIONS_EXCEEDED.value,
-                    signal_id=signal_id,
-                )
-                self._order_store.mark_rejected(rejected_order, RejectionReason.MAX_POSITIONS_EXCEEDED.value)
-                emit_audit_event(AuditEvent(
-                    event_kind=AuditEventKind.PT_ORDER_REJECTED,
-                    correlation_id=correlation_id,
-                    details={
-                        "session_id": session_id,
-                        "account_id": account_id,
-                        "rejection_reason": RejectionReason.MAX_POSITIONS_EXCEEDED.value,
-                        "open_count": open_count,
-                        "max_positions": assumptions.max_concurrent_positions,
-                    },
-                ))
-                return 0, 1, account, 0, 0
+        if existing_pos is not None:
+            rejected_order = PaperBrokerAdapter.reject_order(
+                session_id=session_id,
+                account_id=account_id,
+                user_id=session.user_id,
+                symbol=session.symbol,
+                direction=OrderDirection.BUY,
+                quantity=1,
+                fill_timing_model=assumptions.fill_timing_model,
+                signal_bar_timestamp=bar.timestamp,  # type: ignore[union-attr]
+                rejection_reason=RejectionReason.DUPLICATE_LONG_ENTRY.value,
+                signal_id=signal_id,
+            )
+            self._order_store.mark_rejected(rejected_order, RejectionReason.DUPLICATE_LONG_ENTRY.value)
+            emit_audit_event(AuditEvent(
+                event_kind=AuditEventKind.PT_ORDER_REJECTED,
+                correlation_id=correlation_id,
+                details={
+                    "session_id": session_id,
+                    "account_id": account_id,
+                    "rejection_reason": RejectionReason.DUPLICATE_LONG_ENTRY.value,
+                    "symbol": session.symbol,
+                    "existing_position_id": existing_pos.position_id,
+                },
+            ))
+            return 0, 1, account, 0, 0
+
+        # Guard 2: Pending BUY already in queue — prevents a second entry order
+        # accumulating while an NBO fill is waiting for the next bar open.
+        pending_orders = self._order_store.load_pending(session_id, session.user_id)
+        pending_buys = [o for o in pending_orders if o.direction == OrderDirection.BUY]
+        if pending_buys:
+            rejected_order = PaperBrokerAdapter.reject_order(
+                session_id=session_id,
+                account_id=account_id,
+                user_id=session.user_id,
+                symbol=session.symbol,
+                direction=OrderDirection.BUY,
+                quantity=1,
+                fill_timing_model=assumptions.fill_timing_model,
+                signal_bar_timestamp=bar.timestamp,  # type: ignore[union-attr]
+                rejection_reason=RejectionReason.PENDING_ENTRY_EXISTS.value,
+                signal_id=signal_id,
+            )
+            self._order_store.mark_rejected(rejected_order, RejectionReason.PENDING_ENTRY_EXISTS.value)
+            emit_audit_event(AuditEvent(
+                event_kind=AuditEventKind.PT_ORDER_REJECTED,
+                correlation_id=correlation_id,
+                details={
+                    "session_id": session_id,
+                    "account_id": account_id,
+                    "rejection_reason": RejectionReason.PENDING_ENTRY_EXISTS.value,
+                    "pending_order_id": pending_buys[0].order_id,
+                },
+            ))
+            return 0, 1, account, 0, 0
+
+        # Guard 3: Max concurrent positions (multi-position sessions)
+        open_count = self._position_store.count_open(session_id)
+        if open_count >= assumptions.max_concurrent_positions:
+            rejected_order = PaperBrokerAdapter.reject_order(
+                session_id=session_id,
+                account_id=account_id,
+                user_id=session.user_id,
+                symbol=session.symbol,
+                direction=OrderDirection.BUY,
+                quantity=1,  # placeholder; real qty unknown at rejection
+                fill_timing_model=assumptions.fill_timing_model,
+                signal_bar_timestamp=bar.timestamp,  # type: ignore[union-attr]
+                rejection_reason=RejectionReason.MAX_POSITIONS_EXCEEDED.value,
+                signal_id=signal_id,
+            )
+            self._order_store.mark_rejected(rejected_order, RejectionReason.MAX_POSITIONS_EXCEEDED.value)
+            emit_audit_event(AuditEvent(
+                event_kind=AuditEventKind.PT_ORDER_REJECTED,
+                correlation_id=correlation_id,
+                details={
+                    "session_id": session_id,
+                    "account_id": account_id,
+                    "rejection_reason": RejectionReason.MAX_POSITIONS_EXCEEDED.value,
+                    "open_count": open_count,
+                    "max_positions": assumptions.max_concurrent_positions,
+                },
+            ))
+            return 0, 1, account, 0, 0
 
         # Compute quantity
         qty = PaperBrokerAdapter.compute_quantity(
@@ -1294,6 +1360,37 @@ class PaperTradingService:
                     "account_id": account_id,
                     "rejection_reason": RejectionReason.NO_POSITION_TO_CLOSE.value,
                     "symbol": session.symbol,
+                },
+            ))
+            return 0, 1, account, 0, 0
+
+        # Guard: Pending SELL already in queue — prevents duplicate pending SELL orders
+        # accumulating while an NBO fill is waiting for the next bar open.
+        # Mirrors the PENDING_ENTRY_EXISTS guard on the BUY side (EXEC-2A).
+        pending_orders = self._order_store.load_pending(session_id, session.user_id)
+        pending_sells = [o for o in pending_orders if o.direction == OrderDirection.SELL]
+        if pending_sells:
+            rejected_order = PaperBrokerAdapter.reject_order(
+                session_id=session_id,
+                account_id=account_id,
+                user_id=session.user_id,
+                symbol=session.symbol,
+                direction=OrderDirection.SELL,
+                quantity=1,
+                fill_timing_model=assumptions.fill_timing_model,
+                signal_bar_timestamp=bar.timestamp,  # type: ignore[union-attr]
+                rejection_reason=RejectionReason.PENDING_EXIT_EXISTS.value,
+                signal_id=signal_id,
+            )
+            self._order_store.mark_rejected(rejected_order, RejectionReason.PENDING_EXIT_EXISTS.value)
+            emit_audit_event(AuditEvent(
+                event_kind=AuditEventKind.PT_ORDER_REJECTED,
+                correlation_id=correlation_id,
+                details={
+                    "session_id": session_id,
+                    "account_id": account_id,
+                    "rejection_reason": RejectionReason.PENDING_EXIT_EXISTS.value,
+                    "pending_order_id": pending_sells[0].order_id,
                 },
             ))
             return 0, 1, account, 0, 0

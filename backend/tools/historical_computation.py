@@ -276,6 +276,11 @@ def derive_warmup_bars_required(
     elif tid == "bollinger_bands":
         period = tool_config.parameters.get("period", 20)
         warmup = int(period) - 1   # same as SMA; first output at bar index period-1
+    elif tid == "volume":
+        warmup = 0
+    elif tid == "volume_ma":
+        ma_length = tool_config.parameters.get("ma_length")
+        warmup = 0 if ma_length is None else max(0, int(ma_length) - 1)
     else:
         warmup = int(getattr(metadata, "min_warmup_bars", 0))
 
@@ -918,6 +923,151 @@ def _compute_bollinger_series(
 
 
 # ---------------------------------------------------------------------------
+# Raw Volume computation (internal) — "volume" tool
+# ---------------------------------------------------------------------------
+
+_RAW_VOLUME_OUTPUT_NAME = "volume"  # matches VOLUME_METADATA.output_feature_names[0]
+
+
+def _compute_raw_volume_series(
+    tool_config: ToolConfiguration,
+    bars:        list[ToolComputationBarInput],
+) -> list[ToolOutputSeries]:
+    """
+    Emit raw per-bar volume for the standalone 'volume' tool.
+
+    Rules:
+    - No parameters; warmup = 0; every bar produces one output point.
+    - volume field: price_fields["volume"] — must be present on every bar.
+    - No smoothing, no derived calculation.
+    - Deterministic: identical inputs → identical outputs.
+
+    Returns:
+        List with one ToolOutputSeries (output_name="volume").
+
+    Raises:
+        ToolComputationError: if "volume" is absent from any bar's price_fields.
+    """
+    points: list[ToolOutputPoint] = []
+    for bar in bars:
+        if "volume" not in bar.price_fields:
+            raise ToolComputationError(
+                f"instance '{tool_config.instance_id}': "
+                f"price_fields missing 'volume' at bar_index={bar.bar_index}"
+            )
+        points.append(ToolOutputPoint(
+            bar_index=bar.bar_index,
+            timestamp=bar.timestamp,
+            value=bar.price_fields["volume"],
+        ))
+
+    return [ToolOutputSeries(
+        instance_id=tool_config.instance_id,
+        tool_id=tool_config.tool_id,
+        output_name=_RAW_VOLUME_OUTPUT_NAME,
+        warmup_bar_count=0,
+        points=tuple(points),
+    )]
+
+
+# ---------------------------------------------------------------------------
+# Volume Moving Average computation (internal) — "volume_ma" tool
+# ---------------------------------------------------------------------------
+#
+# Strategy output contract: only "volume_ma" is emitted.
+# Chart visualization contract: the volume histogram is rendered separately by
+# the chart artifact service reading price_fields["volume"] directly from bars.
+# These contracts are intentionally different — raw volume is not a strategy
+# output of this tool; it is a visualization aid.
+
+_VOLUME_MA_OUTPUT_NAME = "volume_ma"  # matches VOLUME_MA_METADATA.output_feature_names[0]
+
+
+def _compute_volume_series(
+    tool_config: ToolConfiguration,
+    bars:        list[ToolComputationBarInput],
+) -> list[ToolOutputSeries]:
+    """
+    Compute the volume MA output series for the 'volume_ma' tool.
+
+    Rules:
+    - ma_length: extracted from parameters; None → no strategy output emitted
+    - volume field: price_fields["volume"] — must be present when ma_length given
+    - MA: SMA of volume with warmup = ma_length - 1
+      (first MA value at bar index ma_length - 1)
+    - invalid ma_length (non-positive, non-integer) → ToolComputationError
+    - ma_length > available bars → MA series has zero points (no crash)
+    - no lookahead: bar N uses volumes 0..N
+    - deterministic: identical inputs → identical outputs
+
+    Strategy output only:
+        Returns [] when ma_length is None.
+        Returns [ToolOutputSeries(output_name="volume_ma")] when ma_length is set.
+
+    Volume histogram for chart:
+        NOT emitted here. The chart artifact service reads price_fields["volume"]
+        directly from bars when building the chart series for the histogram spec.
+
+    Raises:
+        ToolComputationError: ma_length invalid, or volume field absent when needed.
+    """
+    ma_length_raw = tool_config.parameters.get("ma_length")
+
+    if ma_length_raw is None:
+        # No MA requested. Chart histogram is handled by the artifact service;
+        # no strategy output is produced by this tool instance.
+        return []
+
+    # Validate and parse ma_length
+    try:
+        ma_length = int(ma_length_raw)
+    except (ValueError, TypeError) as exc:
+        raise ToolComputationError(
+            f"instance '{tool_config.instance_id}': "
+            f"ma_length must be an integer, got {ma_length_raw!r}"
+        ) from exc
+    if ma_length < 1:
+        raise ToolComputationError(
+            f"instance '{tool_config.instance_id}': "
+            f"ma_length must be >= 1, got {ma_length}"
+        )
+
+    # Extract volumes; validate presence on every bar
+    volumes: list[float] = []
+    for bar in bars:
+        if "volume" not in bar.price_fields:
+            raise ToolComputationError(
+                f"instance '{tool_config.instance_id}': "
+                f"price_fields missing 'volume' at bar_index={bar.bar_index}"
+            )
+        volumes.append(bar.price_fields["volume"])
+
+    warmup = ma_length - 1
+    ma_points: list[ToolOutputPoint] = []
+    running_sum = 0.0
+
+    for i, bar in enumerate(bars):
+        running_sum += volumes[i]
+        if i >= warmup:
+            if i >= ma_length:
+                running_sum -= volumes[i - ma_length]
+            ma_value = running_sum / ma_length
+            ma_points.append(ToolOutputPoint(
+                bar_index=bar.bar_index,
+                timestamp=bar.timestamp,
+                value=ma_value,
+            ))
+
+    return [ToolOutputSeries(
+        instance_id=tool_config.instance_id,
+        tool_id=tool_config.tool_id,
+        output_name=_VOLUME_MA_OUTPUT_NAME,
+        warmup_bar_count=warmup,
+        points=tuple(ma_points),
+    )]
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher registry (tool_id → compute function)
 # ---------------------------------------------------------------------------
 # Adding a new indicator: implement _compute_<tool>_series() above,
@@ -927,12 +1077,14 @@ _TOOL_DISPATCHERS: dict[
     str,
     Callable[[ToolConfiguration, list[ToolComputationBarInput]], list[ToolOutputSeries]],
 ] = {
-    "sma":            _compute_sma_series,
-    "ema":            _compute_ema_series,
-    "rsi":            _compute_rsi_series,
-    "macd":           _compute_macd_series,
-    "atr":            _compute_atr_series,
+    "sma":             _compute_sma_series,
+    "ema":             _compute_ema_series,
+    "rsi":             _compute_rsi_series,
+    "macd":            _compute_macd_series,
+    "atr":             _compute_atr_series,
     "bollinger_bands": _compute_bollinger_series,
+    "volume":          _compute_raw_volume_series,
+    "volume_ma":       _compute_volume_series,
 }
 
 

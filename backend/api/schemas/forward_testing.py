@@ -108,6 +108,8 @@ class ForwardTestSessionDetailResponse(ForwardTestSessionSummaryResponse):
     Full session detail for GET /forward-tests/{session_id}.
 
     Extends the summary with lifecycle and evaluation metadata.
+    last_cycle_attempted_at is set by the FT-2 scheduler; None until the
+    scheduler has run at least once for this session.
     """
     draft_id: str
     lifecycle_status_at_activation: str
@@ -118,6 +120,7 @@ class ForwardTestSessionDetailResponse(ForwardTestSessionSummaryResponse):
     error_category: str | None
     exchange: str
     asset_class: str
+    last_cycle_attempted_at: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +177,7 @@ class ForwardTestSignalResponse(BaseModel):
     provider_name: str | None
     catalog_id: str | None
     created_at: str
+    actionable_from_bar_timestamp: str | None
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from backend.core.config import settings
@@ -30,9 +32,43 @@ from backend.api.routes import chart
 
 setup_logging()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: ARG001
+    """
+    FastAPI lifespan context — starts and stops the FT-2 scheduler.
+
+    The scheduler is disabled when settings.ft_scheduler_enabled is False,
+    which is the recommended setting for test environments and manual-only
+    workflows.
+    """
+    scheduler = None
+    if settings.ft_scheduler_enabled:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from backend.jobs.ft_scheduler import create_ft_scheduler_job
+
+        job = create_ft_scheduler_job()
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            job.run_tick,
+            "interval",
+            seconds=settings.ft_scheduler_interval_seconds,
+            id="ft_scheduler",
+            max_instances=1,  # prevent overlapping ticks
+            coalesce=True,    # skip missed ticks instead of piling them up
+        )
+        scheduler.start()
+
+    yield  # application running
+
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
+
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
+    lifespan=lifespan,
 )
 
 app.include_router(health.router)

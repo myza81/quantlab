@@ -91,6 +91,11 @@ class RejectionReason(str, Enum):
     MAX_POSITIONS_EXCEEDED = "max_positions_exceeded"
     NO_POSITION_TO_CLOSE   = "no_position_to_close"
     SHORT_SELLING_DISABLED = "short_selling_disabled"
+    # Execution-contract alignment (EXEC-2A): match backtest ALREADY_LONG behavior
+    DUPLICATE_LONG_ENTRY   = "duplicate_long_entry"   # BUY while position already open
+    PENDING_ENTRY_EXISTS   = "pending_entry_exists"    # BUY while pending BUY order unresolved
+    # Conflict policy (EXEC-2D): duplicate exit guard
+    PENDING_EXIT_EXISTS    = "pending_exit_exists"     # SELL while pending SELL order unresolved
 
 
 # ---------------------------------------------------------------------------

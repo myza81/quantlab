@@ -1,5 +1,6 @@
 """
 Phase 2P.6 — Backtest Simulation Foundation tests.
+Updated EXEC-1 — adds NEXT_BAR_OPEN execution timing tests.
 
 Coverage areas:
   1.  Domain model construction and serialization
@@ -13,25 +14,26 @@ Coverage areas:
   9.  process_intent — reject close_long while flat
   10. process_intent — missing price
   11. process_intent — unsupported action (via monkeypatch)
-  12. run_simulation — single open/close cycle
-  13. run_simulation — equity curve correctness
-  14. run_simulation — unrealized PnL while open
-  15. run_simulation — realized PnL after close
-  16. run_simulation — multiple cycles
-  17. run_simulation — rejections captured
+  12. run_simulation — single open/close cycle  [SBC explicit]
+  13. run_simulation — equity curve correctness  [SBC explicit]
+  14. run_simulation — unrealized PnL while open  [SBC explicit]
+  15. run_simulation — realized PnL after close  [SBC explicit]
+  16. run_simulation — multiple cycles  [SBC explicit]
+  17. run_simulation — rejections captured  [SBC explicit]
   18. run_simulation — one equity point per bar
-  19. run_simulation — cash exhaustion rejection
+  19. run_simulation — cash exhaustion rejection  [SBC explicit]
   20. run_simulation — intent with missing price bar
   21. run_simulation — empty intent batch
-  22. run_simulation — summary correctness
-  23. run_simulation — peak and trough equity
-  24. API endpoint — valid simulation
+  22. run_simulation — summary correctness  [SBC explicit]
+  23. run_simulation — peak and trough equity  [SBC explicit]
+  24. API endpoint — valid simulation  [NBO mode with open prices]
   25. API endpoint — invalid config (negative cash)
   26. API endpoint — empty price bars produces no trades
   27. API endpoint — rejection in response
   28. Architecture guard — no forbidden imports in models
   29. Architecture guard — no forbidden imports in position_tracker
   30. Architecture guard — no forbidden imports in simulator
+  31. NEXT_BAR_OPEN execution timing contract  [EXEC-1]
 """
 from __future__ import annotations
 
@@ -44,6 +46,7 @@ from fastapi.testclient import TestClient
 from backend.api.main import app
 from backend.backtesting.models import (
     BacktestEquityPoint,
+    BacktestExecutionModel,
     BacktestRejection,
     BacktestRejectionReason,
     BacktestSimulationConfig,
@@ -89,8 +92,8 @@ def _ts(bar: int) -> datetime:
     return datetime(2024, 1, 1, tzinfo=_UTC) + timedelta(days=bar)
 
 
-def _price_bar(bar_index: int, close: float) -> SimulationPriceBar:
-    return SimulationPriceBar(bar_index=bar_index, timestamp=_ts(bar_index), close=close)
+def _price_bar(bar_index: int, close: float, open: float | None = None) -> SimulationPriceBar:
+    return SimulationPriceBar(bar_index=bar_index, timestamp=_ts(bar_index), close=close, open=open)
 
 
 def _intent(
@@ -143,8 +146,27 @@ def _make_batch(*intents: TradeIntent, draft_id: str | None = "draft-1") -> Trad
     )
 
 
-def _default_config(cash: float = 10_000.0, qty: float = 1.0) -> BacktestSimulationConfig:
-    return BacktestSimulationConfig(initial_cash=cash, fixed_quantity=qty)
+def _default_config(
+    cash: float = 10_000.0,
+    qty:  float = 1.0,
+) -> BacktestSimulationConfig:
+    # Explicitly use SAME_BAR_CLOSE for all legacy unit tests so their expected
+    # values remain correct.  Tests that verify NEXT_BAR_OPEN timing use
+    # _nbo_config() or construct configs inline.
+    return BacktestSimulationConfig(
+        initial_cash=cash,
+        fixed_quantity=qty,
+        execution_model=BacktestExecutionModel.SAME_BAR_CLOSE,
+    )
+
+
+def _nbo_config(cash: float = 10_000.0, qty: float = 1.0) -> BacktestSimulationConfig:
+    """Config helper for NEXT_BAR_OPEN tests."""
+    return BacktestSimulationConfig(
+        initial_cash=cash,
+        fixed_quantity=qty,
+        execution_model=BacktestExecutionModel.NEXT_BAR_OPEN,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +198,11 @@ class TestDomainModels:
             trade_id="trade:x",
             source_intent_id="x",
             action="open_long",
-            bar_index=0,
-            timestamp=None,
+            signal_bar_index=0,
+            signal_timestamp=None,
+            execution_bar_index=1,
+            execution_timestamp=None,
+            execution_model=BacktestExecutionModel.NEXT_BAR_OPEN,
             quantity=1.0,
             price=100.0,
             cash_before=10_000.0,
@@ -378,7 +403,9 @@ class TestProcessIntentOpenLong:
         assert trade.trade_id == f"trade:{intent.intent_id}"
         assert trade.source_intent_id == intent.intent_id
         assert trade.action == "open_long"
-        assert trade.bar_index == 5
+        # No explicit execution_bar_index passed → defaults to signal bar (SBC semantics)
+        assert trade.signal_bar_index == 5
+        assert trade.execution_bar_index == 5
         assert trade.quantity == pytest.approx(3.0)
         assert trade.price == pytest.approx(200.0)
         assert trade.realized_pnl is None
@@ -727,11 +754,13 @@ class TestRejections:
         assert result.rejections[0].reason == BacktestRejectionReason.ALREADY_LONG
 
     def test_close_while_flat_rejection(self):
+        # EXEC-2D: SELL while flat is now intercepted before the position tracker
+        # and rejected with CONFLICT_EXIT_SUPPRESSED (not ALREADY_FLAT).
         batch = _make_batch(_close_intent(0))
         bars = [_price_bar(0, 100.0)]
         result = run_simulation(batch, bars, _default_config())
         assert len(result.rejections) == 1
-        assert result.rejections[0].reason == BacktestRejectionReason.ALREADY_FLAT
+        assert result.rejections[0].reason == BacktestRejectionReason.CONFLICT_EXIT_SUPPRESSED
 
     def test_rejection_does_not_affect_equity(self):
         batch = _make_batch(_close_intent(0))
@@ -898,11 +927,14 @@ class TestBacktestSimulationAPI:
         if intents is None:
             intents = [_open_intent(0), _close_intent(1)]
         if bars is None:
+            # 3 bars: signal at bar 0 fills at bar 1 open, signal at bar 1 fills at bar 2 open.
             bars = [
-                {"bar_index": 0, "timestamp": "2024-01-01T00:00:00Z", "close": 100.0},
-                {"bar_index": 1, "timestamp": "2024-01-02T00:00:00Z", "close": 110.0},
+                {"bar_index": 0, "timestamp": "2024-01-01T00:00:00Z", "open": 99.0,  "close": 100.0},
+                {"bar_index": 1, "timestamp": "2024-01-02T00:00:00Z", "open": 101.0, "close": 110.0},
+                {"bar_index": 2, "timestamp": "2024-01-03T00:00:00Z", "open": 109.0, "close": 115.0},
             ]
         if config is None:
+            # Default to NBO (the production default) for API-level tests.
             config = {"initial_cash": 10000.0, "fixed_quantity": 1.0}
         batch = _make_batch(*intents)
         return {
@@ -925,14 +957,17 @@ class TestBacktestSimulationAPI:
         assert "config" in data
 
     def test_two_trades_in_response(self):
+        # NBO: open signal on bar 0 → fills at bar 1 open (101.0)
+        #       close signal on bar 1 → fills at bar 2 open (109.0)
         resp = client.post("/backtests/simulate", json=self._build_request())
         data = resp.json()
         assert len(data["trades"]) == 2
 
     def test_realized_pnl_in_summary(self):
+        # Entry at bar 1 open (101.0), exit at bar 2 open (109.0), qty=1 → PnL = 8.0
         resp = client.post("/backtests/simulate", json=self._build_request())
         data = resp.json()
-        assert data["summary"]["total_realized_pnl"] == pytest.approx(10.0)
+        assert data["summary"]["total_realized_pnl"] == pytest.approx(8.0)
 
     def test_invalid_config_negative_cash_returns_422(self):
         req = self._build_request(config={"initial_cash": -100.0, "fixed_quantity": 1.0})
@@ -940,16 +975,18 @@ class TestBacktestSimulationAPI:
         assert resp.status_code == 422
 
     def test_rejection_appears_in_response(self):
-        # close while flat → rejection
+        # close while flat → CONFLICT_EXIT_SUPPRESSED rejection (EXEC-2D policy)
         req = self._build_request(
             intents=[_close_intent(0)],
             bars=[{"bar_index": 0, "close": 100.0}],
+            config={"initial_cash": 10000.0, "fixed_quantity": 1.0,
+                    "execution_model": "same_bar_close"},
         )
         resp = client.post("/backtests/simulate", json=req)
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["rejections"]) == 1
-        assert data["rejections"][0]["reason"] == "already_flat"
+        assert data["rejections"][0]["reason"] == "conflict_exit_suppressed"
 
     def test_empty_intents_no_trades(self):
         req = self._build_request(
@@ -1046,3 +1083,424 @@ class TestArchitectureGuards:
 
     def test_simulator_no_execution_imports(self):
         _assert_no_forbidden_imports("backend.backtesting.simulator")
+
+
+# ---------------------------------------------------------------------------
+# 31. NEXT_BAR_OPEN execution timing contract  (EXEC-1)
+# ---------------------------------------------------------------------------
+
+class TestNextBarOpenExecution:
+    """
+    Verifies the NEXT_BAR_OPEN execution timing contract:
+
+        Signal on Bar N → fill at Bar N+1 open ± slippage.
+
+    Requirements tested:
+        1. Buy signal on Bar N fills at Bar N+1 open
+        2. Sell/exit signal on Bar N fills at Bar N+1 open
+        3. Final-bar signal produces FINAL_BAR_NO_FILL rejection
+        4. Fill price equals next candle open with slippage applied
+        5. signal_bar_index != execution_bar_index
+        6. signal_timestamp != execution_timestamp
+        7. SAME_BAR_CLOSE works only when explicitly configured
+        8. Existing backtest reports still serialize correctly
+        9. No strategy logic changes required (architecture guard — tested separately)
+       10. Crossover-style signal timing regression
+    """
+
+    # ----------------------------------------------------------------
+    # 1. Buy signal on Bar N fills at Bar N+1 open
+    # ----------------------------------------------------------------
+
+    def test_buy_signal_fills_at_next_bar_open(self):
+        batch = _make_batch(_open_intent(0))
+        bars  = [_price_bar(0, 100.0), _price_bar(1, 110.0, open=105.0)]
+        cfg   = _nbo_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+        assert len(result.trades) == 1
+        trade = result.trades[0]
+        assert trade.action == "open_long"
+        assert trade.price == pytest.approx(105.0)       # bar 1 open
+        assert trade.execution_bar_index == 1            # filled at bar 1
+        assert trade.signal_bar_index == 0               # signal was on bar 0
+
+    # ----------------------------------------------------------------
+    # 2. Sell/exit signal on Bar N fills at Bar N+1 open
+    # ----------------------------------------------------------------
+
+    def test_sell_signal_fills_at_next_bar_open(self):
+        batch = _make_batch(_open_intent(0), _close_intent(1))
+        bars  = [
+            _price_bar(0, 100.0),
+            _price_bar(1, 110.0, open=105.0),
+            _price_bar(2, 115.0, open=112.0),
+        ]
+        cfg = _nbo_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+        assert len(result.trades) == 2
+        open_trade  = result.trades[0]
+        close_trade = result.trades[1]
+        assert open_trade.action  == "open_long"
+        assert close_trade.action == "close_long"
+        assert close_trade.price == pytest.approx(112.0)  # bar 2 open
+        assert close_trade.execution_bar_index == 2        # filled at bar 2
+        assert close_trade.signal_bar_index == 1           # signal on bar 1
+
+    # ----------------------------------------------------------------
+    # 3. Final-bar signal produces FINAL_BAR_NO_FILL rejection
+    # ----------------------------------------------------------------
+
+    def test_final_bar_signal_produces_no_fill(self):
+        # Signal on bar 1 — the only bar — has no next bar to fill on.
+        batch = _make_batch(_open_intent(0))
+        bars  = [_price_bar(0, 100.0, open=99.0)]
+        cfg   = _nbo_config()
+        result = run_simulation(batch, bars, cfg)
+        assert len(result.trades) == 0
+        assert len(result.rejections) == 1
+        assert result.rejections[0].reason == BacktestRejectionReason.FINAL_BAR_NO_FILL
+        assert result.rejections[0].bar_index == 0  # signal bar
+
+    def test_final_bar_close_intent_no_fill(self):
+        batch = _make_batch(_open_intent(0), _close_intent(1))
+        bars  = [
+            _price_bar(0, 100.0),
+            _price_bar(1, 110.0, open=105.0),  # open fills bar 0 signal
+        ]
+        cfg = _nbo_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+        # open fills at bar 1; close signal on bar 1 is the final bar → rejection
+        assert len(result.trades) == 1
+        assert result.trades[0].action == "open_long"
+        final_bar_rejections = [
+            r for r in result.rejections
+            if r.reason == BacktestRejectionReason.FINAL_BAR_NO_FILL
+        ]
+        assert len(final_bar_rejections) == 1
+
+    # ----------------------------------------------------------------
+    # 4. Fill price equals next candle open with slippage applied
+    # ----------------------------------------------------------------
+
+    def test_fill_price_is_next_bar_open_with_slippage(self):
+        from backend.backtesting.cost_model import SlippageMode
+        batch = _make_batch(_open_intent(0))
+        bars  = [_price_bar(0, 100.0), _price_bar(1, 110.0, open=105.0)]
+        cfg = BacktestSimulationConfig(
+            initial_cash=10_000.0,
+            fixed_quantity=1.0,
+            execution_model=BacktestExecutionModel.NEXT_BAR_OPEN,
+            slippage_mode=SlippageMode.FIXED,
+            slippage_value=0.50,
+        )
+        result = run_simulation(batch, bars, cfg)
+        trade = result.trades[0]
+        # open_long slippage is adverse to buyer: open + slippage = 105.0 + 0.50
+        assert trade.price == pytest.approx(105.50)
+
+    # ----------------------------------------------------------------
+    # 5 & 6. signal_bar_index != execution_bar_index  /  timestamps differ
+    # ----------------------------------------------------------------
+
+    def test_signal_and_execution_bar_indices_differ(self):
+        batch = _make_batch(_open_intent(0))
+        bars  = [_price_bar(0, 100.0), _price_bar(1, 110.0, open=105.0)]
+        result = run_simulation(batch, bars, _nbo_config())
+        trade = result.trades[0]
+        assert trade.signal_bar_index != trade.execution_bar_index
+        assert trade.signal_bar_index == 0
+        assert trade.execution_bar_index == 1
+
+    def test_signal_and_execution_timestamps_differ(self):
+        batch = _make_batch(_open_intent(0))
+        bars  = [_price_bar(0, 100.0), _price_bar(1, 110.0, open=105.0)]
+        result = run_simulation(batch, bars, _nbo_config())
+        trade = result.trades[0]
+        assert trade.signal_timestamp != trade.execution_timestamp
+        assert trade.signal_timestamp == _ts(0)
+        assert trade.execution_timestamp == _ts(1)
+
+    # ----------------------------------------------------------------
+    # 7. SAME_BAR_CLOSE works only when explicitly configured
+    # ----------------------------------------------------------------
+
+    def test_same_bar_close_fills_at_signal_bar(self):
+        batch = _make_batch(_open_intent(0))
+        bars  = [_price_bar(0, 100.0), _price_bar(1, 110.0)]
+        # Explicitly opt into SBC — signal_bar == execution_bar
+        cfg = BacktestSimulationConfig(
+            initial_cash=10_000.0,
+            fixed_quantity=1.0,
+            execution_model=BacktestExecutionModel.SAME_BAR_CLOSE,
+        )
+        result = run_simulation(batch, bars, cfg)
+        assert len(result.trades) == 1
+        trade = result.trades[0]
+        assert trade.signal_bar_index == trade.execution_bar_index == 0
+        assert trade.price == pytest.approx(100.0)        # bar 0 close
+        assert trade.execution_model == BacktestExecutionModel.SAME_BAR_CLOSE
+
+    def test_default_config_uses_next_bar_open(self):
+        # Production default must NOT be same_bar_close.
+        cfg = BacktestSimulationConfig()
+        assert cfg.execution_model == BacktestExecutionModel.NEXT_BAR_OPEN
+
+    # ----------------------------------------------------------------
+    # 8. Existing backtest report serializes correctly with NBO
+    # ----------------------------------------------------------------
+
+    def test_nbo_result_serializes_to_dict(self):
+        batch = _make_batch(_open_intent(0), _close_intent(1))
+        bars  = [
+            _price_bar(0, 100.0),
+            _price_bar(1, 110.0, open=105.0),
+            _price_bar(2, 115.0, open=112.0),
+        ]
+        result = run_simulation(batch, bars, _nbo_config())
+        d = result.model_dump()
+        assert "trades" in d
+        assert "equity_curve" in d
+        assert "rejections" in d
+        assert "summary" in d
+        assert "config" in d
+        # Verify new trade fields are present in serialized form
+        trade_dict = d["trades"][0]
+        assert "signal_bar_index" in trade_dict
+        assert "execution_bar_index" in trade_dict
+        assert "signal_timestamp" in trade_dict
+        assert "execution_timestamp" in trade_dict
+        assert "execution_model" in trade_dict
+
+    # ----------------------------------------------------------------
+    # 10. Crossover-style signal timing regression
+    # ----------------------------------------------------------------
+
+    def test_crossover_style_no_lookahead_bias(self):
+        """
+        Simulates the classic moving-average crossover pattern.
+
+        Signal fires at Bar N (MA crossover observed at close of Bar N).
+        With NBO: entry occurs at Bar N+1 open.
+        Equity at Bar N should still reflect flat position (no premature fill).
+        """
+        batch = _make_batch(_open_intent(2))   # MA crossover fires at close of bar 2
+        bars  = [
+            _price_bar(0, 100.0),
+            _price_bar(1, 102.0),
+            _price_bar(2, 104.0),              # signal bar
+            _price_bar(3, 106.0, open=103.5),  # execution bar (next bar open)
+            _price_bar(4, 108.0),
+        ]
+        cfg = _nbo_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+
+        # Bar 2 (signal bar): no fill yet — position must still be flat
+        eq2 = result.equity_curve[2]
+        assert eq2.position_quantity == pytest.approx(0.0)
+        assert eq2.cash == pytest.approx(10_000.0)
+
+        # Bar 3 (execution bar): filled at open 103.5 — position now held
+        eq3 = result.equity_curve[3]
+        assert eq3.position_quantity == pytest.approx(1.0)
+        assert eq3.cash == pytest.approx(10_000.0 - 103.5)
+
+        # Trade record confirms timing separation
+        assert len(result.trades) == 1
+        trade = result.trades[0]
+        assert trade.signal_bar_index == 2
+        assert trade.execution_bar_index == 3
+        assert trade.price == pytest.approx(103.5)
+
+    # ----------------------------------------------------------------
+    # Edge: NBO raises on missing open price at execution bar
+    # ----------------------------------------------------------------
+
+    def test_nbo_raises_if_execution_bar_open_is_none(self):
+        batch = _make_batch(_open_intent(0))
+        # bar 1 has no open — should raise when NBO tries to fill there
+        bars = [_price_bar(0, 100.0), _price_bar(1, 110.0)]  # open=None by default
+        cfg  = _nbo_config()
+        with pytest.raises(ValueError, match="missing 'open' price"):
+            run_simulation(batch, bars, cfg)
+
+
+# ---------------------------------------------------------------------------
+# EXEC-2D: Multi-Signal Conflict Policy
+# ---------------------------------------------------------------------------
+
+class TestMultiSignalConflictPolicy:
+    """
+    Verifies the conservative conflict policy implemented in EXEC-2D:
+
+        Signal-time position state determines exit validity.
+
+        If position is flat at signal time, a same-bar CLOSE_LONG is rejected
+        with CONFLICT_EXIT_SUPPRESSED — no wash trade.
+
+        If position is already long at signal time, the normal path applies:
+        OPEN_LONG → ALREADY_LONG rejection, CLOSE_LONG → fills.
+
+    Tests cover both NBO and SBC execution paths.
+    """
+
+    # ── Scenario A (flat + BUY+SELL same bar): no wash trade ─────────────
+
+    def test_nbo_flat_buy_and_sell_same_bar_no_wash_trade(self):
+        """NBO: flat + BUY+SELL on bar 0 → only BUY fills at bar 1; SELL suppressed."""
+        open_intent  = _intent(0, TradeIntentAction.OPEN_LONG,  rule_kind="entry", rule_index=0)
+        close_intent = _intent(0, TradeIntentAction.CLOSE_LONG, rule_kind="exit",  rule_index=0)
+        batch = _make_batch(open_intent, close_intent)
+        bars  = [_price_bar(0, 100.0), _price_bar(1, 110.0, open=105.0)]
+        cfg   = _nbo_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+
+        # Only one trade: the BUY
+        assert len(result.trades) == 1
+        assert result.trades[0].action == "open_long"
+
+        # SELL suppressed with CONFLICT_EXIT_SUPPRESSED
+        conflict_rejections = [
+            r for r in result.rejections
+            if r.reason == BacktestRejectionReason.CONFLICT_EXIT_SUPPRESSED
+        ]
+        assert len(conflict_rejections) == 1
+        assert conflict_rejections[0].bar_index == 0
+
+    def test_sbc_flat_buy_and_sell_same_bar_no_wash_trade(self):
+        """SBC: flat + BUY+SELL on bar 0 → only BUY fills at bar 0; SELL suppressed."""
+        open_intent  = _intent(0, TradeIntentAction.OPEN_LONG,  rule_kind="entry", rule_index=0)
+        close_intent = _intent(0, TradeIntentAction.CLOSE_LONG, rule_kind="exit",  rule_index=0)
+        batch = _make_batch(open_intent, close_intent)
+        bars  = [_price_bar(0, 100.0)]
+        cfg   = _default_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+
+        assert len(result.trades) == 1
+        assert result.trades[0].action == "open_long"
+        conflict_rejections = [
+            r for r in result.rejections
+            if r.reason == BacktestRejectionReason.CONFLICT_EXIT_SUPPRESSED
+        ]
+        assert len(conflict_rejections) == 1
+
+    def test_nbo_flat_buy_sell_buy_continues_to_hold_position(self):
+        """After flat+BUY+SELL conflict: position is open after bar 1; no spurious close."""
+        open_intent  = _intent(0, TradeIntentAction.OPEN_LONG,  rule_kind="entry", rule_index=0)
+        close_intent = _intent(0, TradeIntentAction.CLOSE_LONG, rule_kind="exit",  rule_index=0)
+        batch = _make_batch(open_intent, close_intent)
+        bars  = [_price_bar(0, 100.0), _price_bar(1, 110.0, open=105.0)]
+        cfg   = _nbo_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+
+        # Equity curve at bar 1: position of 1 unit × 110 close
+        final_equity_point = result.equity_curve[-1]
+        assert final_equity_point.position_quantity == pytest.approx(1.0)
+
+    # ── Scenario B (long + BUY+SELL same bar): consistent with prior behavior ─
+
+    def test_nbo_long_buy_and_sell_same_bar_sell_executes(self):
+        """NBO: already long + BUY+SELL on bar 1 → BUY rejected ALREADY_LONG, SELL fills."""
+        # Bar 0: open long. Bar 1: while long, both BUY+SELL fire.
+        intents = [
+            _intent(0, TradeIntentAction.OPEN_LONG,  rule_kind="entry", rule_index=0),
+            _intent(1, TradeIntentAction.OPEN_LONG,  rule_kind="entry", rule_index=0),
+            _intent(1, TradeIntentAction.CLOSE_LONG, rule_kind="exit",  rule_index=0),
+        ]
+        batch = _make_batch(*intents)
+        bars  = [
+            _price_bar(0, 100.0),
+            _price_bar(1, 110.0, open=105.0),
+            _price_bar(2, 115.0, open=112.0),
+        ]
+        cfg = _nbo_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+
+        # open_long from bar 0 fills at bar 1 open
+        # open_long from bar 1 rejected ALREADY_LONG
+        # close_long from bar 1 fills at bar 2 open (position was long at signal time)
+        trade_actions = [t.action for t in result.trades]
+        assert "open_long"  in trade_actions
+        assert "close_long" in trade_actions
+        already_long_rejections = [
+            r for r in result.rejections
+            if r.reason == BacktestRejectionReason.ALREADY_LONG
+        ]
+        assert len(already_long_rejections) == 1
+
+    def test_sbc_long_buy_and_sell_same_bar_sell_executes(self):
+        """SBC: already long + BUY+SELL on bar 1 → BUY rejected ALREADY_LONG, SELL fills."""
+        intents = [
+            _intent(0, TradeIntentAction.OPEN_LONG,  rule_kind="entry", rule_index=0),
+            _intent(1, TradeIntentAction.OPEN_LONG,  rule_kind="entry", rule_index=0),
+            _intent(1, TradeIntentAction.CLOSE_LONG, rule_kind="exit",  rule_index=0),
+        ]
+        batch = _make_batch(*intents)
+        bars  = [_price_bar(0, 100.0), _price_bar(1, 110.0)]
+        cfg   = _default_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+
+        trade_actions = [t.action for t in result.trades]
+        assert "open_long"  in trade_actions
+        assert "close_long" in trade_actions
+        already_long = [r for r in result.rejections if r.reason == BacktestRejectionReason.ALREADY_LONG]
+        assert len(already_long) == 1
+
+    # ── Repeated SELL while flat ──────────────────────────────────────────
+
+    def test_nbo_repeated_sell_while_flat_no_fabricated_trade(self):
+        """SELL signals on two bars while flat → both suppressed; no short position created."""
+        intents = [
+            _intent(0, TradeIntentAction.CLOSE_LONG, rule_kind="exit", rule_index=0),
+            _intent(1, TradeIntentAction.CLOSE_LONG, rule_kind="exit", rule_index=0),
+        ]
+        batch = _make_batch(*intents)
+        bars  = [
+            _price_bar(0, 100.0),
+            _price_bar(1, 105.0, open=102.0),
+            _price_bar(2, 110.0, open=107.0),
+        ]
+        cfg = _nbo_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+
+        assert len(result.trades) == 0
+        conflict = [r for r in result.rejections if r.reason == BacktestRejectionReason.CONFLICT_EXIT_SUPPRESSED]
+        assert len(conflict) == 2
+
+    def test_sbc_sell_while_flat_no_fabricated_trade(self):
+        """SBC: SELL while flat → suppressed; cash unchanged."""
+        batch = _make_batch(_close_intent(0))
+        bars  = [_price_bar(0, 100.0)]
+        cfg   = _default_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+
+        assert len(result.trades) == 0
+        conflict = [r for r in result.rejections if r.reason == BacktestRejectionReason.CONFLICT_EXIT_SUPPRESSED]
+        assert len(conflict) == 1
+        assert result.summary.final_cash == pytest.approx(10_000.0)
+
+    # ── Final-bar conflict ────────────────────────────────────────────────
+
+    def test_nbo_final_bar_flat_buy_and_sell_both_rejected(self):
+        """NBO: flat + BUY+SELL on final bar → both get FINAL_BAR_NO_FILL.
+
+        In NBO mode the 'next_bar is None' check fires before the conflict check,
+        so both OPEN_LONG and CLOSE_LONG receive FINAL_BAR_NO_FILL when there is
+        no subsequent bar.  No trades; no wash trade.
+        """
+        open_intent  = _intent(0, TradeIntentAction.OPEN_LONG,  rule_kind="entry", rule_index=0)
+        close_intent = _intent(0, TradeIntentAction.CLOSE_LONG, rule_kind="exit",  rule_index=0)
+        batch = _make_batch(open_intent, close_intent)
+        bars  = [_price_bar(0, 100.0, open=99.0)]
+        cfg   = _nbo_config(cash=10_000.0, qty=1.0)
+        result = run_simulation(batch, bars, cfg)
+
+        assert len(result.trades) == 0
+        assert len(result.rejections) == 2
+        reasons = {r.reason for r in result.rejections}
+        assert BacktestRejectionReason.FINAL_BAR_NO_FILL in reasons
+
+    # ── Conflict rejection reason value ──────────────────────────────────
+
+    def test_conflict_exit_suppressed_reason_value(self):
+        """CONFLICT_EXIT_SUPPRESSED has the expected string value."""
+        assert BacktestRejectionReason.CONFLICT_EXIT_SUPPRESSED.value == "conflict_exit_suppressed"

@@ -7,6 +7,163 @@ Not a historical archive — completed phase detail lives in `agent/archive/HAND
 
 # Current Phase Status
 
+**EXEC-2D — Multi-Signal Conflict Policy Alignment — COMPLETE**
+(backend: 5 117 ✓ | +14 new tests: 9 backtest conflict policy + 5 PT PENDING_EXIT_EXISTS | frontend: unchanged)
+- **Policy implemented**: Signal-time position state determines exit validity. `CLOSE_LONG` rejected when position is flat at signal time. No wash trade. Scenario B (already long + BUY+SELL) preserved.
+- **`backend/backtesting/models.py`** — `CONFLICT_EXIT_SUPPRESSED = "conflict_exit_suppressed"` added to `BacktestRejectionReason`. Distinct from `ALREADY_FLAT` (fill-time) — this fires at signal-queue time.
+- **`backend/backtesting/simulator.py`** — `TradeIntentAction` imported; two conflict filters added:
+  - NBO path (`_run_next_bar_open` Step 2): `signal_time_is_flat = state.is_flat` captured once before the intent loop; any `CLOSE_LONG` with `next_bar is not None and signal_time_is_flat` → rejected with `CONFLICT_EXIT_SUPPRESSED` (not queued to `pending_nbo`). Final-bar `CLOSE_LONG` still gets `FINAL_BAR_NO_FILL` (checked first).
+  - SBC path (`_run_same_bar_close`): `was_flat_at_bar_start = state.is_flat` captured before the intent loop; any `CLOSE_LONG` with `was_flat_at_bar_start` → rejected with `CONFLICT_EXIT_SUPPRESSED` (not sent to `process_intent`).
+- **`backend/paper_trading/execution_models.py`** — `PENDING_EXIT_EXISTS = "pending_exit_exists"` added to `RejectionReason`. Symmetric guard to EXEC-2A's `PENDING_ENTRY_EXISTS`.
+- **`backend/paper_trading/service.py`** — `_process_exit_signal()`: new guard after finding the open position; loads pending orders, filters by `direction == SELL`; if any pending SELL exists → `reject_order(PENDING_EXIT_EXISTS)` + `mark_rejected` + `PT_ORDER_REJECTED` audit event. Pending BUY orders do not trigger this guard. `_resolve_pending_order` SELL safety net remains as defence-in-depth.
+- **`tests/unit/test_backtest_simulation.py`** — `TestMultiSignalConflictPolicy` class: 9 new tests (NBO flat BUY+SELL no wash trade; SBC flat BUY+SELL no wash trade; NBO position held after conflict; NBO long BUY+SELL SELL executes; SBC long BUY+SELL SELL executes; NBO repeated SELL while flat both suppressed; SBC SELL while flat suppressed; NBO final bar flat BUY+SELL both FINAL_BAR_NO_FILL; reason value assertion). 2 existing tests updated: `test_close_while_flat_rejection` and `test_rejection_appears_in_response` now expect `CONFLICT_EXIT_SUPPRESSED` instead of `ALREADY_FLAT`.
+- **`tests/unit/test_paper_trading_service.py`** — 5 new tests in `TestProcessExitSignal`: reject when pending SELL exists, audit event emitted, pending BUY does not trigger guard, no pending orders allows exit, reason value assertion.
+- **Behavioral alignment post-EXEC-2D**:
+  - Scenario A (flat + BUY+SELL): BT → BUY fills, SELL rejected `CONFLICT_EXIT_SUPPRESSED`. PT → BUY fills, SELL rejected `NO_POSITION_TO_CLOSE`. ✓ No wash trade in either mode.
+  - Scenario B (long + BUY+SELL): BT → BUY rejected `ALREADY_LONG`, SELL fills. PT → BUY rejected `DUPLICATE_LONG_ENTRY`, SELL fills. ✓ Consistent.
+  - Duplicate pending SELL: PT → second SELL rejected `PENDING_EXIT_EXISTS`. ✓ Intermediate state correct.
+- **Explicit non-goals maintained**: no broker logic; no live trading; no stop-loss/take-profit; no same-bar reversal; no short selling; no scaling; no partial fills; no strategy changes; no scheduler changes; no dependencies added
+
+**EXEC-2C — Multi-Signal Conflict Ordering Audit — COMPLETE**
+(audit-only — no runtime code modified | report: `docs/audits/EXECUTION_MULTI_SIGNAL_CONFLICT_AUDIT.md` | backend: 5 014 ✓ unchanged)
+- **Signal extraction ordering**: Deterministic — sort key `(bar_index, _RULE_KIND_ORDER[kind], rule_index, rule_id)` with `_RULE_KIND_ORDER = {"entry": 0, "exit": 1}`; entry always precedes exit at same bar; tested in `test_signal_events.py:428` and `test_trade_intents.py:531`
+- **Finding 1 — Critical BT/PT mismatch (Scenario A: flat + BUY+SELL)**: Backtest NBO queues both OPEN_LONG and CLOSE_LONG to `pending_nbo[N+1]`; both execute sequentially at N+1 open → **wash trade** (buy+sell at same price, no net position). PT: entry creates pending BUY (no position exists), exit evaluated → `NO_POSITION_TO_CLOSE` (no open position at signal time) → **only BUY executes**. These are different outcomes.
+- **Finding 2 — Scenario B consistent (long + BUY+SELL)**: BT: OPEN_LONG rejected `ALREADY_LONG` by position_tracker; CLOSE_LONG executes. PT: `DUPLICATE_LONG_ENTRY` (EXEC-2A guard); CLOSE_LONG executes. Consistent across BT and PT. ✓
+- **Finding 3 — No PENDING_SELL_EXISTS guard**: `_process_exit_signal()` creates a SELL order whenever open position exists, with no check for existing pending SELL. Consecutive-bar exit signals while SELL is unfilled create duplicate pending SELL orders. `_resolve_pending_order` cancels duplicate at fill time (safety net) but intermediate state is wrong.
+- **Finding 4 — Signal store dedup correct by design**: Dedup key `(session_id, bar_timestamp, signal_direction)` — entry_long and exit_long are different directions; both stored when same-bar BUY+SELL fires. Same direction deduplication across retry cycles works correctly.
+- **Finding 5 — FT recording no conflict**: FT records entry and exit independently; no execution layer; both signals stored; no action required for FT itself.
+- **Required fixes identified (not implemented)**:
+  - Fix 1: Add `CONFLICT_ENTRY_WINS` suppression reason to PT `_process_exit_signal()` for same-bar flat entry+exit
+  - Fix 2: Eliminate wash trade in BT NBO for same-bar BUY+SELL from flat (suppress exit-side `TradeIntent` when both present and position is flat)
+  - Fix 3: Add `PENDING_SELL_EXISTS` guard to `_process_exit_signal()` (mirrors EXEC-2A `PENDING_ENTRY_EXISTS` for entry side)
+  - Fix 4: Use `CONFLICT_ENTRY_WINS` reason code instead of `NO_POSITION_TO_CLOSE` when conflict is the semantic cause
+- **Test coverage gaps identified**: 7 missing test scenarios — same-bar BUY+SELL BT NBO/SBC from flat (wash trade), same-bar BUY+SELL BT NBO/SBC from long (BUY rejected/SELL executes), same-bar BUY+SELL PT from flat/long, consecutive-bar PT exit while SELL pending, FT dual-recording
+- **Architecture boundary**: audit-only; no imports changed; no runtime logic modified; no strategy logic changed; no backtest/PT/scheduler behavior changed; no dependencies added
+
+**EXEC-2B — Forward Test Signal Actionability Contract — COMPLETE**
+(backend: 5 014 ✓ | +22 new tests vs EXEC-2A | frontend types updated | TypeScript build: not re-run, change is additive)
+- **`backend/forward_testing/models.py`** — `actionable_from_bar_timestamp: datetime | None = None` added to `ForwardTestSignal` (after `created_at`, before validators); `_optional_utc_aware` validator handles `None` pass-through, naive datetime rejection, and UTC normalization via `astimezone(timezone.utc)`; inline comment explains `None` semantics and backward-compat guarantee; `extra="forbid"` preserved
+- **`backend/forward_testing/service.py`** — `_poll_cycle()` loop changed from `for bar_index, bar in indexed_new_bars:` to `for _bar_pos, (bar_index, bar) in enumerate(indexed_new_bars):`; `_next_bar_ts` derived: `indexed_new_bars[_bar_pos + 1][1].timestamp if _bar_pos + 1 < len(indexed_new_bars) else None`; both entry and exit `ForwardTestSignal(...)` constructors updated with `actionable_from_bar_timestamp=_next_bar_ts`
+- **`backend/paper_trading/service.py`** — same enumeration change in PT `_poll_cycle()` bar loop; both PT entry and exit `ForwardTestSignal(...)` constructors updated with `actionable_from_bar_timestamp=_next_bar_ts`
+- **`backend/api/schemas/forward_testing.py`** — `actionable_from_bar_timestamp: str | None` added to `ForwardTestSignalResponse`
+- **`backend/api/routes/forward_testing.py`** — `list_signals()` response construction updated: `actionable_from_bar_timestamp=sig.actionable_from_bar_timestamp.isoformat() if sig.actionable_from_bar_timestamp is not None else None`
+- **`frontend/src/types/forwardTesting.ts`** — `actionable_from_bar_timestamp: string | null` added to `ForwardTestSignal` interface
+- **`tests/unit/test_forward_test_service.py`** — 8 new tests in `TestActionableFromBarTimestamp` (single-bar→None; multi-bar first→next-ts; multi-bar last→None; signal_timestamp unchanged; 3-bar middle gets bar2-ts; signal_timestamp distinct from actionable) + 3 new tests in `TestActionableFromBarTimestampModelBackwardCompat` (omit→None; model_validate_json legacy JSON→None; naive datetime→ValidationError)
+- **`tests/unit/test_forward_testing_routes.py`** — 3 new tests in `TestSignalsActionableFromBarTimestamp` (field always present; null when None; ISO string when set)
+- **Explicit non-goals maintained**: no backtest behavior modified; no paper trading execution behavior modified; no scheduler behavior modified; no strategy logic changed; no exchange calendar inference; no future bar timestamp fabrication; no live trading behavior
+
+**EXEC-2A — Paper Trading / Backtest Contract Alignment — COMPLETE**
+(backend: 4 992 ✓ | +10 new contract-alignment tests | frontend: 821 ✓ unchanged)
+- **`backend/paper_trading/execution_models.py`** — `RejectionReason` enum extended: `DUPLICATE_LONG_ENTRY = "duplicate_long_entry"` (BUY while position already open) and `PENDING_ENTRY_EXISTS = "pending_entry_exists"` (BUY while pending BUY order unresolved); both new codes are distinct from all pre-existing rejection codes
+- **`backend/paper_trading/service.py`** — `_process_entry_signal()` guard ordering restructured; Guard 1 (DUPLICATE_LONG_ENTRY): if open position exists for this symbol → reject immediately (matches backtest ALREADY_LONG behavior); Guard 2 (PENDING_ENTRY_EXISTS): if any pending BUY order exists in order store → reject (prevents double-entry across NBO bar boundary); Guard 3 (MAX_POSITIONS_EXCEEDED): unchanged, only reached when no position and no pending BUY; quantity/cash computation unchanged; all rejections emit `PT_ORDER_REJECTED` audit event with structured reason code; pending SELL orders do NOT trigger PENDING_ENTRY_EXISTS (SELL-side guard unchanged)
+- **`tests/unit/test_paper_trading_service.py`** — 9 new tests in `TestProcessEntrySignal`: DUPLICATE_LONG_ENTRY rejection, audit event emission, no fill/position/cash on rejection, guard order before MAX_POSITIONS; PENDING_ENTRY_EXISTS rejection, audit event emission, pending SELL does not block BUY, guard order before MAX_POSITIONS; normal NBO entry unaffected when no position/pending
+- **`tests/unit/test_paper_trading_execution_models.py`** — 1 new test: `test_rejection_reason_exec2a_values_are_distinct`; existing `test_rejection_reason_values` extended with DUPLICATE_LONG_ENTRY and PENDING_ENTRY_EXISTS assertions
+- **Key design decisions**: (1) DUPLICATE_LONG_ENTRY fires on ANY open position (symbol-specific), not just on the exact same symbol as max_positions; consistent with backtest which checks position_quantity > 0 regardless of count; (2) PENDING_ENTRY_EXISTS checks all pending orders and filters by direction=BUY to ensure SELL-side pending orders are ignored; (3) guard ordering mirrors backtest position_tracker check order: position-state check first, then capacity checks; (4) existing `_apply_buy_fill` scale-in code path is still present in code but is now unreachable via `_process_entry_signal` for normal signal flow — only reachable via direct `_apply_fill` calls (e.g., terminal cleanup force-closes)
+- **Remaining mismatches after EXEC-2A**: see EXEC-2 audit; next: EXEC-2B (FT signal `actionable_from_bar_timestamp`), EXEC-2C (multi-signal conflict tests)
+
+**EXEC-2 — Execution Lifecycle & Order Fill Audit — COMPLETE**
+(audit-only — no runtime code modified | report: `docs/audits/EXECUTION_LIFECYCLE_FILL_AUDIT.md`)
+- **Lifecycle coverage**: Backtest (signal → TradeIntent → pending_nbo → SimulatedTrade → PositionState), Paper Trading (ForwardTestSignal → PaperOrder → PaperFill → PaperPosition → PaperAccount → AccountStateSnapshot), Forward Test (ForwardTestSignal only — no fill/position)
+- **Finding 1 — Scale-in asymmetry (fix required)**: Backtest rejects ALREADY_LONG on any duplicate BUY. Paper trading skips the `max_concurrent_positions` check when `existing_pos is not None` for the same symbol → implicit scale-in allowed. Fix: add `DUPLICATE_LONG_ENTRY` to `RejectionReason` enum and reject in `_process_entry_signal()` when existing position found and scale-in not explicitly opted into. Files: `backend/paper_trading/execution_models.py`, `backend/paper_trading/service.py`.
+- **Finding 2 — NBO quantity estimate mismatch**: PT resolves quantity using `bar_close` at signal time; actual NBO fill is at bar_N+1.open. Gap-up opens: signal-time cash check passes, fill-time cash check cancels (correct but opaque). Gap-down opens: allocated equity fraction less than intended. Not a correctness defect (second check prevents over-allocation) but an undocumented approximation.
+- **Finding 3 — Commission fee base divergence**: Backtest PERCENTAGE commission = `qty × adj_price × rate` (post-slippage notional). PT PERCENTAGE fee = `qty × gross_price × rate` (pre-slippage). Numerically small for typical slippage; document-only resolution recommended.
+- **Finding 4 — `ForwardTestSignal` missing `actionable_from_bar_timestamp`**: Still absent after EXEC-1. Consumers must infer `actionable_from = bar_timestamp + timeframe_to_timedelta(timeframe)`. Tracked as EXEC-2B implementation task.
+- **Finding 5 — Multi-signal conflict ordering untested**: Same-bar entry + exit both queued as NBO → both in `pending_nbo[N+1]` (backtest) or `pending_orders` (PT). Resolution depends on processing order (backtest: TradeIntentBatch order; PT: store insertion order). Not explicitly tested.
+- **Finding 6 — Stop-loss/take-profit confirmed non-goal**: Not implemented in backtest or paper trading. No intrabar price modeling. Deferred to EXEC-3.
+- **Finding 7 — Gap risk handled correctly**: NBO fills at actual bar.open (gap-open price). Slippage applied on top. No artificial mid-point fill. No cap needed for EOD strategies.
+- **Finding 8 — Long-only guardrails**: Backtest fully enforced at model level (ALREADY_LONG / ALREADY_FLAT / no short path). PT enforced by design (`allow_short_selling=False`, no SHORT code path) but scale-in gap exists (see Finding 1).
+- **Recommended next phases**: EXEC-2A (scale-in guard + `DUPLICATE_LONG_ENTRY` rejection), EXEC-2B (FT signal `actionable_from_bar_timestamp` field), EXEC-2C (multi-signal conflict tests), EXEC-3 (deferred: intrabar stop/target modeling)
+- **Architecture boundary**: audit-only; no imports changed; no runtime logic modified; no dependencies added
+
+**EXEC-1 — Backtest NEXT_BAR_OPEN Execution Model — COMPLETE**
+(backend: 4 958 ✓ | +23 new NBO timing tests | frontend: 821 ✓ unchanged)
+- **`backend/backtesting/models.py`** — `BacktestExecutionModel` enum added (`NEXT_BAR_OPEN = "next_bar_open"` default, `SAME_BAR_CLOSE = "same_bar_close"` explicit-only); `SimulationPriceBar.open: float | None = None` added; `BacktestSimulationConfig.execution_model: BacktestExecutionModel = NEXT_BAR_OPEN` added; `FINAL_BAR_NO_FILL` added to `BacktestRejectionReason`; `SimulatedTrade` fields: `bar_index`/`timestamp` → `signal_bar_index`, `signal_timestamp`, `execution_bar_index`, `execution_timestamp`, `execution_model`
+- **`backend/backtesting/position_tracker.py`** — `process_intent()` gains optional `execution_bar_index`, `execution_timestamp`, `execution_model` params (defaults to signal-bar values for backward compat); `_open_long()`/`_close_long()` updated
+- **`backend/backtesting/simulator.py`** — `run_simulation()` dispatches to `_run_next_bar_open()` or `_run_same_bar_close()`; NBO path uses `pending_nbo: dict[int, list[TradeIntent]]` + pre-computed `next_bar_map: dict[int, SimulationPriceBar]`; `FINAL_BAR_NO_FILL` emitted at signal-queue time when no next bar; missing open price in NBO mode raises `ValueError` → 422
+- **`backend/api/schemas/backtest_runs.py`** — `BacktestRunConfig.execution_model: BacktestExecutionModel = NEXT_BAR_OPEN` added
+- **`backend/api/services/backtest_run_service.py`** — `SimulationPriceBar(open=b.open, ...)` wired; `_build_sim_config()` passes `execution_model`; `_build_trade_records()` uses `execution_bar_index`/`execution_timestamp`
+- **`tests/unit/test_backtest_simulation.py`** — `_price_bar()` gains `open` param; `_default_config()` → SBC explicitly; `_nbo_config()` helper added; `TestNextBarOpenExecution` class with 14 NBO timing contract tests; API test structure updated for 3-bar NBO scenario
+- **`tests/unit/test_backtest_analytics.py`, `test_backtest_cost_model.py`, `test_backtest_position_sizing.py`, `test_backtest_integrity.py`** — helpers updated to SBC explicitly; `test_backtest_integrity.py` updated for 3-bar NBO scenario
+- **Key design decisions**: (1) SBC only via explicit config — no silent default preservation; (2) `process_intent()` optional params preserve 15+ position tracker unit tests without changes; (3) `next_bar_map` pre-computed from sorted bars handles non-consecutive indices; (4) `FINAL_BAR_NO_FILL` emitted immediately at queue time (pending_nbo always empty after loop)
+- **Architecture boundary**: no imports from `strategy_runtime`, `execution`, or `forward_testing` in `backend.backtesting`
+
+**EXEC-TIMING-AUDIT-1 — Backtest / Forward Test / Paper Trading Execution Timing Audit — COMPLETE**
+(audit-only — no runtime code modified | report: `docs/audits/EXECUTION_TIMING_LOOKAHEAD_AUDIT.md`)
+- **Backtest**: Uses same-bar-close execution (SIGNAL_BAR_CLOSE semantics hardcoded). Signal detected on Bar N is executed at Bar N close ± slippage. No NEXT_BAR_OPEN mode exists. No signal_bar_index vs execution_bar_index separation.
+- **Forward Test**: Correct — only finalized bars evaluated; signals are informational only (no execution); bar finalization buffer (60s) enforced via `is_bar_finalized()`. Missing `actionable_from_bar_timestamp` field.
+- **Paper Trading**: Correct — `FillTimingModel.NEXT_BAR_OPEN` is the default; signal bar creates PENDING_FILL order; next bar's step-1 resolves at bar.open. `signal_bar_timestamp` recorded in fill for traceability.
+- **Compliance**: Backtest was NON-COMPLIANT (same-bar-close default). FT and PT compliant. **Resolved by EXEC-1.**
+- **Lookahead bias**: Not classic lookahead (no future bar data used for signals). Same-bar execution is an unrealistic-but-documented shortcut; most material for daily-bar strategies.
+
+**FT-3B — Forward Test Incremental Tool Computation — COMPLETE**
+(backend: 4 979 ✓ | +21 new tests | frontend: unchanged)
+- **`backend/forward_testing/models.py`** — `last_computed_bar_index: int | None = None` with `_watermark_non_negative` validator; backward-compatible (legacy JSON → `None`)
+- **`backend/forward_testing/service.py`** — `_poll_cycle()`: early return when all provider bars are duplicates; watermark clamping (`> max stored index → reset to None`); `bars_to_evaluate_indices` = new bar indices above watermark; full historical context still passed to tool computation + `evaluate_history` (warmup safety); signal emission + eligible count gated by `is_new_for_evaluation`; `new_watermark` computed from clamped local variable; watermark written atomically with session counters; watermark included in `FT_POLL_COMPLETED` audit event
+- **`tests/unit/test_ft_incremental.py`** — NEW: 21 tests
+
+**FT-3A — Forward Test Persistence Hardening — COMPLETE**
+(backend: 4 958 ✓ | +23 new tests | frontend: unchanged | no runtime behavior change)
+- **`pyproject.toml`** — `filelock>=3.13` dependency added (installed: 3.29.1)
+- **`backend/forward_testing/repository.py`** — `os` import added; `filelock.FileLock`/`Timeout` imported; `_lock_path()` helper returns `{session_id}.lock`; `_atomic_write()` staticmethod uses `tmp.write_text()` + `os.replace()` + tmp cleanup on failure; `save()` → `_atomic_write()` instead of `write_text()`; `update()` → acquires `FileLock(timeout=10)`, re-verifies ownership inside lock, then `_atomic_write()` — `FileLockTimeout` mapped to `ForwardTestPersistenceError`
+- **`backend/forward_testing/stores.py`** — `os` import added; module-level `_atomic_write()` function; `ForwardTestSignalStore._save_raw()` → `_atomic_write()`; `ForwardTestBarStore._save_raw()` → `_atomic_write()`
+- **`backend/jobs/ft_scheduler.py`** — Pre-cycle `repository.update(last_cycle_attempted_at)` write **removed**; `_evaluate_session()` docstring updated; all post-cycle paths (`_handle_provider_failure`, `_reset_failure_counter`) already included `last_cycle_attempted_at` — no other changes needed
+- **`.gitignore`** — `*.lock` added to Temp/Build Artifacts section (prevents lock files from being committed)
+- **`tests/unit/test_ft_persistence.py`** — NEW: 23 tests covering atomic write mechanics, session lock safety, concurrent update no-exception, `last_cycle_attempted_at` retained, auto-pause not reverted, valid JSON after update, store deduplication, no .tmp files after writes, `_atomic_write` used (not `write_text`), scheduler no pre-cycle write, post-cycle paths include `last_cycle_attempted_at`
+- **`tests/unit/test_ft_scheduler.py`** — 2 tests updated: `test_counter_zero_skips_reset_write` (expected 1 → 0 update calls; pre-cycle write removed); `test_update_failure_for_timestamp_is_nonfatal` (rewritten to test post-cycle failure instead of now-removed pre-cycle write)
+
+**CHART-UX-4A — Crosshair Data Inspector — COMPLETE**
+(backend: 4 935 ✓ unchanged | frontend: 854 ✓ | +33 new tests | TypeScript build clean)
+- **`frontend/src/components/ChartDataInspector.tsx`** — NEW: pure display component; `InspectorCandle` + `InspectorIndicatorValues` types exported; `fmtVolume()` exported helper (K/M suffix); primary row: `{symbol} · {timeframe} · {exchange} · O H L C ± change (±pct%)` with green/red/neutral change color; secondary indicator rows (color dot · instance label · multi-series values joined with `/`); null values show muted `—`; hidden instances suppressed; `volume=0` hides volume; no date/time rendered; `pointer-events: none` so mouse events pass through to chart
+- **`frontend/src/components/Chart.tsx`** — `exchange?: string` prop added; `inspectorCandle` + `inspectorIndVals` state added; `candleByTs` pre-index (O(1) candle lookup by UTCTimestamp); `latestInspectorCandle` derived from sorted candles array; `allIndicatorValsByTsRef` pre-indexes ALL artifact series values (price_overlay + oscillator_pane) on artifact change; `onCrosshair` handler updated: on hover → sets `inspectorCandle` from `candleByTs` + builds `inspectorIndVals` from pre-indexed ref; on leave (`param=null`) → clears both states; toolbar replaces old header (only shown when `hasStrategyResults`); `ChartDataInspector` replaces header row; `useRef` dependency added for `allIndicatorValsByTsRef`
+- **`frontend/src/components/__tests__/ChartDataInspector.test.tsx`** — NEW: 26 tests covering symbol/timeframe/exchange rendering, null candle, OHLC values, positive/negative/zero change color, first candle (no prev close), K/M volume formatting, volume=0 hidden, indicator value, null warmup dash, multi-series joined with `/`, hidden instance, no date/time, undefined props, `fmtVolume` unit tests
+- **`frontend/src/components/__tests__/Chart.test.tsx`** — 7 new inspector integration tests (43–49): inspector renders meta, exchange prop, latest candle OHLC on initial render, crosshair subscription called, mouse leave restores latest, no date/time strings, empty candle state
+
+**FT-2C — Forward Test Runtime Concurrency & Persistence Audit — COMPLETE**
+(audit-only — no runtime code modified | report: `docs/audits/FT_RUNTIME_CONCURRENCY_PERSISTENCE_AUDIT.md`)
+- All three stores confirmed as **no-lock, read-modify-write**: session repository, bar store, signal store
+- Key risk: concurrent scheduler + manual `/run-cycle` writes produce last-write-wins on session JSON; counter drift the practical outcome
+- Bar/signal store dedup is per-caller; concurrent writers can produce interleaved overwrites at OS level but logical dedup remains correct in the final file
+- Audit log: **SAFE** — CPython logging lock serializes all writes
+- Promotion gate race: **benign soft race only** — transient false-negative at threshold boundary; no false promotions, no data corruption
+- **Recommended FT-3 prerequisites (must implement before incremental computation):**
+  1. Per-session `FileLock` on `ForwardTestRepository.update()` — blocks status-revert and counter corruption
+  2. Atomic `os.replace()` temp-rename on all `_save_raw()` / `write_text()` — eliminates crash-truncation
+  3. Consolidate scheduler pre/post-cycle writes into one `repository.update()` per session
+  4. `filelock>=3.13` added to `pyproject.toml`
+- Incremental computation blocked until file lock is in place (`last_computed_bar_index` watermark subject to same race)
+
+**FT-2B — Forward Test Lifecycle Integrity Hardening — COMPLETE**
+(backend: 4 935 ✓ | +19 new tests | frontend: 821 ✓ | TypeScript build clean)
+- **`backend/core/config.py`** — 2 new settings: `ft_min_eligible_bars: int = 20`, `ft_min_calendar_days: int = 5` (env-var overridable)
+- **`backend/forward_testing/evidence.py`** — NEW: `assess_ft_promotion_readiness(session, bar_store, *, min_eligible_bars, min_calendar_days) -> FTEvidenceReadiness`; pure function; reads bar store, counts non-warmup bars + distinct UTC calendar dates; returns `FTEvidenceReadiness(eligible, eligible_bars, calendar_days, min_eligible_bars, min_calendar_days, blocker)`; bar gate checked before day gate; blocker messages include actual vs required counts
+- **`backend/api/services/draft_service.py`** — `promote_draft_to_forward_tested()` updated: now accepts `ft_bar_store` kwarg; calls `assess_ft_promotion_readiness()` for both gates; audit event fields changed: `bars_evaluated` → `eligible_bars`, `calendar_days` added
+- **`backend/api/routes/forward_testing.py`** — `promote_draft` route now injects `ft_bar_store: ForwardTestBarStore = Depends(get_forward_test_bar_store)`; passes to service; docstring updated to reflect new thresholds
+- **`frontend/src/components/ForwardTestPanel.tsx`** — `FT_MIN_BARS=20` / `FT_MIN_DAYS=5` display constants; `enoughBars` flag replaces `hasEvidence`; `EvidenceReadinessPanel` items updated to show both gates with progress counts; `ft-promotion-no-evidence` shows progress message (`N of 20 required bars`); promote button shown only when `enoughBars`; ftGuidance wired to `enoughBars`
+- **`tests/unit/test_ft_evidence.py`** — NEW: 19 tests covering all gate combinations, warmup exclusion, blocker messages, and service integration
+- **`tests/unit/test_forward_testing_routes.py`** — `_write_eligible_bars()` helper added; 5 promotion tests updated (happy path now writes 20 bars on 20 distinct days; `bars_evaluated` → `eligible_bars` + `calendar_days` in audit assertion)
+- **`frontend/src/components/__tests__/ForwardTestPanel.test.tsx`** — 5 promotion tests updated to use `signal_eligible_bars_processed: 20` to match new FT_MIN_BARS threshold
+
+**FT-2 — Autonomous Forward Test Scheduler — COMPLETE**
+(backend: 4 916 ✓ | +28 new tests | frontend: 821 ✓ | TypeScript build clean)
+- **`pyproject.toml`** — `apscheduler>=3.10` added; `tzlocal` installed as transitive dependency
+- **`backend/core/config.py`** — 3 new settings: `ft_scheduler_enabled` (bool, default True), `ft_scheduler_interval_seconds` (int, default 60), `ft_scheduler_max_consecutive_failures` (int, default 5)
+- **`backend/core/audit.py`** — 6 new `FT_SCHEDULER_*` audit event kinds: `FT_SCHEDULER_TICK_STARTED`, `FT_SCHEDULER_TICK_COMPLETED`, `FT_SCHEDULER_SESSION_EVALUATED`, `FT_SCHEDULER_SESSION_SKIPPED`, `FT_SCHEDULER_SESSION_AUTO_PAUSED`, `FT_SCHEDULER_RECOVERY`
+- **`backend/forward_testing/models.py`** — 3 new optional `ForwardTestSession` fields (backward-compatible defaults): `cycle_interval_seconds: int = 300`, `consecutive_provider_failures: int = 0`, `last_cycle_attempted_at: datetime | None = None`; `last_cycle_attempted_at` added to `_optional_utc_aware` validator
+- **`backend/forward_testing/repository.py`** — `list_all_running_globally() -> list[ForwardTestSession]`: cross-user scan returning only RUNNING sessions; scheduler-internal, never exposed via routes
+- **`backend/jobs/ft_scheduler.py`** — NEW: `ForwardTestSchedulerJob` class with `run_tick()`, `_should_skip()`, `_evaluate_session()`, `_handle_provider_failure()`, `_reset_failure_counter()`; module-level `_build_provider_for_session()` (vault credential resolution + factory build); `create_ft_scheduler_job()` factory; full docstring boundary declarations
+- **`backend/api/main.py`** — `lifespan` async context manager wired; `BackgroundScheduler` started on app startup, shut down on exit; `max_instances=1`, `coalesce=True`; scheduler skipped when `ft_scheduler_enabled=False`
+- **`backend/api/schemas/forward_testing.py`** — `last_cycle_attempted_at: str | None = None` added to `ForwardTestSessionDetailResponse`
+- **`backend/api/routes/forward_testing.py`** — `_session_to_detail()` now includes `last_cycle_attempted_at` ISO string
+- **`frontend/src/types/forwardTesting.ts`** — `last_cycle_attempted_at: string | null` added to `ForwardTestSessionDetail`
+- **`frontend/src/components/ForwardTestPanel.tsx`** — "Scheduler Last Checked" row added to cycle metrics panel; shows "Not yet (awaiting scheduler)" when null
+- **`tests/unit/test_ft_scheduler.py`** — NEW: 28 tests covering disabled/skip/evaluate/failure-counter/auto-pause/reset/non-fatal-errors/repository/model/settings
+- **`tests/unit/test_security_baseline.py`** — 6 new FT_SCHEDULER_* event kinds added to `test_all_event_kinds_defined`
+
+**FT-SCHED-ARCH-AUDIT-1 — Forward Test Scheduler Architecture Audit — COMPLETE**
+(audit-only — no code modified | report: `docs/audits/FT_SCHEDULER_ARCHITECTURE_AUDIT.md`)
+
+---
+
 **Phase Chart-UX-3C.2 — Chart Pane Synchronization & Indicator Styling — COMPLETE**
 (backend: 4 847 ✓ unchanged | frontend: 484 ✓ | +13 new tests | frontend-only phase)
 - **`frontend/src/types/chartIndicators.ts`** — `IndicatorInstance` extended with `seriesColors: Record<string, string>` (series_id → user hex color, frontend only, never sent to backend)

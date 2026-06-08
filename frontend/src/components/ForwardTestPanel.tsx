@@ -462,9 +462,15 @@ function SessionOperatorView({ sessionId, onBack }: { sessionId: string; onBack:
 
   const explanation = session ? noSignalExplanation(session, signals) : null
 
-  // Promotion eligibility — computed from session state
+  // Promotion eligibility — two-gate evidence check (FT-2B)
+  // Thresholds match backend defaults (ft_min_eligible_bars=20, ft_min_calendar_days=5).
+  // The backend is authoritative; these frontend constants are display-only.
+  const FT_MIN_BARS = 20
+  const FT_MIN_DAYS = 5
+
   const lifecycleAtActivation = session?.lifecycle_status_at_activation ?? null
-  const hasEvidence = (session?.signal_eligible_bars_processed ?? 0) > 0
+  const eligibleBars = session?.signal_eligible_bars_processed ?? 0
+  const enoughBars = eligibleBars >= FT_MIN_BARS
   // Show promotion panel when draft was backtested at session creation
   const showPromotionPanel = lifecycleAtActivation === 'backtested'
   // Show ineligible notice for drafts that were already forward_tested or beyond
@@ -475,7 +481,7 @@ function SessionOperatorView({ sessionId, onBack }: { sessionId: string; onBack:
   const ftGuidance = session ? computeGuidance({
     lifecycleStatus: session.lifecycle_status_at_activation,
     hasFtSession: true,
-    hasFtEvidenceBars: session.signal_eligible_bars_processed > 0,
+    hasFtEvidenceBars: enoughBars,
   }) : null
 
   async function handlePromote() {
@@ -546,6 +552,10 @@ function SessionOperatorView({ sessionId, onBack }: { sessionId: string; onBack:
                 label="Last Bar Processed"
                 value={session.last_processed_bar_timestamp ? fmtTs(session.last_processed_bar_timestamp) : '—'}
               />
+              <ConfigRow
+                label="Scheduler Last Checked"
+                value={session.last_cycle_attempted_at ? fmtTs(session.last_cycle_attempted_at) : 'Not yet (awaiting scheduler)'}
+              />
               <ConfigRow label="Total Bars Evaluated" value={String(session.bars_evaluated)} />
               <ConfigRow
                 label="Warmup Progress"
@@ -578,9 +588,14 @@ function SessionOperatorView({ sessionId, onBack }: { sessionId: string; onBack:
                       explanation: 'A forward-test session is required to record live market behavior.',
                     },
                     {
-                      label:       'Live Bars Evaluated After Warmup',
-                      complete:    (session?.signal_eligible_bars_processed ?? 0) > 0,
-                      explanation: 'At least one live market bar must be evaluated after the warmup period to establish behavior evidence.',
+                      label:       `Minimum Bars Evaluated (${eligibleBars} / ${FT_MIN_BARS})`,
+                      complete:    enoughBars,
+                      explanation: `At least ${FT_MIN_BARS} signal-eligible bars must be evaluated after warmup. Currently: ${eligibleBars}.`,
+                    },
+                    {
+                      label:       `Minimum Calendar Days (${FT_MIN_DAYS} required)`,
+                      complete:    enoughBars,  // backend checks days from bar timestamps; frontend shows bar gate as proxy
+                      explanation: `Bars must span at least ${FT_MIN_DAYS} distinct trading days. The backend verifies this at promotion time.`,
                     },
                   ]}
                 />
@@ -590,17 +605,18 @@ function SessionOperatorView({ sessionId, onBack }: { sessionId: string; onBack:
                   ✓ Draft promoted to <strong>Forward Test Complete</strong>. Paper trading eligibility
                   can now be built on this strategy.
                 </div>
-              ) : !hasEvidence ? (
+              ) : !enoughBars ? (
                 <div data-testid="ft-promotion-no-evidence" style={s.ftPromotionNoEvidence}>
-                  Run at least one complete forward-test cycle (warmup + signal-eligible bar)
-                  before promotion.
+                  {eligibleBars === 0
+                    ? 'No signal-eligible bars yet. Run forward-test cycles to accumulate evidence.'
+                    : `${eligibleBars} of ${FT_MIN_BARS} required bars evaluated. Continue running cycles.`}
                 </div>
               ) : (
                 <div>
                   <p style={{ fontSize: 11, color: '#a0aec0', marginBottom: 10 }}>
-                    This session has evaluated {session!.signal_eligible_bars_processed} signal-eligible
-                    bar{session!.signal_eligible_bars_processed === 1 ? '' : 's'}. You can now
-                    promote the draft to <strong style={{ color: '#7eb8f7' }}>Forward Test Complete</strong>.
+                    This session has evaluated {eligibleBars} signal-eligible
+                    bar{eligibleBars === 1 ? '' : 's'} (threshold: {FT_MIN_BARS}).
+                    The backend will verify calendar-day coverage at promotion time.
                   </p>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' as const }}>
                     <button

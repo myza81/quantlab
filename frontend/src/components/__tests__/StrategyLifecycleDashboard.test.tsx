@@ -598,3 +598,175 @@ describe('Lifecycle Dashboard ↔ StrategyContext sync (NAV-UX-3A)', () => {
     )
   })
 })
+
+// ---------------------------------------------------------------------------
+// NAV-UX-3F — Lifecycle as Workflow Orchestrator
+// ---------------------------------------------------------------------------
+
+describe('NAV-UX-3F — Lifecycle as Workflow Orchestrator', () => {
+  // ── Empty / no-strategy states ──────────────────────────────────────────
+
+  it('no-drafts state renders a CTA button to open Strategy Builder', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [], count: 0 })
+    await renderAndWait()
+    expect(screen.getByTestId('lcd-cta-create-strategy')).toBeTruthy()
+  })
+
+  it('no-drafts CTA calls onNavigateToComposer', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [], count: 0 })
+    const mockNav = { ...defaultProps, onNavigateToComposer: vi.fn() }
+    await renderAndWait(mockNav)
+    fireEvent.click(screen.getByTestId('lcd-cta-create-strategy'))
+    expect(mockNav.onNavigateToComposer).toHaveBeenCalledOnce()
+  })
+
+  // ── Next-action routing per lifecycle stage ──────────────────────────────
+
+  it('draft next-action button calls onNavigateToComposer (validate in Strategy Builder)', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'draft' })], count: 1 })
+    const mockNav = { ...defaultProps, onNavigateToComposer: vi.fn() }
+    await renderAndWait(mockNav)
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    expect(mockNav.onNavigateToComposer).toHaveBeenCalledOnce()
+  })
+
+  it('validated + no backtest: next-action calls onNavigateToHistory (Backtest page)', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'validated' })], count: 1 })
+    mockListBtRuns.mockResolvedValue([])
+    const mockNav = { ...defaultProps, onNavigateToHistory: vi.fn() }
+    await renderAndWait(mockNav)
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    expect(mockNav.onNavigateToHistory).toHaveBeenCalledOnce()
+  })
+
+  it('backtested: next-action calls onNavigateToForwardTestWithPrefill when provided', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'backtested' })], count: 1 })
+    const mockWithPrefill = vi.fn()
+    const props = { ...defaultProps, onNavigateToForwardTestWithPrefill: mockWithPrefill }
+    await renderAndWait(props)
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    expect(mockWithPrefill).toHaveBeenCalledOnce()
+    const callArg = mockWithPrefill.mock.calls[0][0]
+    expect(callArg.draft_id).toBe(DRAFT_ID)
+  })
+
+  it('backtested: prefill carries draft_name', async () => {
+    mockFetchDrafts.mockResolvedValue({
+      drafts: [makeDraft({ lifecycle_status: 'backtested', display_name: 'My FT Strategy' })],
+      count: 1,
+    })
+    const mockWithPrefill = vi.fn()
+    await renderAndWait({ ...defaultProps, onNavigateToForwardTestWithPrefill: mockWithPrefill })
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    expect(mockWithPrefill.mock.calls[0][0].draft_name).toBe('My FT Strategy')
+  })
+
+  it('backtested: without prefill prop falls back to onNavigateToForwardTest', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'backtested' })], count: 1 })
+    const mockFT = vi.fn()
+    // No onNavigateToForwardTestWithPrefill provided
+    await renderAndWait({ ...defaultProps, onNavigateToForwardTest: mockFT })
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    expect(mockFT).toHaveBeenCalledOnce()
+  })
+
+  it('forward_tested: next-action calls onNavigateToPaperTrading', async () => {
+    // default: forward_tested, no PT sessions
+    const mockNav = { ...defaultProps, onNavigateToPaperTrading: vi.fn() }
+    await renderAndWait(mockNav)
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+    expect(mockNav.onNavigateToPaperTrading).toHaveBeenCalledOnce()
+  })
+
+  it('paper_tested: shows locked next-action (live approval requires external review)', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'paper_tested' })], count: 1 })
+    await renderAndWait()
+    expect(screen.getByTestId('lcd-next-action-locked')).toBeTruthy()
+    expect(screen.queryByTestId('lcd-next-action-btn')).toBeNull()
+  })
+
+  it('approved_for_live: shows informational action text (no navigation)', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'approved_for_live' })], count: 1 })
+    await renderAndWait()
+    // approved_for_live: navigateTarget=null → button renders as informational (no-op click)
+    const btn = screen.getByTestId('lcd-next-action-btn')
+    expect(btn.textContent).toContain('approved for live trading')
+    expect(screen.queryByTestId('lcd-next-action-locked')).toBeNull()
+  })
+
+  // ── Evidence card action buttons ──────────────────────────────────────────
+
+  it('evidence cards render view-action buttons for all three phases', async () => {
+    await renderAndWait()
+    expect(screen.getByTestId('lcd-ev-view-backtests')).toBeTruthy()
+    expect(screen.getByTestId('lcd-ev-view-ft')).toBeTruthy()
+    expect(screen.getByTestId('lcd-ev-view-pt')).toBeTruthy()
+  })
+
+  it('backtest evidence View button calls onNavigateToHistory', async () => {
+    const mockNav = { ...defaultProps, onNavigateToHistory: vi.fn() }
+    await renderAndWait(mockNav)
+    fireEvent.click(screen.getByTestId('lcd-ev-view-backtests'))
+    expect(mockNav.onNavigateToHistory).toHaveBeenCalledOnce()
+  })
+
+  it('FT evidence View button calls onNavigateToForwardTest', async () => {
+    const mockNav = { ...defaultProps, onNavigateToForwardTest: vi.fn() }
+    await renderAndWait(mockNav)
+    fireEvent.click(screen.getByTestId('lcd-ev-view-ft'))
+    expect(mockNav.onNavigateToForwardTest).toHaveBeenCalledOnce()
+  })
+
+  it('PT evidence View button calls onNavigateToPaperTrading', async () => {
+    const mockNav = { ...defaultProps, onNavigateToPaperTrading: vi.fn() }
+    await renderAndWait(mockNav)
+    fireEvent.click(screen.getByTestId('lcd-ev-view-pt'))
+    expect(mockNav.onNavigateToPaperTrading).toHaveBeenCalledOnce()
+  })
+
+  // ── Promotion also refreshes context evidence ─────────────────────────────
+
+  it('after promotion ctx.refreshEvidence is called (via context provider)', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'validated' })], count: 1 })
+    mockListBtRuns.mockResolvedValue([makeBtRun({ status: 'completed' })])
+    mockListFtSessions.mockResolvedValue([])
+    mockListPtSessions.mockResolvedValue([])
+    mockPromoteToBacktested.mockResolvedValue(makeDraft({ lifecycle_status: 'backtested' }))
+
+    // Render inside provider so ctx.refreshEvidence is wired to real reload
+    render(
+      <StrategyContextProvider>
+        <StrategyLifecycleDashboard {...defaultProps} />
+      </StrategyContextProvider>
+    )
+    await waitFor(() => expect(screen.queryByTestId('lcd-loading')).toBeNull())
+    await waitFor(() => expect(screen.getByTestId('lcd-next-action-btn')).toBeTruthy())
+
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+
+    // After promotion the stage card updates to Backtest Complete
+    await waitFor(() =>
+      expect(screen.getByTestId('lcd-current-stage').textContent).toMatch(/Backtest Complete/i)
+    )
+    // refreshEvidence triggers another evidence fetch — our mocks are set up to return []
+    // so list calls occur at least twice (initial + post-promotion)
+    expect(mockListBtRuns.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  // ── Failed promotion ──────────────────────────────────────────────────────
+
+  it('failed promotion shows error message and selected strategy does not change', async () => {
+    mockFetchDrafts.mockResolvedValue({ drafts: [makeDraft({ lifecycle_status: 'validated' })], count: 1 })
+    mockListBtRuns.mockResolvedValue([makeBtRun({ status: 'completed' })])
+    mockPromoteToBacktested.mockRejectedValue(new Error('Server error: evidence insufficient'))
+
+    await renderAndWait()
+    await waitFor(() => expect(screen.getByTestId('lcd-next-action-btn')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('lcd-next-action-btn'))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('lcd-promotion-error').textContent).toMatch(/Server error/i)
+    )
+    expect(screen.getByTestId('lcd-current-stage').textContent).toMatch(/Validated/i)
+  })
+})

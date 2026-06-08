@@ -121,6 +121,7 @@ desktop.ini
 
 # ─── Temp / Build Artifacts ────────────────────────────────────────────────────
 *.tmp
+*.lock
 *.bak
 *.spec.bak
 *.exe

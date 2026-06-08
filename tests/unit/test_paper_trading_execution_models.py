@@ -131,6 +131,20 @@ class TestEnums:
         assert RejectionReason.MAX_POSITIONS_EXCEEDED.value == "max_positions_exceeded"
         assert RejectionReason.NO_POSITION_TO_CLOSE.value   == "no_position_to_close"
         assert RejectionReason.SHORT_SELLING_DISABLED.value == "short_selling_disabled"
+        # EXEC-2A: execution-contract alignment additions
+        assert RejectionReason.DUPLICATE_LONG_ENTRY.value   == "duplicate_long_entry"
+        assert RejectionReason.PENDING_ENTRY_EXISTS.value   == "pending_entry_exists"
+
+    def test_rejection_reason_exec2a_values_are_distinct(self):
+        """EXEC-2A rejection codes must be distinct from all pre-existing codes."""
+        existing = {
+            RejectionReason.INSUFFICIENT_CASH.value,
+            RejectionReason.MAX_POSITIONS_EXCEEDED.value,
+            RejectionReason.NO_POSITION_TO_CLOSE.value,
+            RejectionReason.SHORT_SELLING_DISABLED.value,
+        }
+        assert RejectionReason.DUPLICATE_LONG_ENTRY.value not in existing
+        assert RejectionReason.PENDING_ENTRY_EXISTS.value not in existing
 
 
 # ===========================================================================

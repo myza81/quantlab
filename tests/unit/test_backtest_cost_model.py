@@ -165,6 +165,9 @@ def _cfg(
     slippage_mode: SlippageMode = SlippageMode.NONE,
     slippage_value: float = 0.0,
 ) -> BacktestSimulationConfig:
+    from backend.backtesting.models import BacktestExecutionModel
+    # Explicitly use SBC so cost-model integration tests remain valid
+    # without needing open prices in every bar fixture.
     return BacktestSimulationConfig(
         initial_cash=cash,
         fixed_quantity=qty,
@@ -172,6 +175,7 @@ def _cfg(
         commission_value=commission_value,
         slippage_mode=slippage_mode,
         slippage_value=slippage_value,
+        execution_model=BacktestExecutionModel.SAME_BAR_CLOSE,
     )
 
 
@@ -735,6 +739,7 @@ class TestCostModelAPI:
             intents=[_open(0), _close(1)],
             bars=[{"bar_index": 0, "close": 100.0}, {"bar_index": 1, "close": 110.0}],
             config={"initial_cash": 10000.0, "fixed_quantity": 1.0,
+                    "execution_model": "same_bar_close",
                     "commission_mode": "fixed", "commission_value": 1.0},
         )
         resp = client.post("/backtests/simulate", json=req)
@@ -745,6 +750,7 @@ class TestCostModelAPI:
             intents=[_open(0)],
             bars=[{"bar_index": 0, "close": 100.0}],
             config={"initial_cash": 10000.0, "fixed_quantity": 1.0,
+                    "execution_model": "same_bar_close",
                     "slippage_mode": "fixed", "slippage_value": 0.05},
         )
         resp = client.post("/backtests/simulate", json=req)
@@ -765,6 +771,7 @@ class TestCostModelAPI:
             intents=[_open(0), _close(1)],
             bars=[{"bar_index": 0, "close": 100.0}, {"bar_index": 1, "close": 110.0}],
             config={"initial_cash": 10000.0, "fixed_quantity": 1.0,
+                    "execution_model": "same_bar_close",
                     "commission_mode": "fixed", "commission_value": 1.0},
         )
         resp = client.post("/backtests/simulate", json=req)
@@ -780,6 +787,7 @@ class TestCostModelAPI:
             intents=[_open(0)],
             bars=[{"bar_index": 0, "close": 100.0}],
             config={"initial_cash": 10000.0, "fixed_quantity": 1.0,
+                    "execution_model": "same_bar_close",
                     "commission_mode": "fixed", "commission_value": 1.50},
         )
         resp = client.post("/backtests/simulate", json=req)

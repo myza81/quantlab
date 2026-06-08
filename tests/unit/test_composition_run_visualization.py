@@ -420,6 +420,112 @@ class TestAllSixToolsRouting:
         assert all(ind.pane in valid_panes for ind in result.indicators)
         assert all(ind.kind in valid_kinds for ind in result.indicators)
 
+    def test_all_non_volume_tools_have_default_price_scale(self) -> None:
+        result = self._all_six_result()
+        # None of SMA/EMA/RSI/MACD/ATR/Bollinger use a volume histogram — all "default"
+        assert all(ind.price_scale == "default" for ind in result.indicators)
+
+
+# ---------------------------------------------------------------------------
+# Volume tool routing (metadata-driven kind + price_scale)
+# ---------------------------------------------------------------------------
+
+class TestVolumeToolRouting:
+    """
+    Verifies that the raw 'volume' and 'volume_ma' tools produce the correct
+    rendering metadata when run inside a strategy composition.
+
+    Volume tools use a dedicated price scale ("volume") so their large raw
+    volume values do not distort the OHLC price axis.
+    """
+
+    def test_volume_kind_is_histogram(self) -> None:
+        result = _run(
+            [ToolConfiguration(instance_id="vol1", tool_id="volume", parameters={})],
+        )
+        vol = [ind for ind in result.indicators if "vol1" in ind.name]
+        assert vol, "Expected volume indicator series"
+        assert all(s.kind == "histogram" for s in vol)
+
+    def test_volume_pane_is_price(self) -> None:
+        result = _run(
+            [ToolConfiguration(instance_id="vol1", tool_id="volume", parameters={})],
+        )
+        vol = [ind for ind in result.indicators if "vol1" in ind.name]
+        assert all(s.pane == "price" for s in vol)
+
+    def test_volume_price_scale_is_volume(self) -> None:
+        result = _run(
+            [ToolConfiguration(instance_id="vol1", tool_id="volume", parameters={})],
+        )
+        vol = [ind for ind in result.indicators if "vol1" in ind.name]
+        assert all(s.price_scale == "volume" for s in vol)
+
+    def test_volume_ma_kind_is_line(self) -> None:
+        result = _run(
+            [ToolConfiguration(instance_id="vma1", tool_id="volume_ma",
+                               parameters={"ma_length": 5})],
+            n_bars=10,
+        )
+        vma = [ind for ind in result.indicators if "vma1" in ind.name]
+        assert vma, "Expected volume_ma indicator series"
+        assert all(s.kind == "line" for s in vma)
+
+    def test_volume_ma_pane_is_price(self) -> None:
+        result = _run(
+            [ToolConfiguration(instance_id="vma1", tool_id="volume_ma",
+                               parameters={"ma_length": 5})],
+            n_bars=10,
+        )
+        vma = [ind for ind in result.indicators if "vma1" in ind.name]
+        assert all(s.pane == "price" for s in vma)
+
+    def test_volume_ma_price_scale_is_volume(self) -> None:
+        result = _run(
+            [ToolConfiguration(instance_id="vma1", tool_id="volume_ma",
+                               parameters={"ma_length": 5})],
+            n_bars=10,
+        )
+        vma = [ind for ind in result.indicators if "vma1" in ind.name]
+        assert all(s.price_scale == "volume" for s in vma)
+
+    def test_ema_price_scale_is_default(self) -> None:
+        result = _run(
+            [ToolConfiguration(instance_id="ema20", tool_id="ema",
+                               parameters={"period": 20})],
+        )
+        ema = [ind for ind in result.indicators if "ema20" in ind.name]
+        assert all(s.price_scale == "default" for s in ema)
+
+    def test_macd_histogram_kind_is_histogram_price_scale_is_default(self) -> None:
+        result = _run(
+            [ToolConfiguration(instance_id="macd1", tool_id="macd", parameters={})],
+            n_bars=40,
+        )
+        hist = [ind for ind in result.indicators if "histogram" in ind.name]
+        assert hist, "Expected MACD histogram series"
+        assert all(s.kind == "histogram" for s in hist)
+        assert all(s.price_scale == "default" for s in hist)
+
+    def test_volume_produces_one_series(self) -> None:
+        result = _run(
+            [ToolConfiguration(instance_id="vol1", tool_id="volume", parameters={})],
+        )
+        vol = [ind for ind in result.indicators if "vol1" in ind.name]
+        assert len(vol) == 1
+
+    def test_volume_and_ema_together_correct_routing(self) -> None:
+        result = _run([
+            ToolConfiguration(instance_id="vol1",  tool_id="volume", parameters={}),
+            ToolConfiguration(instance_id="ema20", tool_id="ema",    parameters={"period": 20}),
+        ])
+        vol = [ind for ind in result.indicators if "vol1"  in ind.name]
+        ema = [ind for ind in result.indicators if "ema20" in ind.name]
+        assert vol[0].kind == "histogram"
+        assert vol[0].price_scale == "volume"
+        assert ema[0].kind == "line"
+        assert ema[0].price_scale == "default"
+
 
 # ---------------------------------------------------------------------------
 # Architecture guard

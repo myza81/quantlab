@@ -223,6 +223,24 @@ class ForwardTestSession(BaseModel):
     failure_reason: str | None = None      # sanitized error category, not raw message
     error_category: str | None = None
 
+    # ── Scheduler fields (FT-2) ───────────────────────────────────────────
+    # cycle_interval_seconds: minimum elapsed seconds between scheduler-driven
+    #   cycles for this session. Default 300 (5 min). Override per-session.
+    # consecutive_provider_failures: incremented by scheduler on each failed cycle;
+    #   reset to 0 on any successful cycle; triggers auto-pause at threshold.
+    # last_cycle_attempted_at: UTC timestamp of last scheduler tick that touched
+    #   this session. None until the scheduler runs at least once.
+    cycle_interval_seconds: int = 300
+    consecutive_provider_failures: int = 0
+    last_cycle_attempted_at: datetime | None = None
+
+    # ── Incremental computation watermark (FT-3B) ─────────────────────────
+    # The highest bar_index for which signal evaluation has successfully
+    # completed.  None = no evaluation has run yet (treat as -1).
+    # Updated atomically with the session counters at end of each poll cycle.
+    # Legacy session JSON files (without this field) deserialize safely to None.
+    last_computed_bar_index: int | None = None
+
     # ── Validators ────────────────────────────────────────────────────────
 
     @field_validator("session_id", "user_id", "draft_id")
@@ -243,7 +261,11 @@ class ForwardTestSession(BaseModel):
             raise ValueError("datetime fields must be UTC-aware; naive datetime rejected")
         return v.astimezone(timezone.utc)
 
-    @field_validator("activation_timestamp", "last_processed_bar_timestamp")
+    @field_validator(
+        "activation_timestamp",
+        "last_processed_bar_timestamp",
+        "last_cycle_attempted_at",
+    )
     @classmethod
     def _optional_utc_aware(cls, v: datetime | None) -> datetime | None:
         if v is None:
@@ -279,6 +301,13 @@ class ForwardTestSession(BaseModel):
     def _counters_non_negative(cls, v: int) -> int:
         if v < 0:
             raise ValueError("counter fields must be >= 0")
+        return v
+
+    @field_validator("last_computed_bar_index")
+    @classmethod
+    def _watermark_non_negative(cls, v: int | None) -> int | None:
+        if v is not None and v < 0:
+            raise ValueError("last_computed_bar_index must be >= 0 when set")
         return v
 
     @model_validator(mode="after")
@@ -351,6 +380,13 @@ class ForwardTestSignal(BaseModel):
     # ── Record timestamp ──────────────────────────────────────────────────
     created_at: datetime
 
+    # ── Actionability hint (EXEC-2B) ──────────────────────────────────────
+    # Timestamp of the next available bar when the signal was generated.
+    # None when the signal fires on the final bar in the poll cycle — the
+    # next bar is not yet available and must not be fabricated.
+    # Legacy stored signals (JSON without this field) deserialize to None.
+    actionable_from_bar_timestamp: datetime | None = None
+
     # ── Validators ────────────────────────────────────────────────────────
 
     @field_validator("signal_id", "session_id", "user_id")
@@ -367,6 +403,15 @@ class ForwardTestSignal(BaseModel):
     @field_validator("bar_timestamp", "signal_timestamp", "created_at")
     @classmethod
     def _must_be_utc_aware(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            raise ValueError("datetime fields must be UTC-aware; naive datetime rejected")
+        return v.astimezone(timezone.utc)
+
+    @field_validator("actionable_from_bar_timestamp")
+    @classmethod
+    def _optional_utc_aware(cls, v: datetime | None) -> datetime | None:
+        if v is None:
+            return v
         if v.tzinfo is None:
             raise ValueError("datetime fields must be UTC-aware; naive datetime rejected")
         return v.astimezone(timezone.utc)

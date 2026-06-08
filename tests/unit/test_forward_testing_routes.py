@@ -661,6 +661,76 @@ def _raise_expired():
 
 
 # ---------------------------------------------------------------------------
+# EXEC-2B: actionable_from_bar_timestamp in signal API response
+# ---------------------------------------------------------------------------
+
+class TestSignalsActionableFromBarTimestamp:
+    """EXEC-2B: actionable_from_bar_timestamp is serialized in GET /signals responses."""
+
+    def _write_signal(self, signal_store, session_id: str, actionable_ts=None):
+        from backend.forward_testing.models import ForwardTestSignal
+        import uuid as _uuid_mod
+
+        now = datetime(2026, 5, 29, 0, 0, 0, tzinfo=_UTC)
+        sig = ForwardTestSignal(
+            signal_id=str(_uuid_mod.uuid4()),
+            session_id=session_id,
+            user_id=_OWNER_ID,
+            bar_timestamp=now,
+            signal_timestamp=now,
+            signal_direction="entry_long",
+            rule_id="entry_rule_1",
+            bar_open=100.0,
+            bar_high=105.0,
+            bar_low=99.0,
+            bar_close=103.0,
+            bar_volume=1_000_000.0,
+            warmup_satisfied=True,
+            strategy_snapshot_hash="a" * 64,
+            symbol="AAPL",
+            timeframe="1d",
+            provider_name="yahoo",
+            created_at=now,
+            actionable_from_bar_timestamp=actionable_ts,
+        )
+        signal_store.append_signal(sig)
+        return sig
+
+    def test_signal_response_includes_actionable_field(self, client):
+        """Signal response always has actionable_from_bar_timestamp key."""
+        tc, draft_repo, ft_repo, signal_store, bar_store = client
+        ft_repo.save(_make_session())
+        self._write_signal(signal_store, _SESSION_ID)
+
+        resp = tc.get(f"/forward-tests/{_SESSION_ID}/signals")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert "actionable_from_bar_timestamp" in data[0]
+
+    def test_signal_response_actionable_none_when_final_bar(self, client):
+        """actionable_from_bar_timestamp is null in JSON when signal was on the final bar."""
+        tc, draft_repo, ft_repo, signal_store, bar_store = client
+        ft_repo.save(_make_session())
+        self._write_signal(signal_store, _SESSION_ID, actionable_ts=None)
+
+        resp = tc.get(f"/forward-tests/{_SESSION_ID}/signals")
+        data = resp.json()
+        assert data[0]["actionable_from_bar_timestamp"] is None
+
+    def test_signal_response_actionable_iso_string_when_set(self, client):
+        """actionable_from_bar_timestamp is an ISO-8601 string when set."""
+        tc, draft_repo, ft_repo, signal_store, bar_store = client
+        ft_repo.save(_make_session())
+        next_ts = datetime(2026, 5, 30, 0, 0, 0, tzinfo=_UTC)
+        self._write_signal(signal_store, _SESSION_ID, actionable_ts=next_ts)
+
+        resp = tc.get(f"/forward-tests/{_SESSION_ID}/signals")
+        data = resp.json()
+        assert data[0]["actionable_from_bar_timestamp"] == next_ts.isoformat()
+
+
+# ---------------------------------------------------------------------------
 # 11. POST /forward-tests/{session_id}/promote-draft — Phase P1
 # ---------------------------------------------------------------------------
 
@@ -697,26 +767,67 @@ def _make_session_with_evidence(
     )
 
 
+def _write_eligible_bars(
+    bar_store: ForwardTestBarStore,
+    session_id: str,
+    count: int,
+    *,
+    start: datetime | None = None,
+    same_day: bool = False,
+) -> None:
+    """
+    Write `count` non-warmup bars into bar_store for session_id.
+
+    By default each bar gets a distinct UTC date so calendar-day gate is satisfied.
+    Pass same_day=True to put all bars on the same calendar date.
+    """
+    import json as _json
+    from datetime import timedelta as _timedelta
+    from backend.forward_testing.models import ForwardTestBar
+
+    base = start or datetime(2026, 1, 2, 12, 0, 0, tzinfo=_UTC)
+    bars_dir = bar_store._bars_dir
+    bars_dir.mkdir(parents=True, exist_ok=True)
+    bar_file = bars_dir / f"{session_id}.json"
+    existing = _json.loads(bar_file.read_text()) if bar_file.exists() else []
+
+    for i in range(count):
+        ts = base + (_timedelta(minutes=i) if same_day else _timedelta(days=i))
+        bar = ForwardTestBar(
+            session_id=session_id,
+            bar_index=len(existing) + i,
+            bar_timestamp=ts,
+            open=100.0, high=105.0, low=95.0, close=102.0, volume=1e6,
+            source_mode="provider",
+            provider_name="yahoo",
+            is_warmup_bar=False,
+            processed_at=base,
+        )
+        existing.append(_json.loads(bar.model_dump_json()))
+    bar_file.write_text(_json.dumps(existing), encoding="utf-8")
+
+
 class TestPromoteDraftToForwardTested:
     """
-    Coverage (9 cases — Phase P1):
+    Coverage (9 cases — Phase P1 + FT-2B hardening):
 
-    1.  Happy path: backtested draft + evidence → 200, lifecycle_status='forward_tested'
-    2.  Reject: 0 signal_eligible_bars_processed → 422
+    1.  Happy path: backtested draft + 20 bars / 20 days → 200 (forward_tested)
+    2.  Reject: 0 eligible bars → 422 (bar gate)
     3.  Reject: draft in 'validated' (not backtested) → 422
     4.  Reject: draft already 'forward_tested' → 422
     5.  Reject: session owned by other user → 404
     6.  Reject: session.draft_id != request draft_id → 422
     7.  Confirm: PUT /drafts/{id} cannot set lifecycle_status to forward_tested
-    8.  Confirm: audit event emitted with evidence metadata
+    8.  Confirm: audit event emitted with evidence metadata (eligible_bars + calendar_days)
     9.  Notes passed through to updated draft
     """
 
     def test_happy_path_promotes_to_forward_tested(self, client):
-        """Valid evidence + backtested draft → lifecycle_status updated to forward_tested."""
-        tc, draft_repo, ft_repo, *_ = client
+        """Valid evidence (20 bars / 20 days) + backtested draft → forward_tested."""
+        tc, draft_repo, ft_repo, signal_store, bar_store = client
         draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
-        ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=3))
+        ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=20))
+        _write_eligible_bars(bar_store, _SESSION_ID, 20)
 
         resp = tc.post(
             f"/forward-tests/{_SESSION_ID}/promote-draft",
@@ -729,10 +840,11 @@ class TestPromoteDraftToForwardTested:
         assert body["draft_id"] == _DRAFT_ID
 
     def test_reject_no_evidence_zero_eligible_bars(self, client):
-        """Session with 0 signal_eligible_bars_processed → 422."""
+        """Session with 0 bars in bar store → 422 (bar gate)."""
         tc, draft_repo, ft_repo, *_ = client
         draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
         ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=0))
+        # bar_store left empty — 0 eligible bars
 
         resp = tc.post(
             f"/forward-tests/{_SESSION_ID}/promote-draft",
@@ -740,13 +852,14 @@ class TestPromoteDraftToForwardTested:
         )
 
         assert resp.status_code == 422
-        assert "signal-eligible" in resp.json()["detail"].lower() or "0" in resp.json()["detail"]
+        assert "0" in resp.json()["detail"]
 
     def test_reject_draft_not_backtested_validated(self, client):
         """Draft in 'validated' status (not backtested) → 422."""
-        tc, draft_repo, ft_repo, *_ = client
+        tc, draft_repo, ft_repo, signal_store, bar_store = client
         draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.VALIDATED))
-        ft_repo.save(_make_session_with_evidence())
+        ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=20))
+        _write_eligible_bars(bar_store, _SESSION_ID, 20)
 
         resp = tc.post(
             f"/forward-tests/{_SESSION_ID}/promote-draft",
@@ -758,9 +871,10 @@ class TestPromoteDraftToForwardTested:
 
     def test_reject_draft_already_forward_tested(self, client):
         """Draft already at 'forward_tested' → 422 (lifecycle transition not permitted)."""
-        tc, draft_repo, ft_repo, *_ = client
+        tc, draft_repo, ft_repo, signal_store, bar_store = client
         draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.FORWARD_TESTED))
-        ft_repo.save(_make_session_with_evidence())
+        ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=20))
+        _write_eligible_bars(bar_store, _SESSION_ID, 20)
 
         resp = tc.post(
             f"/forward-tests/{_SESSION_ID}/promote-draft",
@@ -786,7 +900,6 @@ class TestPromoteDraftToForwardTested:
         """Session was created for a different draft → 422."""
         tc, draft_repo, ft_repo, *_ = client
         different_draft_id = str(uuid.uuid4())
-        # Save draft with _DRAFT_ID but session references a different draft
         draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
         ft_repo.save(_make_session_with_evidence(draft_id=different_draft_id))
 
@@ -808,17 +921,16 @@ class TestPromoteDraftToForwardTested:
             json={"lifecycle_status": "forward_tested"},
         )
 
-        # Must be rejected at schema validation layer
         assert resp.status_code == 422
 
     def test_audit_event_emitted_with_evidence_metadata(self, client):
-        """Promotion emits a GOV_PROMOTION_REQUESTED audit event with evidence metadata."""
-        tc, draft_repo, ft_repo, *_ = client
+        """Promotion emits a GOV_PROMOTION_REQUESTED audit event with FT-2B fields."""
+        tc, draft_repo, ft_repo, signal_store, bar_store = client
         draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
-        ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=5, signals_recorded=2))
+        ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=20, signals_recorded=2))
+        _write_eligible_bars(bar_store, _SESSION_ID, 20)
 
         captured: list = []
-        # Patch in the module that imported emit_audit_event by name
         with patch("backend.api.services.draft_service.emit_audit_event", side_effect=captured.append):
             resp = tc.post(
                 f"/forward-tests/{_SESSION_ID}/promote-draft",
@@ -830,16 +942,18 @@ class TestPromoteDraftToForwardTested:
         evt = captured[0]
         assert evt.details["from_status"] == "backtested"
         assert evt.details["to_status"] == "forward_tested"
-        assert evt.details["bars_evaluated"] == 5
+        assert evt.details["eligible_bars"] == 20
+        assert evt.details["calendar_days"] == 20
         assert evt.details["signals_recorded"] == 2
         assert evt.details["session_id"] == _SESSION_ID
         assert evt.details["draft_id"] == _DRAFT_ID
 
     def test_notes_passed_through_to_draft(self, client):
         """Optional notes field is persisted to the updated draft."""
-        tc, draft_repo, ft_repo, *_ = client
+        tc, draft_repo, ft_repo, signal_store, bar_store = client
         draft_repo.save(_make_draft(lifecycle=StrategyLifecycleStatus.BACKTESTED))
-        ft_repo.save(_make_session_with_evidence())
+        ft_repo.save(_make_session_with_evidence(signal_eligible_bars_processed=20))
+        _write_eligible_bars(bar_store, _SESSION_ID, 20)
 
         resp = tc.post(
             f"/forward-tests/{_SESSION_ID}/promote-draft",

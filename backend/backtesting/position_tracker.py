@@ -1,9 +1,10 @@
 """
-Long-Only Position Tracker — Phase 2P.6 / updated Phase 2P.7 / updated Phase 2P.8.
+Long-Only Position Tracker — Phase 2P.6 / updated Phase 2P.7 / updated Phase 2P.8 / updated EXEC-1.
 
 Sequential position tracker for a single long-only simulated position.
 Phase 2P.7 adds deterministic commission and slippage support.
 Phase 2P.8 adds equity-fraction position sizing.
+EXEC-1 adds signal/execution bar separation in SimulatedTrade output.
 
 Rules:
     open_long:
@@ -26,8 +27,12 @@ No latency.
 No stochastic fills.
 
 Execution price rules:
-    open_long:   adjusted_price = close + slippage   (adverse to buyer)
-    close_long:  adjusted_price = close - slippage   (adverse to seller)
+    open_long:   adjusted_price = fill_price + slippage   (adverse to buyer)
+    close_long:  adjusted_price = fill_price - slippage   (adverse to seller)
+
+    fill_price source depends on execution_model (passed by simulator):
+        NEXT_BAR_OPEN:  execution bar's open  (default)
+        SAME_BAR_CLOSE: signal bar's close
 
 Equity-fraction sizing (Phase 2P.8):
     quantity = floor(current_equity × equity_fraction / adjusted_entry_price)
@@ -55,6 +60,7 @@ from backend.backtesting.cost_model import (
     compute_commission,
 )
 from backend.backtesting.models import (
+    BacktestExecutionModel,
     BacktestRejection,
     BacktestRejectionReason,
     PositionSizeMode,
@@ -153,9 +159,12 @@ def resolve_position_quantity(
 # ---------------------------------------------------------------------------
 
 def process_intent(
-    intent: TradeIntent,
-    price:  float | None,
-    state:  PositionState,
+    intent:               TradeIntent,
+    price:                float | None,
+    state:                PositionState,
+    execution_bar_index:  int | None                   = None,
+    execution_timestamp:  object                       = None,
+    execution_model:      BacktestExecutionModel | None = None,
 ) -> tuple[SimulatedTrade | None, BacktestRejection | None]:
     """
     Process a single TradeIntent against the current PositionState.
@@ -167,55 +176,74 @@ def process_intent(
     Commission is computed on adjusted notional (qty × adjusted_price).
 
     Args:
-        intent: The trade intent to process.
-        price:  Raw bar close price; None if price unavailable.
-        state:  Current mutable position/cash/cost state (mutated in place on success).
+        intent:               The trade intent to process.
+        price:                Raw fill price (bar open for NBO, bar close for SBC); None if unavailable.
+        state:                Current mutable position/cash/cost state (mutated in place on success).
+        execution_bar_index:  Bar where the fill occurs (defaults to intent signal bar — SBC semantics).
+        execution_timestamp:  Timestamp of the execution bar (defaults to None).
+        execution_model:      Execution timing model stored in the trade record for audit
+                              (defaults to SAME_BAR_CLOSE when not provided by simulator).
 
     Returns:
         Tuple of (trade_or_none, rejection_or_none). Exactly one is non-None.
     """
-    bar_index = intent.source.bar_index
-    timestamp = intent.source.timestamp
-    intent_id = intent.intent_id
+    signal_bar_index = intent.source.bar_index
+    signal_timestamp = intent.source.timestamp
+    intent_id        = intent.intent_id
+
+    # Fall back to signal-bar values when called without explicit execution context
+    # (e.g. direct unit tests of the position tracker layer, or missing-price handling).
+    _exec_bar_idx = execution_bar_index if execution_bar_index is not None else signal_bar_index
+    _exec_ts      = execution_timestamp
+    _exec_model   = execution_model if execution_model is not None else BacktestExecutionModel.SAME_BAR_CLOSE
 
     if price is None:
         return None, BacktestRejection(
             rejection_id=f"rejection:{intent_id}",
             intent_id=intent_id,
-            bar_index=bar_index,
-            timestamp=timestamp,
+            bar_index=signal_bar_index,
+            timestamp=signal_timestamp,
             reason=BacktestRejectionReason.MISSING_PRICE,
-            detail=f"No price bar found for bar_index={bar_index}",
+            detail=f"No price bar found for bar_index={signal_bar_index}",
         )
 
     if intent.action == TradeIntentAction.OPEN_LONG:
-        return _open_long(intent_id, bar_index, timestamp, price, state)
+        return _open_long(
+            intent_id, signal_bar_index, signal_timestamp,
+            _exec_bar_idx, _exec_ts, _exec_model, price, state,
+        )
     elif intent.action == TradeIntentAction.CLOSE_LONG:
-        return _close_long(intent_id, bar_index, timestamp, price, state)
+        return _close_long(
+            intent_id, signal_bar_index, signal_timestamp,
+            _exec_bar_idx, _exec_ts, _exec_model, price, state,
+        )
     else:
         return None, BacktestRejection(
             rejection_id=f"rejection:{intent_id}",
             intent_id=intent_id,
-            bar_index=bar_index,
-            timestamp=timestamp,
+            bar_index=signal_bar_index,
+            timestamp=signal_timestamp,
             reason=BacktestRejectionReason.UNSUPPORTED_ACTION,
             detail=f"Action '{intent.action}' is not supported by the long-only tracker",
         )
 
 
 def _open_long(
-    intent_id: str,
-    bar_index: int,
-    timestamp: object,
-    raw_price: float,
-    state:     PositionState,
+    intent_id:            str,
+    signal_bar_index:     int,
+    signal_timestamp:     object,
+    execution_bar_index:  int,
+    execution_timestamp:  object,
+    execution_model:      BacktestExecutionModel,
+    raw_price:            float,
+    state:                PositionState,
 ) -> tuple[SimulatedTrade | None, BacktestRejection | None]:
     if state.is_long:
         return None, BacktestRejection(
             rejection_id=f"rejection:{intent_id}",
             intent_id=intent_id,
-            bar_index=bar_index,
-            timestamp=timestamp,
+            bar_index=signal_bar_index,
+            timestamp=signal_timestamp,
             reason=BacktestRejectionReason.ALREADY_LONG,
             detail=(
                 f"open_long rejected: already holding {state.position_quantity} units "
@@ -243,8 +271,8 @@ def _open_long(
         return None, BacktestRejection(
             rejection_id=f"rejection:{intent_id}",
             intent_id=intent_id,
-            bar_index=bar_index,
-            timestamp=timestamp,
+            bar_index=signal_bar_index,
+            timestamp=signal_timestamp,
             reason=BacktestRejectionReason.ZERO_QUANTITY,
             detail=(
                 f"open_long rejected: equity_fraction sizing resolved to 0 units "
@@ -261,8 +289,8 @@ def _open_long(
         return None, BacktestRejection(
             rejection_id=f"rejection:{intent_id}",
             intent_id=intent_id,
-            bar_index=bar_index,
-            timestamp=timestamp,
+            bar_index=signal_bar_index,
+            timestamp=signal_timestamp,
             reason=BacktestRejectionReason.INSUFFICIENT_CASH,
             detail=(
                 f"open_long rejected: total cost={total_cash_out:.4f} "
@@ -283,8 +311,11 @@ def _open_long(
         trade_id=f"trade:{intent_id}",
         source_intent_id=intent_id,
         action="open_long",
-        bar_index=bar_index,
-        timestamp=timestamp,
+        signal_bar_index=signal_bar_index,
+        signal_timestamp=signal_timestamp,
+        execution_bar_index=execution_bar_index,
+        execution_timestamp=execution_timestamp,
+        execution_model=execution_model,
         quantity=qty,
         price=adj_price,
         cash_before=cash_before,
@@ -298,18 +329,21 @@ def _open_long(
 
 
 def _close_long(
-    intent_id: str,
-    bar_index: int,
-    timestamp: object,
-    raw_price: float,
-    state:     PositionState,
+    intent_id:            str,
+    signal_bar_index:     int,
+    signal_timestamp:     object,
+    execution_bar_index:  int,
+    execution_timestamp:  object,
+    execution_model:      BacktestExecutionModel,
+    raw_price:            float,
+    state:                PositionState,
 ) -> tuple[SimulatedTrade | None, BacktestRejection | None]:
     if state.is_flat:
         return None, BacktestRejection(
             rejection_id=f"rejection:{intent_id}",
             intent_id=intent_id,
-            bar_index=bar_index,
-            timestamp=timestamp,
+            bar_index=signal_bar_index,
+            timestamp=signal_timestamp,
             reason=BacktestRejectionReason.ALREADY_FLAT,
             detail="close_long rejected: no open long position to close",
         )
@@ -343,8 +377,11 @@ def _close_long(
         trade_id=f"trade:{intent_id}",
         source_intent_id=intent_id,
         action="close_long",
-        bar_index=bar_index,
-        timestamp=timestamp,
+        signal_bar_index=signal_bar_index,
+        signal_timestamp=signal_timestamp,
+        execution_bar_index=execution_bar_index,
+        execution_timestamp=execution_timestamp,
+        execution_model=execution_model,
         quantity=qty,
         price=adj_price,
         cash_before=cash_before,

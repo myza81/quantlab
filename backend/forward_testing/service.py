@@ -503,6 +503,58 @@ class ForwardTestService:
                 indexed_new_bars.append((next_bar_index, bar))
                 next_bar_index += 1
 
+        # All provider bars were already stored (provider re-delivered) — no work needed
+        if not indexed_new_bars:
+            emit_audit_event(AuditEvent(
+                event_kind=AuditEventKind.FT_POLL_COMPLETED,
+                details={
+                    "session_id": session_id,
+                    "bars_fetched": len(new_bars),
+                    "bars_processed": 0,
+                    "signal_eligible_bars_processed": 0,
+                    "signals_generated": 0,
+                    "signals_suppressed": 0,
+                    "gap_detected": gap_detected,
+                    "provider_failure": provider_failure,
+                    "cursor": session.last_processed_bar_timestamp.isoformat()
+                    if session.last_processed_bar_timestamp else None,
+                    "last_computed_bar_index": session.last_computed_bar_index,
+                },
+            ))
+            return CycleResult(
+                session_id=session_id,
+                status=session.status.value,
+                bars_fetched=len(new_bars),
+                bars_processed=0,
+                warmup_bars_processed=0,
+                signal_eligible_bars_processed=0,
+                signals_generated=0,
+                signals_suppressed=0,
+                last_processed_bar_timestamp=session.last_processed_bar_timestamp,
+                gap_detected=gap_detected,
+                provider_failure=provider_failure,
+                activated=False,
+                message="all fetched bars already stored (provider re-delivered)",
+            )
+
+        # Determine safe watermark: the highest bar_index already evaluated.
+        # Clamp to max available bar index to guard against watermark inconsistency
+        # (e.g. bars were externally cleared or session was migrated).
+        watermark = session.last_computed_bar_index  # may be None
+        if watermark is not None and stored_bars:
+            max_stored_index = max(sb.bar_index for sb in stored_bars)
+            if watermark > max_stored_index:
+                # Watermark is ahead of available bars — reset and recompute safely
+                watermark = None
+        # bars_to_evaluate: new bars that have NOT yet been evaluated for signals.
+        # Full historical context is still passed to tool computation + evaluate_history
+        # to preserve indicator warmup correctness (EMA/RSI depend on earlier bars).
+        bars_to_evaluate_indices: set[int] = {
+            bar_index
+            for bar_index, _ in indexed_new_bars
+            if watermark is None or bar_index > watermark
+        }
+
         # Full-window tool computation (stored + new)
         all_comp_bars: list[ToolComputationBarInput] = [
             ToolComputationBarInput(
@@ -577,8 +629,9 @@ class ForwardTestService:
             for bar_index, bar in indexed_new_bars
         ]
 
-        # Evaluate ALL bars; filter results for new bars only
-        new_bar_indices = {bar_index for bar_index, _ in indexed_new_bars}
+        # Evaluate ALL bars; filter results to bars that need evaluation this cycle.
+        # bars_to_evaluate_indices are new bars with bar_index > watermark.
+        # Passing full all_contexts preserves indicator warmup for stateful tools.
         new_bar_result_map: dict[int, object] = {}
         if all_contexts:
             try:
@@ -589,7 +642,7 @@ class ForwardTestService:
                 new_bar_result_map = {
                     r.bar_index: r
                     for r in eval_result.bar_results
-                    if r.bar_index in new_bar_indices
+                    if r.bar_index in bars_to_evaluate_indices
                 }
             except Exception as exc:
                 logger.error(
@@ -605,8 +658,16 @@ class ForwardTestService:
         signals_suppressed = 0
         last_new_bar_ts: datetime | None = None
 
-        for bar_index, bar in indexed_new_bars:
+        for _bar_pos, (bar_index, bar) in enumerate(indexed_new_bars):
             is_signal_eligible = (bar_index >= session.warmup_bars_required)
+            # Only emit signals and count eligible bars for bars above the watermark
+            is_new_for_evaluation = (bar_index in bars_to_evaluate_indices)
+            # EXEC-2B: next bar's timestamp from actual data; None on final bar
+            _next_bar_ts: datetime | None = (
+                indexed_new_bars[_bar_pos + 1][1].timestamp  # type: ignore[union-attr]
+                if _bar_pos + 1 < len(indexed_new_bars)
+                else None
+            )
 
             ft_bar = ForwardTestBar(
                 session_id=session_id,
@@ -627,10 +688,11 @@ class ForwardTestService:
             if was_new_bar:
                 bars_processed += 1
                 last_new_bar_ts = bar.timestamp  # type: ignore[union-attr]
-                if is_signal_eligible:
+                # Only count signal-eligible bars that are new for evaluation
+                if is_signal_eligible and is_new_for_evaluation:
                     signal_eligible_count += 1
 
-            if not is_signal_eligible:
+            if not is_signal_eligible or not is_new_for_evaluation:
                 continue
 
             bar_result = new_bar_result_map.get(bar_index)
@@ -660,6 +722,7 @@ class ForwardTestService:
                     provider_name=session.provider_name,
                     catalog_id=session.catalog_id,
                     created_at=now_utc,
+                    actionable_from_bar_timestamp=_next_bar_ts,
                 ))
                 _emit_signal_event(session_id, "entry_long", bar.timestamp, rule_id, was_new_sig)  # type: ignore[union-attr]
                 if was_new_sig:
@@ -690,6 +753,7 @@ class ForwardTestService:
                     provider_name=session.provider_name,
                     catalog_id=session.catalog_id,
                     created_at=now_utc,
+                    actionable_from_bar_timestamp=_next_bar_ts,
                 ))
                 _emit_signal_event(session_id, "exit_long", bar.timestamp, rule_id, was_new_sig)  # type: ignore[union-attr]
                 if was_new_sig:
@@ -700,7 +764,18 @@ class ForwardTestService:
         # Advance cursor only to bars actually processed this cycle
         new_cursor = last_new_bar_ts or session.last_processed_bar_timestamp
 
-        # Update session counters + cursor
+        # Advance watermark to the highest bar_index processed this cycle.
+        # Uses the locally-clamped `watermark` (not session.last_computed_bar_index)
+        # so an inconsistency reset propagates correctly into the new value.
+        # indexed_new_bars is guaranteed non-empty here (empty case returned above).
+        max_new_index = max(bi for bi, _ in indexed_new_bars)
+        new_watermark: int | None = (
+            max_new_index
+            if watermark is None
+            else max(watermark, max_new_index)
+        )
+
+        # Update session counters + cursor + watermark atomically in one locked write
         updated_session = session.model_copy(update={
             "updated_at": now_utc,
             "last_processed_bar_timestamp": new_cursor,
@@ -709,6 +784,7 @@ class ForwardTestService:
                 session.signal_eligible_bars_processed + signal_eligible_count
             ),
             "signals_recorded": session.signals_recorded + signals_generated,
+            "last_computed_bar_index": new_watermark,
         })
         self._repository.update(updated_session, owner_id=owner_id)
 
@@ -724,6 +800,7 @@ class ForwardTestService:
                 "gap_detected": gap_detected,
                 "provider_failure": provider_failure,
                 "cursor": new_cursor.isoformat() if new_cursor else None,
+                "last_computed_bar_index": new_watermark,
             },
         ))
 

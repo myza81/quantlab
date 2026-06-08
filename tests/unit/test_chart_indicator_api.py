@@ -212,11 +212,11 @@ class TestGetChartIndicators:
         assert "indicators" in data
         assert isinstance(data["indicators"], list)
 
-    def test_all_six_builtin_tools_present(self) -> None:
+    def test_all_builtin_tools_present(self) -> None:
         client = TestClient(app)
         resp = client.get("/chart/indicators")
         ids = {m["tool_id"] for m in resp.json()["indicators"]}
-        assert ids == {"sma", "ema", "rsi", "macd", "bollinger_bands", "atr"}
+        assert ids == {"sma", "ema", "rsi", "macd", "bollinger_bands", "atr", "volume", "volume_ma"}
 
     def test_excludes_hidden_tool(self) -> None:
         reg = create_default_registry()
@@ -1027,7 +1027,9 @@ class TestChartMetadataMigration:
         assert m.chart_category == expected_category, f"{tool_id}: wrong chart_category"
 
     @pytest.mark.parametrize("tool_id", [
-        "sma", "ema", "rsi", "macd", "bollinger_bands", "atr",
+        # All tools with at least one editable parameter.
+        # "volume" is excluded here because it intentionally has zero parameters.
+        "sma", "ema", "rsi", "macd", "bollinger_bands", "atr", "volume_ma",
     ])
     def test_tool_has_complete_chart_metadata(self, tool_id: str) -> None:
         reg = create_default_registry()
@@ -1039,6 +1041,19 @@ class TestChartMetadataMigration:
         assert m.chart_category is not None
         assert len(m.chart_output_series) >= 1
         assert len(m.chart_editable_parameters) >= 1
+        assert len(m.chart_search_keywords) >= 1
+
+    def test_volume_tool_has_complete_chart_metadata_no_params(self) -> None:
+        # Raw volume tool has no parameters by design — verify its other chart metadata is complete.
+        reg = create_default_registry()
+        m = reg.get("volume")
+        assert m.visible_on_chart is True
+        assert m.chart_pane is not None
+        assert m.chart_render_type is not None
+        assert m.chart_series_kind is not None
+        assert m.chart_category is not None
+        assert len(m.chart_output_series) >= 1
+        assert m.chart_editable_parameters == ()   # intentionally zero
         assert len(m.chart_search_keywords) >= 1
 
     def test_macd_has_three_output_series_in_metadata(self) -> None:
@@ -1061,6 +1076,9 @@ class TestChartMetadataMigration:
         assert "lower_band" in series_ids
 
     def test_series_ids_align_with_output_feature_names(self) -> None:
+        # Histogram series are permitted as visualization-only: they may read
+        # raw bar data (e.g. price_fields["volume"]) rather than being strategy
+        # outputs.  Only non-histogram series must appear in output_feature_names.
         reg = create_default_registry()
         for tool_id in reg.list_tools():
             m = reg.get(tool_id)
@@ -1068,6 +1086,8 @@ class TestChartMetadataMigration:
                 continue
             feature_names = set(m.output_feature_names)
             for spec in m.chart_output_series:
+                if spec.render_type == "histogram":
+                    continue  # visualization-only; no strategy output required
                 assert spec.series_id in feature_names, (
                     f"{tool_id}: chart series_id '{spec.series_id}' "
                     f"not in output_feature_names {feature_names}"

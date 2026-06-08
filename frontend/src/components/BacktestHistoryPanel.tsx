@@ -42,10 +42,10 @@ export function BacktestHistoryPanel({ onReportLoaded }: Props) {
   const [reopening,   setReopening]   = useState<string | null>(null)
   const [error,       setError]       = useState<string | null>(null)
 
-  async function handleRunSuccess(report: BacktestReport) {
+  function handleRunSuccess(report: BacktestReport) {
     setShowRunPanel(false)
-    await refreshEvidence()    // reload btRuns from server to include the new run
-    onReportLoaded(report)     // open the report
+    onReportLoaded(report)     // open the report immediately — don't block on refresh
+    refreshEvidence()          // reload btRuns in the background; no await
   }
 
   const filteredItems = filterMode === 'current'

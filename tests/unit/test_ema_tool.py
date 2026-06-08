@@ -145,7 +145,7 @@ class TestEmaMetadata:
         assert "sma" in registry
         assert "rsi" in registry
         assert "macd" in registry
-        assert len(registry) == 6   # sma, ema, rsi, macd, atr, bollinger_bands
+        assert len(registry) == 8   # sma, ema, rsi, macd, atr, bollinger_bands, volume, volume_ma
 
     def test_registry_get_returns_ema_metadata(self):
         registry = create_default_registry()

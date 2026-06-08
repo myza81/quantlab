@@ -149,20 +149,40 @@ def run_composition(
             )
             color = tool_cfg.color if tool_cfg else None
 
-            # Derive pane from tool metadata: oscillator tools go to oscillator pane
+            # Derive rendering metadata from chart_output_series spec for this output.
+            # Fall back to VisualizationCapability for pane if no spec is found.
             metadata = registry.get(series.tool_id)
-            is_oscillator = (
-                VisualizationCapability.produces_oscillator_series
-                in metadata.visualization_capabilities
+            chart_spec = next(
+                (s for s in metadata.chart_output_series if s.series_id == series.output_name),
+                None,
             )
-            pane = "oscillator" if is_oscillator else "price"
-            # Histogram output_name → histogram rendering kind; all others → line
-            kind = "histogram" if series.output_name == "histogram" else "line"
+
+            if chart_spec is not None:
+                pane = "price" if chart_spec.pane == "price_overlay" else "oscillator"
+                raw_kind = chart_spec.render_type
+                kind = raw_kind if raw_kind in ("line", "histogram") else "line"
+            else:
+                is_oscillator = (
+                    VisualizationCapability.produces_oscillator_series
+                    in metadata.visualization_capabilities
+                )
+                pane = "oscillator" if is_oscillator else "price"
+                kind = "line"
+
+            # price_scale: "volume" when this tool uses a histogram on the price pane.
+            # Tells the frontend to render all series for this tool on the dedicated
+            # volume scale so they float at the bottom without distorting OHLC scaling.
+            has_price_histogram = any(
+                s.pane == "price_overlay" and s.render_type == "histogram"
+                for s in metadata.chart_output_series
+            )
+            price_scale = "volume" if has_price_histogram else "default"
 
             indicators.append(CompositionIndicatorSeries(
                 name=display,
                 kind=kind,
                 pane=pane,
+                price_scale=price_scale,
                 color=color,
                 points=[
                     CompositionIndicatorPoint(timestamp=p.timestamp, value=p.value)

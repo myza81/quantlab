@@ -1,5 +1,6 @@
 from backend.tools.atr import ATR_METADATA, compute_atr
 from backend.tools.bollinger_bands import BOLLINGER_METADATA, compute_bollinger
+from backend.tools.volume import VOLUME_METADATA, VOLUME_MA_METADATA
 from backend.tools.computation_models import (
     ToolComputationResult,
     ToolOutputPoint,
@@ -49,6 +50,8 @@ def create_default_registry() -> ToolRegistry:
     registry.register(MACD_METADATA)
     registry.register(ATR_METADATA)
     registry.register(BOLLINGER_METADATA)
+    registry.register(VOLUME_METADATA)
+    registry.register(VOLUME_MA_METADATA)
     return registry
 
 
@@ -102,6 +105,9 @@ __all__ = [
     "compute_tool_outputs_for_history",
     "build_bar_tool_outputs",
     "derive_warmup_bars_required",
+    # volume tools
+    "VOLUME_METADATA",
+    "VOLUME_MA_METADATA",
     # factory
     "create_default_registry",
 ]

@@ -417,6 +417,16 @@ def _build_artifact_response(
     for spec in metadata.chart_output_series:
         values_map = series_map.get(spec.series_id, {})
 
+        # Fallback: if no computation produced this series (e.g. the "volume"
+        # histogram on volume_ma which is visualization-only, not a strategy
+        # output), read directly from bar price_fields so the chart still renders.
+        if not values_map and bars:
+            values_map = {
+                bar.bar_index: bar.price_fields[spec.series_id]
+                for bar in bars
+                if spec.series_id in bar.price_fields
+            }
+
         points = [
             IndicatorSeriesPoint(
                 timestamp=(

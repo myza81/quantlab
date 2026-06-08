@@ -853,6 +853,206 @@ class TestProcessEntrySignal:
         # cash_out = net_value + fee = (10*100) + 0 = 1000
         assert updated_account.cash_balance == pytest.approx(4_000.0)
 
+    # ── EXEC-2A: Duplicate long entry rejection ────────────────────────────
+
+    def test_reject_when_open_position_exists_duplicate_long_entry(self):
+        """BUY while an open position exists → DUPLICATE_LONG_ENTRY (matches backtest ALREADY_LONG)."""
+        svc, mocks = _make_service()
+        session = _make_session()
+        account = _make_account(session.session_id, session.user_id)
+        position = _make_position(session.session_id, session.user_id, session.account_id)
+        bar = _make_bar()
+
+        mocks["position_store"].list_open_positions.return_value = [position]
+
+        with patch(f"{_SVC}.emit_audit_event"):
+            oc, rej, _, n_open, n_close = svc._process_entry_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        assert oc == 0
+        assert rej == 1
+        assert n_open == 0
+        mocks["order_store"].mark_rejected.assert_called_once()
+        rejected_order = mocks["order_store"].mark_rejected.call_args.args[0]
+        assert rejected_order.rejection_reason == RejectionReason.DUPLICATE_LONG_ENTRY.value
+
+    def test_duplicate_long_entry_emits_audit_event(self):
+        """DUPLICATE_LONG_ENTRY rejection must emit a PT_ORDER_REJECTED audit event."""
+        svc, mocks = _make_service()
+        session = _make_session()
+        account = _make_account(session.session_id, session.user_id)
+        position = _make_position(session.session_id, session.user_id, session.account_id)
+        bar = _make_bar()
+
+        mocks["position_store"].list_open_positions.return_value = [position]
+
+        audit_calls = []
+        with patch(f"{_SVC}.emit_audit_event", side_effect=audit_calls.append):
+            svc._process_entry_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        assert len(audit_calls) == 1
+        details = audit_calls[0].details
+        assert details["rejection_reason"] == RejectionReason.DUPLICATE_LONG_ENTRY.value
+
+    def test_duplicate_long_entry_no_fill_or_position_change(self):
+        """DUPLICATE_LONG_ENTRY: no fill, no position change, no cash deducted."""
+        svc, mocks = _make_service()
+        session = _make_session()
+        account = _make_account(session.session_id, session.user_id, cash=5_000.0)
+        position = _make_position(session.session_id, session.user_id, session.account_id)
+        bar = _make_bar()
+
+        mocks["position_store"].list_open_positions.return_value = [position]
+
+        with patch(f"{_SVC}.emit_audit_event"):
+            oc, rej, returned_account, n_open, n_close = svc._process_entry_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        assert oc == 0
+        assert rej == 1
+        assert n_open == 0
+        assert n_close == 0
+        assert returned_account.cash_balance == pytest.approx(5_000.0)
+        mocks["fill_store"].append.assert_not_called()
+        mocks["position_store"].save.assert_not_called()
+        mocks["position_store"].update.assert_not_called()
+
+    def test_duplicate_guard_fires_before_max_positions_check(self):
+        """DUPLICATE_LONG_ENTRY is checked before max_concurrent_positions guard."""
+        svc, mocks = _make_service()
+        assumptions = _make_assumptions(max_concurrent_positions=1)
+        session = _make_session(simulation_assumptions=assumptions)
+        account = _make_account(session.session_id, session.user_id)
+        position = _make_position(session.session_id, session.user_id, session.account_id)
+        bar = _make_bar()
+
+        mocks["position_store"].list_open_positions.return_value = [position]
+        mocks["position_store"].count_open.return_value = 1
+
+        with patch(f"{_SVC}.emit_audit_event"):
+            oc, rej, _, _, _ = svc._process_entry_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        # Must reject with DUPLICATE_LONG_ENTRY, not MAX_POSITIONS_EXCEEDED
+        assert rej == 1
+        rejected_order = mocks["order_store"].mark_rejected.call_args.args[0]
+        assert rejected_order.rejection_reason == RejectionReason.DUPLICATE_LONG_ENTRY.value
+
+    # ── EXEC-2A: Pending entry exists rejection ────────────────────────────
+
+    def test_reject_when_pending_buy_exists(self):
+        """BUY while a pending BUY order is unresolved → PENDING_ENTRY_EXISTS."""
+        svc, mocks = _make_service()
+        session = _make_session()
+        account = _make_account(session.session_id, session.user_id)
+        pending_buy = _make_pending_order(session, direction=OrderDirection.BUY)
+        bar = _make_bar()
+
+        mocks["position_store"].list_open_positions.return_value = []
+        mocks["order_store"].load_pending.return_value = [pending_buy]
+
+        with patch(f"{_SVC}.emit_audit_event"):
+            oc, rej, _, n_open, n_close = svc._process_entry_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        assert oc == 0
+        assert rej == 1
+        assert n_open == 0
+        mocks["order_store"].mark_rejected.assert_called_once()
+        rejected_order = mocks["order_store"].mark_rejected.call_args.args[0]
+        assert rejected_order.rejection_reason == RejectionReason.PENDING_ENTRY_EXISTS.value
+
+    def test_pending_entry_exists_emits_audit_event(self):
+        """PENDING_ENTRY_EXISTS rejection must emit a PT_ORDER_REJECTED audit event."""
+        svc, mocks = _make_service()
+        session = _make_session()
+        account = _make_account(session.session_id, session.user_id)
+        pending_buy = _make_pending_order(session, direction=OrderDirection.BUY)
+        bar = _make_bar()
+
+        mocks["position_store"].list_open_positions.return_value = []
+        mocks["order_store"].load_pending.return_value = [pending_buy]
+
+        audit_calls = []
+        with patch(f"{_SVC}.emit_audit_event", side_effect=audit_calls.append):
+            svc._process_entry_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        assert len(audit_calls) == 1
+        details = audit_calls[0].details
+        assert details["rejection_reason"] == RejectionReason.PENDING_ENTRY_EXISTS.value
+
+    def test_pending_sell_does_not_block_new_buy(self):
+        """A pending SELL order does NOT trigger PENDING_ENTRY_EXISTS for a new BUY."""
+        svc, mocks = _make_service()
+        session = _make_session()
+        account = _make_account(session.session_id, session.user_id, cash=10_000.0)
+        pending_sell = _make_pending_order(session, direction=OrderDirection.SELL)
+        bar = _make_bar()
+
+        mocks["position_store"].list_open_positions.return_value = []
+        mocks["order_store"].load_pending.return_value = [pending_sell]
+        mocks["position_store"].count_open.return_value = 0
+
+        with patch(f"{_SVC}.emit_audit_event"):
+            oc, rej, _, _, _ = svc._process_entry_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        # Pending SELL should not block a new BUY; entry proceeds normally
+        assert oc == 1
+        assert rej == 0
+
+    def test_pending_buy_guard_fires_before_max_positions_check(self):
+        """PENDING_ENTRY_EXISTS is checked before max_concurrent_positions guard."""
+        svc, mocks = _make_service()
+        assumptions = _make_assumptions(max_concurrent_positions=1)
+        session = _make_session(simulation_assumptions=assumptions)
+        account = _make_account(session.session_id, session.user_id)
+        pending_buy = _make_pending_order(session, direction=OrderDirection.BUY)
+        bar = _make_bar()
+
+        mocks["position_store"].list_open_positions.return_value = []
+        mocks["order_store"].load_pending.return_value = [pending_buy]
+        mocks["position_store"].count_open.return_value = 1
+
+        with patch(f"{_SVC}.emit_audit_event"):
+            oc, rej, _, _, _ = svc._process_entry_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        assert rej == 1
+        rejected_order = mocks["order_store"].mark_rejected.call_args.args[0]
+        assert rejected_order.rejection_reason == RejectionReason.PENDING_ENTRY_EXISTS.value
+
+    def test_normal_entry_unaffected_when_no_position_and_no_pending(self):
+        """NBO entry still succeeds when no open position and no pending BUY."""
+        svc, mocks = _make_service()
+        assumptions = _make_assumptions(fill_timing_model=FillTimingModel.NEXT_BAR_OPEN)
+        session = _make_session(simulation_assumptions=assumptions)
+        account = _make_account(session.session_id, session.user_id, cash=10_000.0)
+        bar = _make_bar()
+
+        mocks["position_store"].list_open_positions.return_value = []
+        mocks["order_store"].load_pending.return_value = []
+        mocks["position_store"].count_open.return_value = 0
+
+        with patch(f"{_SVC}.emit_audit_event"):
+            oc, rej, _, n_open, _ = svc._process_entry_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        assert oc == 1
+        assert rej == 0
+        mocks["order_store"].save_pending.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # TestProcessExitSignal — _process_exit_signal unit tests
@@ -936,6 +1136,104 @@ class TestProcessExitSignal:
             )
 
         assert updated_account.cash_balance == pytest.approx(1_100.0)
+
+    # ── EXEC-2D: PENDING_EXIT_EXISTS guard ────────────────────────────────
+
+    def test_reject_when_pending_sell_exists(self):
+        """SELL while a pending SELL is already in the queue → PENDING_EXIT_EXISTS rejection."""
+        svc, mocks = _make_service()
+        session = _make_session()
+        account = _make_account(session.session_id, session.user_id)
+        position = _make_position(session.session_id, session.user_id, session.account_id)
+        bar = _make_bar()
+        pending_sell = _make_pending_order(session, direction=OrderDirection.SELL)
+
+        mocks["position_store"].list_open_positions.return_value = [position]
+        mocks["order_store"].load_pending.return_value = [pending_sell]
+
+        with patch(f"{_SVC}.emit_audit_event"):
+            oc, rej, _, n_open, n_close = svc._process_exit_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        assert oc == 0
+        assert rej == 1
+        assert n_close == 0
+        mocks["order_store"].mark_rejected.assert_called_once()
+        rejected_order = mocks["order_store"].mark_rejected.call_args.args[0]
+        assert rejected_order.rejection_reason == RejectionReason.PENDING_EXIT_EXISTS.value
+
+    def test_pending_exit_rejection_emits_audit_event(self):
+        """PENDING_EXIT_EXISTS rejection must emit a PT_ORDER_REJECTED audit event."""
+        from backend.core.audit import AuditEventKind
+
+        svc, mocks = _make_service()
+        session = _make_session()
+        account = _make_account(session.session_id, session.user_id)
+        position = _make_position(session.session_id, session.user_id, session.account_id)
+        bar = _make_bar()
+        pending_sell = _make_pending_order(session, direction=OrderDirection.SELL)
+
+        mocks["position_store"].list_open_positions.return_value = [position]
+        mocks["order_store"].load_pending.return_value = [pending_sell]
+
+        audit_calls = []
+        with patch(f"{_SVC}.emit_audit_event", side_effect=audit_calls.append):
+            svc._process_exit_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        assert len(audit_calls) == 1
+        assert audit_calls[0].event_kind == AuditEventKind.PT_ORDER_REJECTED
+        assert audit_calls[0].details["rejection_reason"] == RejectionReason.PENDING_EXIT_EXISTS.value
+        assert "pending_order_id" in audit_calls[0].details
+
+    def test_pending_buy_does_not_trigger_pending_exit_guard(self):
+        """A pending BUY order must NOT trigger the PENDING_EXIT_EXISTS guard for a SELL signal."""
+        svc, mocks = _make_service()
+        session = _make_session()
+        account = _make_account(session.session_id, session.user_id)
+        position = _make_position(session.session_id, session.user_id, session.account_id)
+        bar = _make_bar()
+        pending_buy = _make_pending_order(session, direction=OrderDirection.BUY)
+
+        mocks["position_store"].list_open_positions.return_value = [position]
+        mocks["order_store"].load_pending.return_value = [pending_buy]
+
+        with patch(f"{_SVC}.emit_audit_event"):
+            oc, rej, _, _, _ = svc._process_exit_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        # Should NOT be rejected by PENDING_EXIT_EXISTS — pending BUY is irrelevant
+        # (NBO creates pending order; actual assertion: order was created, not rejected by this guard)
+        assert oc == 1
+        assert rej == 0
+
+    def test_no_pending_orders_allows_exit_to_proceed(self):
+        """When no pending orders exist, exit proceeds normally (baseline check)."""
+        svc, mocks = _make_service()
+        assumptions = _make_assumptions(fill_timing_model=FillTimingModel.NEXT_BAR_OPEN)
+        session = _make_session(simulation_assumptions=assumptions)
+        account = _make_account(session.session_id, session.user_id)
+        position = _make_position(session.session_id, session.user_id, session.account_id)
+        bar = _make_bar()
+
+        mocks["position_store"].list_open_positions.return_value = [position]
+        mocks["order_store"].load_pending.return_value = []
+
+        with patch(f"{_SVC}.emit_audit_event"):
+            oc, rej, _, _, _ = svc._process_exit_signal(
+                session=session, account=account, bar=bar, signal_id=_uid(), now_utc=_ts()
+            )
+
+        assert oc == 1
+        assert rej == 0
+        mocks["order_store"].save_pending.assert_called_once()
+
+    def test_pending_exit_rejection_reason_value(self):
+        """PENDING_EXIT_EXISTS has the expected string value."""
+        assert RejectionReason.PENDING_EXIT_EXISTS.value == "pending_exit_exists"
 
 
 # ---------------------------------------------------------------------------

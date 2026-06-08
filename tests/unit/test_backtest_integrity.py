@@ -74,11 +74,15 @@ def _repo(tmp_path: Path) -> DraftRepository:
 
 class TestBacktestIntegrity:
     def test_unsorted_request_bars_replayed_historically(self, tmp_path: Path):
+        # Bar 0 (close=40): below 50, no signal.
+        # Bar 1 (close=60): crosses above 50, OPEN_LONG signal fires.
+        # Bar 2 (close=65): execution bar — NBO fills open_long at bar 2's open.
+        # Bars are intentionally submitted out-of-order to verify canonical replay.
         request = BacktestRunRequest(
             draft_id="integrity-draft",
             symbol="TST",
             timeframe="1d",
-            bars=[_bar(1, 60.0), _bar(0, 40.0)],
+            bars=[_bar(1, 60.0), _bar(0, 40.0), _bar(2, 65.0)],
         )
 
         result = create_backtest_run(
@@ -89,11 +93,12 @@ class TestBacktestIntegrity:
 
         report = result.report
         assert report.run.dataset_start == "2026-01-01T00:00:00+00:00"
-        assert report.run.dataset_end == "2026-01-02T00:00:00+00:00"
-        assert [pt.bar_index for pt in report.equity_curve] == [0, 1]
+        assert report.run.dataset_end == "2026-01-03T00:00:00+00:00"
+        assert [pt.bar_index for pt in report.equity_curve] == [0, 1, 2]
+        # NBO: signal on bar 1 → fills at bar 2 open.
         assert report.open_position is not None
-        assert report.open_position.entry_bar_index == 1
-        assert report.open_position.entry_timestamp == "2026-01-02T00:00:00+00:00"
+        assert report.open_position.entry_bar_index == 2
+        assert report.open_position.entry_timestamp == "2026-01-03T00:00:00+00:00"
         assert report.open_position.entry_rule_id == "entry_cross"
         assert report.open_position.entry_signal_event_id == "1:entry:0:entry_cross"
 

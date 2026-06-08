@@ -1,5 +1,5 @@
 /**
- * BacktestRunPanel — NAV-UX-3D.
+ * BacktestRunPanel — NAV-UX-3D / NAV-UX-3D.1 (stabilization).
  *
  * Self-contained "Run Backtest" form for the Backtest section.
  * Reads the active strategy from StrategyContext so the user doesn't need to
@@ -11,6 +11,15 @@
  * On success: calls onSuccess(report) so the parent can open the report and
  * refresh the evidence list.
  * On cancel: calls onCancel().
+ *
+ * NAV-UX-3D.1 stabilization fixes:
+ *   - initial_equity: step=100 (default 10000 now valid: (10000-100)%100=0 ✓)
+ *   - equity_fraction: step=1 (default 95 now valid: (95-1)%1=0 ✓)
+ *   - commission_value input shown when mode is non-none
+ *   - exchange NOT hardcoded — omitted so backend defaults to 'unknown'
+ *   - asset class values match backend enums (fx, future — not forex, futures)
+ *   - csv / parquet removed from provider dropdown (require catalog flow)
+ *   - date cross-validation: start > end is caught before fetchOHLCV
  */
 import { useEffect, useState } from 'react'
 import { useStrategyContext } from '../context/StrategyContext'
@@ -51,7 +60,6 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
   // Market data params
   const [symbol,     setSymbol]     = useState('AAPL')
   const [assetClass, setAssetClass] = useState('equity')
-  const [exchange] = useState('NASDAQ')
   const [timeframe,  setTimeframe]  = useState('1d')
   const [provider,   setProvider]   = useState('yahoo')
   const [startDate,  setStartDate]  = useState(defaultStart)
@@ -86,7 +94,15 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
     setError(null)
     setBarCount(null)
 
+    // Date range validation — must happen before any API call
+    if (startDate > endDate) {
+      setError('Start date must be before or equal to end date.')
+      return
+    }
+
     // Step 1 — fetch market data
+    // exchange is intentionally omitted: the backend normalises it to 'unknown'
+    // so no hardcoded venue leaks into the run provenance.
     setPhase('fetching')
     let candles
     try {
@@ -94,7 +110,6 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
         provider,
         symbol:      symbol.trim().toUpperCase(),
         asset_class: assetClass,
-        exchange:    exchange.trim() || undefined,
         timeframe,
         start:       startDate,
         end:         endDate,
@@ -180,7 +195,7 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
               value={timeframe}
               onChange={e => setTimeframe(e.target.value)}
             >
-              {['1m','5m','15m','30m','1h','4h','1d','1w'].map(tf => (
+              {['1m','5m','15m','30m','1h','4h','1d','1w','1M'].map(tf => (
                 <option key={tf} value={tf}>{tf}</option>
               ))}
             </select>
@@ -195,10 +210,8 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
               value={provider}
               onChange={e => { setProvider(e.target.value); setCredId('') }}
             >
-              <option value="yahoo">yahoo</option>
-              <option value="polygon">polygon</option>
-              <option value="csv">csv</option>
-              <option value="parquet">parquet</option>
+              <option value="yahoo">Yahoo Finance</option>
+              <option value="polygon">Polygon.io</option>
             </select>
           </Field>
           <Field label="Asset Class">
@@ -208,10 +221,12 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
               value={assetClass}
               onChange={e => setAssetClass(e.target.value)}
             >
-              <option value="equity">equity</option>
-              <option value="crypto">crypto</option>
-              <option value="forex">forex</option>
-              <option value="futures">futures</option>
+              <option value="equity">Equity</option>
+              <option value="crypto">Crypto</option>
+              <option value="fx">FX / Forex</option>
+              <option value="future">Futures</option>
+              <option value="etf">ETF</option>
+              <option value="index">Index</option>
             </select>
           </Field>
         </div>
@@ -223,6 +238,7 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
               style={s.input}
               type="date"
               value={startDate}
+              max={endDate}
               onChange={e => setStartDate(e.target.value)}
               required
             />
@@ -233,6 +249,7 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
               style={s.input}
               type="date"
               value={endDate}
+              min={startDate}
               onChange={e => setEndDate(e.target.value)}
               required
             />
@@ -266,29 +283,11 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
               style={s.input}
               type="number"
               min={100}
-              step={1000}
+              step={100}
               value={btConfig.initial_equity}
               onChange={e => setBtConfig(c => ({ ...c, initial_equity: parseFloat(e.target.value) || 10000 }))}
             />
           </Field>
-          <Field label="Commission">
-            <select
-              data-testid="bt-commission-select"
-              style={s.input}
-              value={btConfig.commission_mode}
-              onChange={e => setBtConfig(c => ({
-                ...c,
-                commission_mode: e.target.value as BacktestRunConfig['commission_mode'],
-              }))}
-            >
-              <option value="none">None</option>
-              <option value="percentage">% per trade</option>
-              <option value="fixed">Fixed $</option>
-            </select>
-          </Field>
-        </div>
-
-        <div style={s.row}>
           <Field label="Position Size">
             <select
               data-testid="bt-position-mode-select"
@@ -303,12 +302,16 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
               <option value="fixed_quantity">Fixed Units</option>
             </select>
           </Field>
+        </div>
+
+        <div style={s.row}>
           <Field label={btConfig.position_size_mode === 'equity_fraction' ? 'Fraction %' : 'Units'}>
             {btConfig.position_size_mode === 'equity_fraction' ? (
               <input
+                data-testid="bt-fraction-input"
                 style={s.input}
                 type="number"
-                min={1} max={100} step={5}
+                min={1} max={100} step={1}
                 value={Math.round((btConfig.equity_fraction ?? 0.95) * 100)}
                 onChange={e => setBtConfig(c => ({
                   ...c,
@@ -317,6 +320,7 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
               />
             ) : (
               <input
+                data-testid="bt-units-input"
                 style={s.input}
                 type="number"
                 min={1} step={1}
@@ -328,7 +332,43 @@ export function BacktestRunPanel({ onSuccess, onCancel }: Props) {
               />
             )}
           </Field>
+
+          <Field label="Commission">
+            <select
+              data-testid="bt-commission-select"
+              style={s.input}
+              value={btConfig.commission_mode}
+              onChange={e => setBtConfig(c => ({
+                ...c,
+                commission_mode: e.target.value as BacktestRunConfig['commission_mode'],
+                // Reset value when mode changes to avoid stale non-zero defaults
+                commission_value: 0,
+              }))}
+            >
+              <option value="none">None</option>
+              <option value="percentage">% per trade</option>
+              <option value="fixed">Fixed $</option>
+            </select>
+          </Field>
         </div>
+
+        {/* Commission value — only shown when a mode is selected */}
+        {btConfig.commission_mode !== 'none' && (
+          <Field label={btConfig.commission_mode === 'percentage' ? 'Commission (%)' : 'Commission ($)'}>
+            <input
+              data-testid="bt-commission-value-input"
+              style={s.input}
+              type="number"
+              min={0}
+              step={btConfig.commission_mode === 'percentage' ? 0.001 : 0.01}
+              value={btConfig.commission_value}
+              onChange={e => setBtConfig(c => ({
+                ...c,
+                commission_value: parseFloat(e.target.value) || 0,
+              }))}
+            />
+          </Field>
+        )}
 
         {/* ── Status / error ── */}
         {phase === 'fetching' && (

@@ -1091,3 +1091,181 @@ class TestSignalFields:
 
         created_signal = signal_store.append_signal.call_args[0][0]
         assert created_signal.warmup_satisfied is True
+
+
+# ============================================================================
+# EXEC-2B: actionable_from_bar_timestamp
+# ============================================================================
+
+class TestActionableFromBarTimestamp:
+    """EXEC-2B: ForwardTestSignal.actionable_from_bar_timestamp population."""
+
+    def _run_cycle_with_bars(
+        self,
+        bars: list,
+        semantics=None,
+    ):
+        """Helper: run a poll cycle with the given bars and return the signal_store mock."""
+        session = _build_session(
+            status=ForwardTestSessionStatus.RUNNING,
+            last_processed_bar_timestamp=datetime(2026, 5, 20, tzinfo=_UTC),
+            activation_timestamp=_NOW,
+            warmup_bars_required=0,
+            semantics=semantics or _always_entry_semantics(),
+        )
+        repo = _mock_repo(session)
+        ohlcv = MagicMock(spec=OHLCVService)
+        ohlcv.get_bars_since.return_value = bars
+        bar_store = _mock_bar_store()
+        signal_store = MagicMock(spec=ForwardTestSignalStore)
+        signal_store.append_signal.return_value = True
+        svc = _make_service(
+            repo=repo, bar_store=bar_store, signal_store=signal_store,
+            ohlcv_service=ohlcv,
+        )
+        svc.run_cycle(_SESSION_ID, _USER_ID, _make_identity(), MagicMock(), now_utc=_NOW)
+        return signal_store
+
+    def test_single_bar_cycle_actionable_is_none(self):
+        """Signal on the only bar in the cycle: no next bar → actionable_from_bar_timestamp is None."""
+        signal_store = self._run_cycle_with_bars([_build_ohlcv(_T1)])
+
+        signal_store.append_signal.assert_called_once()
+        sig = signal_store.append_signal.call_args[0][0]
+        assert sig.actionable_from_bar_timestamp is None
+
+    def test_multi_bar_cycle_first_bar_gets_next_bar_ts(self):
+        """Signal on bar 0 of a two-bar cycle: actionable_from_bar_timestamp = bar 1's timestamp."""
+        bar0 = _build_ohlcv(_T2)  # older bar
+        bar1 = _build_ohlcv(_T1)  # newer bar (next)
+        signal_store = self._run_cycle_with_bars([bar0, bar1])
+
+        assert signal_store.append_signal.call_count == 2
+        first_call_sig = signal_store.append_signal.call_args_list[0][0][0]
+        assert first_call_sig.bar_timestamp == _T2
+        assert first_call_sig.actionable_from_bar_timestamp == _T1
+
+    def test_multi_bar_cycle_last_bar_actionable_is_none(self):
+        """Signal on the final bar of a multi-bar cycle: actionable_from_bar_timestamp is None."""
+        bar0 = _build_ohlcv(_T2)
+        bar1 = _build_ohlcv(_T1)
+        signal_store = self._run_cycle_with_bars([bar0, bar1])
+
+        assert signal_store.append_signal.call_count == 2
+        last_call_sig = signal_store.append_signal.call_args_list[1][0][0]
+        assert last_call_sig.bar_timestamp == _T1
+        assert last_call_sig.actionable_from_bar_timestamp is None
+
+    def test_signal_timestamp_unchanged_by_exec2b(self):
+        """signal_timestamp still equals now_utc; actionable_from_bar_timestamp is distinct."""
+        bar0 = _build_ohlcv(_T2)
+        bar1 = _build_ohlcv(_T1)
+        signal_store = self._run_cycle_with_bars([bar0, bar1])
+
+        first_sig = signal_store.append_signal.call_args_list[0][0][0]
+        assert first_sig.signal_timestamp == _NOW
+        assert first_sig.actionable_from_bar_timestamp != first_sig.signal_timestamp
+
+    def test_three_bar_cycle_middle_bar_gets_next_bar_ts(self):
+        """Signal on bar 1 of a three-bar cycle gets bar 2's timestamp."""
+        _T_EARLY = datetime(2026, 5, 26, tzinfo=_UTC)
+        bar0 = _build_ohlcv(_T_EARLY)
+        bar1 = _build_ohlcv(_T2)
+        bar2 = _build_ohlcv(_T1)
+        signal_store = self._run_cycle_with_bars([bar0, bar1, bar2])
+
+        assert signal_store.append_signal.call_count == 3
+        middle_sig = signal_store.append_signal.call_args_list[1][0][0]
+        assert middle_sig.bar_timestamp == _T2
+        assert middle_sig.actionable_from_bar_timestamp == _T1
+
+
+class TestActionableFromBarTimestampModelBackwardCompat:
+    """EXEC-2B: Legacy JSON without actionable_from_bar_timestamp deserializes to None."""
+
+    def test_legacy_json_without_field_deserializes_to_none(self):
+        """ForwardTestSignal built without actionable_from_bar_timestamp defaults to None."""
+        from backend.forward_testing.models import ForwardTestSignal
+        import uuid as _uuid_mod
+
+        now = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+        sig = ForwardTestSignal(
+            signal_id=str(_uuid_mod.uuid4()),
+            session_id=str(_uuid_mod.uuid4()),
+            user_id=str(_uuid_mod.uuid4()),
+            bar_timestamp=now,
+            signal_timestamp=now,
+            signal_direction="entry_long",
+            rule_id="entry_rule_1",
+            bar_open=100.0,
+            bar_high=105.0,
+            bar_low=99.0,
+            bar_close=103.0,
+            bar_volume=1_000_000.0,
+            warmup_satisfied=True,
+            strategy_snapshot_hash="a" * 64,
+            symbol="AAPL",
+            timeframe="1d",
+            created_at=now,
+            # actionable_from_bar_timestamp intentionally omitted — legacy compat
+        )
+        assert sig.actionable_from_bar_timestamp is None
+
+    def test_legacy_json_model_validate_without_field(self):
+        """model_validate_json from legacy JSON string (without field) → None."""
+        import json as _json
+        from backend.forward_testing.models import ForwardTestSignal
+        import uuid as _uuid_mod
+
+        now_str = "2026-05-01T12:00:00+00:00"
+        legacy_json = _json.dumps({
+            "signal_id": str(_uuid_mod.uuid4()),
+            "session_id": str(_uuid_mod.uuid4()),
+            "user_id": str(_uuid_mod.uuid4()),
+            "bar_timestamp": now_str,
+            "signal_timestamp": now_str,
+            "signal_direction": "entry_long",
+            "rule_id": "entry_rule_1",
+            "bar_open": 100.0,
+            "bar_high": 105.0,
+            "bar_low": 99.0,
+            "bar_close": 103.0,
+            "bar_volume": 1_000_000.0,
+            "warmup_satisfied": True,
+            "strategy_snapshot_hash": "a" * 64,
+            "symbol": "AAPL",
+            "timeframe": "1d",
+            "created_at": now_str,
+            # no actionable_from_bar_timestamp
+        })
+        sig = ForwardTestSignal.model_validate_json(legacy_json)
+        assert sig.actionable_from_bar_timestamp is None
+
+    def test_actionable_from_bar_timestamp_naive_datetime_rejected(self):
+        """Naive datetime for actionable_from_bar_timestamp must raise."""
+        from backend.forward_testing.models import ForwardTestSignal
+        from pydantic import ValidationError
+        import uuid as _uuid_mod
+
+        now = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+        with pytest.raises(ValidationError, match="UTC-aware"):
+            ForwardTestSignal(
+                signal_id=str(_uuid_mod.uuid4()),
+                session_id=str(_uuid_mod.uuid4()),
+                user_id=str(_uuid_mod.uuid4()),
+                bar_timestamp=now,
+                signal_timestamp=now,
+                signal_direction="entry_long",
+                rule_id="entry_rule_1",
+                bar_open=100.0,
+                bar_high=105.0,
+                bar_low=99.0,
+                bar_close=103.0,
+                bar_volume=1_000_000.0,
+                warmup_satisfied=True,
+                strategy_snapshot_hash="a" * 64,
+                symbol="AAPL",
+                timeframe="1d",
+                created_at=now,
+                actionable_from_bar_timestamp=datetime(2026, 5, 2, 12, 0),  # naive!
+            )

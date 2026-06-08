@@ -101,7 +101,7 @@ export function computeGuidance(ctx: GuidanceContext): GuidanceResult {
         nextAction:   'Run Backtest',
         whyItMatters: 'Backtesting generates historical performance evidence required for lifecycle promotion to Backtested.',
         blockers:     ['No completed backtest found. Run a backtest to continue.'],
-        navigateTarget: 'composer',
+        navigateTarget: 'history',
       }
 
     case 'backtested':

@@ -24,14 +24,16 @@ export interface ToolOutputPoint {
 /**
  * A named, typed sequence of data points for chart rendering.
  *
- * Backend assigns pane and kind — the frontend routes and renders accordingly.
- * Multiple series with the same pane are rendered in the same chart pane.
- * Multiple series with the same kind may use different rendering styles.
+ * Backend assigns pane, kind, and price_scale — the frontend routes and renders
+ * accordingly.  Multiple series with the same pane are rendered in the same chart
+ * pane.  price_scale = "volume" means the series belongs on the dedicated volume
+ * axis (bottom of the price pane) and must not distort OHLC price scaling.
  */
 export interface ToolVisualizationSeries {
-  name:   string
-  kind:   ToolOutputKind
-  pane:   ToolOutputPane
-  color:  string | null
-  points: ToolOutputPoint[]
+  name:        string
+  kind:        ToolOutputKind
+  pane:        ToolOutputPane
+  price_scale: string          // "default" | "volume"
+  color:       string | null
+  points:      ToolOutputPoint[]
 }

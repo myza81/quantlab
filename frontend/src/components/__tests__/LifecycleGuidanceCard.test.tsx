@@ -238,12 +238,12 @@ describe('computeGuidance', () => {
     expect(g.navigateLocked).toBeFalsy()
   })
 
-  it('validated + no completed backtest — asks to run backtest', () => {
+  it('validated + no completed backtest — asks to run backtest, routes to history', () => {
     const g = computeGuidance({ lifecycleStatus: 'validated' })
     expect(g.currentStageLabel).toBe('Validated')
     expect(g.nextAction).toBe('Run Backtest')
     expect(g.blockers).toContain('No completed backtest found. Run a backtest to continue.')
-    expect(g.navigateTarget).toBe('composer')
+    expect(g.navigateTarget).toBe('history')
   })
 
   it('validated + completed backtest — asks to promote', () => {

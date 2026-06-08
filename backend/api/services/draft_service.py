@@ -246,30 +246,36 @@ def promote_draft_to_forward_tested(
     draft_repository: DraftRepository,
     owner_id: str,
     *,
+    ft_bar_store,   # ForwardTestBarStore — deferred; used for calendar-day count
     notes: str | None = None,
 ) -> DraftResponse:
     """
-    Promote a draft to 'forward_tested' status, gated by forward-test evidence.
+    Promote a draft to 'forward_tested' status, gated by hardened evidence (FT-2B).
 
-    Evidence rule: the session must have processed at least one signal-eligible
-    bar (signal_eligible_bars_processed > 0).  This proves a real forward-test
-    evaluation cycle ran — warmup completed + at least one live bar was assessed —
-    regardless of whether any signals were generated.
+    Evidence gates (all must pass; evaluated in order; any failure raises):
+      1. session exists and is owned by owner_id
+      2. draft exists and is owned by owner_id
+      3. session.draft_id == draft_id  (session was created for this exact draft)
+      4. draft.lifecycle_status == BACKTESTED (only backtested drafts can advance)
+      5. signal-eligible bars >= settings.ft_min_eligible_bars  (default 20)
+      6. distinct UTC calendar days from those bars >= settings.ft_min_calendar_days
+         (default 5)
+      7. validate_lifecycle_transition(BACKTESTED, FORWARD_TESTED) succeeds
 
-    Requirements (all must hold; any failure raises before mutating state):
-      - session exists and is owned by owner_id
-      - draft exists and is owned by owner_id
-      - session.draft_id == draft_id  (session was created for this exact draft)
-      - draft.lifecycle_status == BACKTESTED (only backtested drafts can advance)
-      - session.signal_eligible_bars_processed > 0 (real evaluation occurred)
-      - validate_lifecycle_transition(BACKTESTED, FORWARD_TESTED) succeeds
+    Gates 5–6 are evaluated via assess_ft_promotion_readiness(), which reads bar
+    timestamps from the bar store.  Both thresholds are configurable through
+    settings (FT_MIN_ELIGIBLE_BARS / FT_MIN_CALENDAR_DAYS env vars).
 
     Raises:
         ForwardTestSessionNotFoundError: session absent or wrong owner.
         DraftNotFoundError: draft absent or wrong owner.
-        ForwardTestPromotionError: session/draft mismatch or no evidence.
+        ForwardTestPromotionError: session/draft mismatch or evidence gate failure.
         ValueError: lifecycle transition not permitted from current status.
     """
+    from backend.core.config import settings as _settings  # noqa: PLC0415
+    from backend.forward_testing.evidence import (  # noqa: PLC0415
+        assess_ft_promotion_readiness,
+    )
     from backend.forward_testing.exceptions import (  # noqa: PLC0415
         ForwardTestSessionNotFoundError as _ForwardTestSessionNotFoundError,  # noqa: F401
     )
@@ -280,33 +286,34 @@ def promote_draft_to_forward_tested(
     # 2 — load draft; raises DraftNotFoundError for missing/wrong-owner
     draft = draft_repository.load(draft_id, owner_id=owner_id)
 
-    # 3 — evidence: session must have been created against THIS draft
+    # 3 — structural: session must have been created against THIS draft
     if session.draft_id != draft_id:
         raise ForwardTestPromotionError(
             f"Forward-test session '{session_id}' was created for draft "
             f"'{session.draft_id}', not '{draft_id}'."
         )
 
-    # 4 — gate: draft must currently be at BACKTESTED to advance to FORWARD_TESTED
+    # 4 — lifecycle gate: draft must currently be at BACKTESTED
     if draft.lifecycle_status != StrategyLifecycleStatus.BACKTESTED:
         raise ForwardTestPromotionError(
             f"Draft '{draft_id}' is currently '{draft.lifecycle_status.value}'; "
             "only 'backtested' drafts can be promoted to 'forward_tested'."
         )
 
-    # 5 — evidence: at least one signal-eligible bar must have been evaluated.
-    #     This proves a real forward-test evaluation cycle ran — warmup completed
-    #     + at least one live bar assessed — even if no signals were generated.
-    if session.signal_eligible_bars_processed < 1:
-        raise ForwardTestPromotionError(
-            f"Session '{session_id}' has processed 0 signal-eligible bars. "
-            "Run at least one complete forward-test cycle before promotion."
-        )
+    # 5–6 — evidence gates: minimum eligible bars AND minimum calendar days
+    readiness = assess_ft_promotion_readiness(
+        session=session,
+        bar_store=ft_bar_store,
+        min_eligible_bars=_settings.ft_min_eligible_bars,
+        min_calendar_days=_settings.ft_min_calendar_days,
+    )
+    if not readiness.eligible:
+        raise ForwardTestPromotionError(readiness.blocker or "Insufficient evidence.")
 
-    # 6 — state machine: BACKTESTED → FORWARD_TESTED must be allowed
+    # 7 — state machine: BACKTESTED → FORWARD_TESTED must be allowed
     validate_lifecycle_transition(draft.lifecycle_status, StrategyLifecycleStatus.FORWARD_TESTED)
 
-    # 7 — mutate and persist
+    # 8 — mutate and persist
     existing_data = draft.model_dump()
     existing_data["lifecycle_status"] = StrategyLifecycleStatus.FORWARD_TESTED
     existing_data["updated_at"] = datetime.now(_UTC)
@@ -319,13 +326,14 @@ def promote_draft_to_forward_tested(
     emit_audit_event(AuditEvent(
         event_kind=AuditEventKind.GOV_PROMOTION_REQUESTED,
         details={
-            "draft_id": draft_id,
-            "session_id": session_id,
-            "from_status": draft.lifecycle_status.value,
-            "to_status": StrategyLifecycleStatus.FORWARD_TESTED.value,
-            "bars_evaluated": session.signal_eligible_bars_processed,
-            "signals_recorded": session.signals_recorded,
-            "user_id": owner_id,
+            "draft_id":          draft_id,
+            "session_id":        session_id,
+            "from_status":       draft.lifecycle_status.value,
+            "to_status":         StrategyLifecycleStatus.FORWARD_TESTED.value,
+            "eligible_bars":     readiness.eligible_bars,
+            "calendar_days":     readiness.calendar_days,
+            "signals_recorded":  session.signals_recorded,
+            "user_id":           owner_id,
         },
     ))
 

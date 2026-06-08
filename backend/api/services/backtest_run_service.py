@@ -168,6 +168,7 @@ def create_backtest_run(
         SimulationPriceBar(
             bar_index=b.bar_index,
             timestamp=b.timestamp,
+            open=b.open,
             close=b.close,
         )
         for b in bars
@@ -392,6 +393,7 @@ def _build_sim_config(cfg: BacktestRunConfig) -> BacktestSimulationConfig:
         position_size_mode=cfg.position_size_mode,
         fixed_quantity=cfg.fixed_quantity,
         equity_fraction=cfg.equity_fraction,
+        execution_model=cfg.execution_model,
         commission_mode=cfg.commission_mode,
         commission_value=cfg.commission_value,
         slippage_mode=cfg.slippage_mode,
@@ -459,10 +461,10 @@ def _build_trade_records(
 
             records.append(TradeRecord(
                 trade_num=trade_num,
-                entry_bar_index=entry.bar_index,
-                exit_bar_index=trade.bar_index,
-                entry_timestamp=entry.timestamp.isoformat() if entry.timestamp else None,
-                exit_timestamp=trade.timestamp.isoformat() if trade.timestamp else None,
+                entry_bar_index=entry.execution_bar_index,
+                exit_bar_index=trade.execution_bar_index,
+                entry_timestamp=entry.execution_timestamp.isoformat() if entry.execution_timestamp else None,
+                exit_timestamp=trade.execution_timestamp.isoformat() if trade.execution_timestamp else None,
                 side="long",
                 quantity=entry.quantity,
                 entry_price=entry.price,
@@ -474,8 +476,8 @@ def _build_trade_records(
                 gross_pnl=gross_pnl,
                 net_pnl=net_pnl,
                 return_pct=ret_pct,
-                holding_bars=trade.bar_index - entry.bar_index,
-                equity_after=equity_map.get(trade.bar_index),
+                holding_bars=trade.execution_bar_index - entry.execution_bar_index,
+                equity_after=equity_map.get(trade.execution_bar_index),
                 entry_rule_id=entry_intent.source.rule_id if entry_intent else None,
                 exit_rule_id=exit_intent.source.rule_id   if exit_intent  else None,
                 entry_signal_event_id=entry_intent.source.signal_event_id if entry_intent else None,
@@ -489,9 +491,9 @@ def _build_trade_records(
         entry_intent = intent_map.get(entry.source_intent_id)
         open_position = TradeRecord(
             trade_num=trade_num,
-            entry_bar_index=entry.bar_index,
+            entry_bar_index=entry.execution_bar_index,
             exit_bar_index=None,
-            entry_timestamp=entry.timestamp.isoformat() if entry.timestamp else None,
+            entry_timestamp=entry.execution_timestamp.isoformat() if entry.execution_timestamp else None,
             exit_timestamp=None,
             side="long",
             quantity=entry.quantity,
