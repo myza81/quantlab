@@ -34,12 +34,44 @@ def _cleanup() -> None:
 # Payload builders
 # ---------------------------------------------------------------------------
 
-def _sma_tool(instance_id: str, period: int, **kw: object) -> dict:
+def _sma_tool(
+    instance_id: str,
+    period: int,
+    *,
+    source: str | None = None,
+    **kw: object,
+) -> dict:
+    parameters: dict[str, object] = {"period": period}
+    if source is not None:
+        parameters["source"] = source
     return {
         "instance_id": instance_id,
         "tool_id": "sma",
-        "parameters": {"period": period},
+        "parameters": parameters,
         **kw,
+    }
+
+
+def _ema_tool(instance_id: str, period: int, *, source: str | None = None) -> dict:
+    parameters: dict[str, object] = {"period": period}
+    if source is not None:
+        parameters["source"] = source
+    return {
+        "instance_id": instance_id,
+        "tool_id": "ema",
+        "parameters": parameters,
+    }
+
+
+def _rsi_smoothing_tool(instance_id: str, smoothing_type: str) -> dict:
+    return {
+        "instance_id": instance_id,
+        "tool_id": "rsi_smoothing",
+        "parameters": {
+            "period": 14,
+            "smoothing_type": smoothing_type,
+            "smoothing_length": 14,
+        },
     }
 
 
@@ -84,6 +116,34 @@ class TestHappyPath:
         response = client.post("/tools/validate-toolset", json=payload)
         assert response.status_code == 200
         assert response.json()["valid"] is True
+
+    def test_valid_sma_source_close_passes(self) -> None:
+        client = _client()
+        payload = _toolset(_sma_tool("sma_source", 20, source="close"))
+        body = client.post("/tools/validate-toolset", json=payload).json()
+        assert body["valid"] is True
+        assert body["errors"] == []
+
+    def test_valid_ema_source_close_passes(self) -> None:
+        client = _client()
+        payload = _toolset(_ema_tool("ema_source", 20, source="close"))
+        body = client.post("/tools/validate-toolset", json=payload).json()
+        assert body["valid"] is True
+        assert body["errors"] == []
+
+    def test_valid_rsi_smoothing_sma_option_passes(self) -> None:
+        client = _client()
+        payload = _toolset(_rsi_smoothing_tool("rsi_sma", "SMA"))
+        body = client.post("/tools/validate-toolset", json=payload).json()
+        assert body["valid"] is True
+        assert body["errors"] == []
+
+    def test_valid_rsi_smoothing_ema_option_passes(self) -> None:
+        client = _client()
+        payload = _toolset(_rsi_smoothing_tool("rsi_ema", "EMA"))
+        body = client.post("/tools/validate-toolset", json=payload).json()
+        assert body["valid"] is True
+        assert body["errors"] == []
 
     def test_empty_toolset_is_valid(self) -> None:
         client = _client()
@@ -221,6 +281,45 @@ class TestParameterErrors:
         )
         body = client.post("/tools/validate-toolset", json=payload).json()
         assert body["valid"] is False
+
+    def test_invalid_rsi_smoothing_option_fails(self) -> None:
+        client = _client()
+        payload = _toolset(_rsi_smoothing_tool("rsi_bad", "VWMA"))
+        body = client.post("/tools/validate-toolset", json=payload).json()
+        assert body["valid"] is False
+        assert any(
+            "rsi_bad" in e
+            and "smoothing_type" in e
+            and "VWMA" in e
+            and "allowed options" in e
+            for e in body["errors"]
+        )
+
+    def test_invalid_sma_source_fails(self) -> None:
+        client = _client()
+        payload = _toolset(_sma_tool("sma_bad_source", 20, source="bogus"))
+        body = client.post("/tools/validate-toolset", json=payload).json()
+        assert body["valid"] is False
+        assert any(
+            "sma_bad_source" in e
+            and "source" in e
+            and "bogus" in e
+            and "allowed options" in e
+            for e in body["errors"]
+        )
+
+    def test_invalid_ema_source_fails(self) -> None:
+        client = _client()
+        payload = _toolset(_ema_tool("ema_bad_source", 20, source="bogus"))
+        body = client.post("/tools/validate-toolset", json=payload).json()
+        assert body["valid"] is False
+        assert any(
+            "ema_bad_source" in e
+            and "source" in e
+            and "bogus" in e
+            and "allowed options" in e
+            for e in body["errors"]
+        )
 
 
 # ---------------------------------------------------------------------------

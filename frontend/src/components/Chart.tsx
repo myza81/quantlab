@@ -75,6 +75,8 @@ interface ChartProps {
   onHoverInstance?:      (instanceId: string | null) => void
   onIndicatorToggle?:    (instanceId: string) => void
   onIndicatorRemove?:    (instanceId: string) => void
+  /** Per-instance volume color mode: present with a hex color → single-color mode for that instance */
+  volumeColorModes?:     Map<string, string>
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +84,12 @@ interface ChartProps {
 // ---------------------------------------------------------------------------
 
 const _DEFAULT_COLORS    = ['#2196f3', '#ff9800', '#9c27b0', '#00bcd4', '#4caf50']
+
+function toLineStyle(style?: string): LineStyle {
+  if (style === 'dashed') return LineStyle.Dashed
+  if (style === 'dotted') return LineStyle.Dotted
+  return LineStyle.Solid
+}
 const MIN_OSC_HEIGHT     = 100
 const MAX_OSC_HEIGHT     = 600
 const DEFAULT_OSC_HEIGHT = 130
@@ -498,6 +506,7 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
           const s = chart.addSeries(LineSeries, {
             color, lineWidth: 1, crosshairMarkerVisible: false,
             lastValueVisible: true, priceLineVisible: false, title: series.label,
+            lineStyle: toLineStyle(series.line_style),
           })
           s.setData(data)
           seriesMapRef.current.set(key, s)
@@ -668,6 +677,7 @@ export default function Chart({
   indicatorArtifacts, instanceColors, instanceLabels, instanceVisible,
   highlightedInstanceId, onClearStrategyResults,
   onHoverInstance, onIndicatorToggle, onIndicatorRemove,
+  volumeColorModes,
 }: ChartProps) {
   const priceContainerRef         = useRef<HTMLDivElement>(null)
   const chartRef                  = useRef<IChartApi | null>(null)
@@ -682,6 +692,7 @@ export default function Chart({
   const oscContainerRef = useRef<HTMLDivElement>(null)
   const oscChartRef     = useRef<IChartApi | null>(null)
   const oscSeriesMapRef = useRef<Map<string, AnySeriesApi>>(new Map())
+  const oscTimeValueMapRef = useRef<Map<number, number>>(new Map())
   const oscGuideMapRef  = useRef<Map<string, ReferenceGuideBinding>>(new Map())
   const oscSyncingRef   = useRef(false)
 
@@ -857,6 +868,34 @@ export default function Chart({
     return () => { priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncFromPrice) }
   }, [])
 
+  // ── Crosshair sync: price → strategy osc ─────────────────────────────────
+  useEffect(() => {
+    const priceChart = chartRef.current
+    const oscChart   = oscChartRef.current
+    if (!priceChart || !oscChart) return
+
+    const syncCrosshair = (param: MouseEventParams | null) => {
+      if (!param || !param.time || oscSeriesMapRef.current.size === 0) {
+        try { oscChart.clearCrosshairPosition() } catch { /* ignore */ }
+        return
+      }
+
+      const firstSeries = [...oscSeriesMapRef.current.values()][0]
+      if (!firstSeries) {
+        try { oscChart.clearCrosshairPosition() } catch { /* ignore */ }
+        return
+      }
+
+      const val = oscTimeValueMapRef.current.get(param.time as number)
+      if (val === undefined) return
+
+      try { oscChart.setCrosshairPosition(val, param.time, firstSeries) } catch { /* out of range */ }
+    }
+
+    priceChart.subscribeCrosshairMove(syncCrosshair)
+    return () => { priceChart.unsubscribeCrosshairMove(syncCrosshair) }
+  }, [])
+
   // ── Crosshair → legend value update ──────────────────────────────────────
   useEffect(() => {
     const chart = chartRef.current
@@ -952,10 +991,14 @@ export default function Chart({
       for (const s of oscSeriesMapRef.current.values()) oscChart.removeSeries(s)
     }
     oscSeriesMapRef.current.clear()
+    oscTimeValueMapRef.current.clear()
     markerApi.setMarkers([])
     forecastSeries.setData([])
 
-    if (!overlay) return
+    if (!overlay) {
+      oscTimeValueMapRef.current.clear()
+      return
+    }
 
     const indicators      = overlay.indicators ?? []
     const priceIndicators = indicators.filter(ind => ind.pane !== 'oscillator')
@@ -1050,12 +1093,26 @@ export default function Chart({
           }
         }
       })
+
+      const firstLine = oscIndicators.find(ind => ind.kind !== 'histogram')
+      if (firstLine) {
+        const tsVal = new Map<number, number>()
+        for (const p of firstLine.points) {
+          if (p.timestamp) tsVal.set(toUTCTimestamp(p.timestamp) as number, p.value)
+        }
+        oscTimeValueMapRef.current = tsVal
+      } else {
+        oscTimeValueMapRef.current.clear()
+      }
+
       const pr = chartRef.current?.timeScale().getVisibleLogicalRange()
       if (pr) {
         try { oscChart.timeScale().setVisibleLogicalRange(pr) } catch { oscChart.timeScale().fitContent() }
       } else {
         oscChart.timeScale().fitContent()
       }
+    } else {
+      oscTimeValueMapRef.current.clear()
     }
 
     if (overlay.signals.length > 0) {
@@ -1122,17 +1179,19 @@ export default function Chart({
           // only one histogram layer floats on the price chart (TradingView behaviour).
           if (hasRenderedVolumeHistogram) continue
           hasRenderedVolumeHistogram = true
-          // Volume histogram: per-bar directional coloring via close-to-close comparison.
-          // color property on each HistogramData point overrides the series-level default.
-          const cm  = getVolumeColorMap()
+          // Single-color mode: use the provided hex for all bars; otherwise directional.
+          const singleColor = volumeColorModes?.get(artifact.instance_id)
           const pts = normalizeChartData(
             series.values
               .filter(p => p.value !== null && p.timestamp)
-              .map(p => ({
-                time:  toUTCTimestamp(p.timestamp),
-                value: p.value as number,
-                color: cm.get(toUTCTimestamp(p.timestamp)) ?? VOLUME_UP_COLOR,
-              }))
+              .map(p => {
+                const ts = toUTCTimestamp(p.timestamp)
+                return {
+                  time:  ts,
+                  value: p.value as number,
+                  color: singleColor ?? (getVolumeColorMap().get(ts) ?? VOLUME_UP_COLOR),
+                }
+              })
           )
           if (pts.length === 0) continue
           const s = priceChart.addSeries(HistogramSeries, {
@@ -1166,6 +1225,7 @@ export default function Chart({
               lastValueVisible: false,
               priceLineVisible: false,
               title: series.label,
+              lineStyle: toLineStyle(series.line_style),
             })
             s.setData(pts as LineData[])
             artifactPriceSeriesMapRef.current.set(key, s)
@@ -1174,6 +1234,7 @@ export default function Chart({
             const s = priceChart.addSeries(LineSeries, {
               color, lineWidth: 1, crosshairMarkerVisible: false,
               lastValueVisible: true, priceLineVisible: false, title: series.label,
+              lineStyle: toLineStyle(series.line_style),
             })
             s.setData(pts as LineData[])
             artifactPriceSeriesMapRef.current.set(key, s)
@@ -1181,7 +1242,7 @@ export default function Chart({
         }
       }
     }
-  }, [indicatorArtifacts, instanceColors, candles])
+  }, [indicatorArtifacts, instanceColors, candles, volumeColorModes])
 
   // ── Commit handler: save to localStorage ─────────────────────────────────
   const commitHeight = (key: string, h: number) => {

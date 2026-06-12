@@ -48,6 +48,7 @@ def validate_tool_configuration(
     - all required parameters must be present
     - no unknown parameters (not declared in metadata)
     - parameter values must be type-compatible with ParameterSpec.type_label
+    - parameter values must be members of ParameterSpec.options when declared
     - numeric values must satisfy ParameterSpec.min_value / max_value
 
     All violations are collected before raising so callers receive the full error list.
@@ -82,6 +83,14 @@ def validate_tool_configuration(
         type_error = _check_type_compatibility(param_name, value, spec.type_label)
         if type_error:
             errors.append(type_error)
+            continue
+
+        if spec.options is not None and value not in spec.options:
+            allowed = ", ".join(repr(option) for option in spec.options)
+            errors.append(
+                f"parameter '{param_name}' value {value!r} is not one of "
+                f"allowed options: {allowed}"
+            )
             continue
 
         if spec.type_label in ("int", "float") and isinstance(value, (int, float)) and not isinstance(value, bool):

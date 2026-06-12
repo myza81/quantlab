@@ -1,5 +1,5 @@
 /**
- * ChartIndicatorPanel — Chart-UX-3C.1 (refinement of Chart-UX-3C).
+ * ChartIndicatorPanel — Chart-UX-3C.1 / VOL-UX-1.
  *
  * Compact sidebar indicator widget:
  *   - "Indicators (N)"  + Add Indicator  button
@@ -9,6 +9,15 @@
  *   - Visibility toggle hides chart series without removing the instance
  *   - "Clear All" footer button
  *   - Indicator picker as a top-mounted dropdown
+ *
+ * Volume UX consolidation (VOL-UX-1/2):
+ *   - The picker exposes a single "Volume" entry; "Volume MA" is hidden.
+ *   - The Volume settings panel shows a "Show Volume MA" checkbox + MA Length.
+ *   - MA disabled  → toolId='volume', {} sent to backend.
+ *   - MA enabled   → toolId='volume_ma', { ma_length } sent to backend.
+ *   - Histogram bar color mode: directional (red/green) or single (one color).
+ *   - Synthetic params (never sent to backend): show_volume_ma, volume_color_mode,
+ *     volume_color.
  *
  * Architecture invariants:
  *   - No indicator computation in this module.
@@ -110,6 +119,34 @@ function makeInstanceLabel(
  */
 const CHART_PARAM_DROPDOWNS: Readonly<Record<string, readonly string[]>> = {
   source: ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4'],
+}
+
+// ---------------------------------------------------------------------------
+// Volume indicator consolidation (VOL-UX-1)
+// ---------------------------------------------------------------------------
+
+const VOLUME_TOOL_ID    = 'volume'
+const VOLUME_MA_TOOL_ID = 'volume_ma'
+const VOLUME_MA_DEFAULT = 20
+const VOLUME_COLOR_DEFAULT    = '#26a69a'  // green — matches Chart.tsx VOLUME_UP_COLOR
+
+/** True for both 'volume' and 'volume_ma' — these share one user-facing instance. */
+function isVolumeFamily(toolId: string): boolean {
+  return toolId === VOLUME_TOOL_ID || toolId === VOLUME_MA_TOOL_ID
+}
+
+// ---------------------------------------------------------------------------
+// RSI indicator consolidation (RSI-UX-1C.1)
+// ---------------------------------------------------------------------------
+
+const RSI_TOOL_ID           = 'rsi'
+const RSI_MIDLINE_TOOL_ID   = 'rsi_midline'
+const RSI_SMOOTHING_TOOL_ID = 'rsi_smoothing'
+const RSI_MIDLINE_DEFAULT   = 50
+
+function parseRsiMidlineValue(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : parseFloat(String(raw ?? RSI_MIDLINE_DEFAULT))
+  return Number.isNaN(n) ? RSI_MIDLINE_DEFAULT : n
 }
 
 /**
@@ -233,6 +270,131 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
     )
 
     try {
+      // RSI-1C.1/1C.3: Request rsi, rsi_midline, and optionally rsi_smoothing artifacts
+      if (instance.toolId === RSI_TOOL_ID) {
+        const rsiPeriod = typeof currentParams.period === 'number'
+          ? currentParams.period
+          : parseInt(String(currentParams.period ?? 14), 10) || 14
+        const midlineValue = parseRsiMidlineValue(currentParams.midline_value)
+        const showSmoothing = currentParams.show_smoothing === 1 || currentParams.show_smoothing === '1'
+        const smoothingType = String(currentParams.smoothing_type ?? 'SMA')
+        const smoothingLength = typeof currentParams.smoothing_length === 'number'
+          ? currentParams.smoothing_length
+          : parseInt(String(currentParams.smoothing_length ?? 14), 10) || 14
+
+        try {
+          // Request RSI artifact
+          const rsiArtifact: IndicatorArtifactResponse = await computeIndicatorArtifact({
+            tool_id:          RSI_TOOL_ID,
+            instance_id:      `${instance.instanceId}_rsi`,
+            symbol:           params.symbol,
+            provider:         params.provider,
+            timeframe:        params.timeframe,
+            date_range_start: params.start,
+            date_range_end:   params.end,
+            parameters:       { period: rsiPeriod },
+            asset_class:      params.asset_class,
+            exchange:         params.exchange ?? '',
+            credential_id:    params.credential_id,
+          })
+
+          // Request RSI Midline artifact
+          const midlineArtifact: IndicatorArtifactResponse = await computeIndicatorArtifact({
+            tool_id:          RSI_MIDLINE_TOOL_ID,
+            instance_id:      `${instance.instanceId}_midline`,
+            symbol:           params.symbol,
+            provider:         params.provider,
+            timeframe:        params.timeframe,
+            date_range_start: params.start,
+            date_range_end:   params.end,
+            parameters:       { value: midlineValue },
+            asset_class:      params.asset_class,
+            exchange:         params.exchange ?? '',
+            credential_id:    params.credential_id,
+          })
+
+          // Merge artifacts: start with rsi + midline
+          const seriesArray = [...rsiArtifact.series, ...midlineArtifact.series]
+
+          // RSI-1C.3: Optionally request and merge RSI Smoothing artifact
+          if (showSmoothing) {
+            const smoothingArtifact: IndicatorArtifactResponse = await computeIndicatorArtifact({
+              tool_id:          RSI_SMOOTHING_TOOL_ID,
+              instance_id:      `${instance.instanceId}_smoothing`,
+              symbol:           params.symbol,
+              provider:         params.provider,
+              timeframe:        params.timeframe,
+              date_range_start: params.start,
+              date_range_end:   params.end,
+              parameters:       {
+                period: rsiPeriod,
+                smoothing_type: smoothingType,
+                smoothing_length: smoothingLength,
+              },
+              asset_class:      params.asset_class,
+              exchange:         params.exchange ?? '',
+              credential_id:    params.credential_id,
+            })
+            seriesArray.push(...smoothingArtifact.series)
+          }
+
+          // Merge all artifacts
+          const mergedArtifact: IndicatorArtifactResponse = {
+            ...rsiArtifact,
+            series: seriesArray,
+          }
+
+          setInstances(prev =>
+            prev.map(i =>
+              i.instanceId === instance.instanceId
+                ? {
+                    ...i,
+                    artifact: mergedArtifact,
+                    loading: false,
+                    error: null,
+                    parameters: {
+                      period: rsiPeriod,
+                      midline_value: midlineValue,
+                      show_smoothing: showSmoothing ? 1 : 0,
+                      smoothing_type: smoothingType,
+                      smoothing_length: smoothingLength,
+                    },
+                  }
+                : i
+            )
+          )
+        } catch (err: unknown) {
+          setInstances(prev =>
+            prev.map(i =>
+              i.instanceId === instance.instanceId
+                ? {
+                    ...i,
+                    loading: false,
+                    error: err instanceof Error ? err.message : 'Computation failed',
+                  }
+                : i
+            )
+          )
+        }
+        return
+      }
+
+      // Build backend-safe params: volume family strips all frontend-only keys.
+      // volume → {}; volume_ma → just ma_length; other tools → all params.
+      let apiParams: Record<string, number | string>
+      if (isVolumeFamily(instance.toolId)) {
+        if (instance.toolId === VOLUME_MA_TOOL_ID) {
+          const ml = typeof currentParams.ma_length === 'number'
+            ? currentParams.ma_length
+            : parseInt(String(currentParams.ma_length ?? VOLUME_MA_DEFAULT), 10) || VOLUME_MA_DEFAULT
+          apiParams = { ma_length: ml }
+        } else {
+          apiParams = {}
+        }
+      } else {
+        apiParams = currentParams
+      }
+
       const artifact: IndicatorArtifactResponse = await computeIndicatorArtifact({
         tool_id:          instance.toolId,
         instance_id:      instance.instanceId,
@@ -241,7 +403,7 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
         timeframe:        params.timeframe,
         date_range_start: params.start,
         date_range_end:   params.end,
-        parameters:       currentParams,
+        parameters:       apiParams,
         asset_class:      params.asset_class,
         exchange:         params.exchange ?? '',
         credential_id:    params.credential_id,
@@ -266,31 +428,59 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
 
   async function handleAddIndicator(metadata: ChartIndicatorMetadata) {
     if (!params) return
-    const color = nextPaletteColor()
+    const color      = nextPaletteColor()
     const instanceId = `${metadata.tool_id}_${_instanceCounter}`
-    const defaultParams = getDefaultParameters(metadata)
-    const label = makeInstanceLabel(metadata.display_name, metadata.editable_parameters, defaultParams, metadata.short_name)
+
+    // Volume consolidation: inject synthetic settings with MA disabled by default.
+    // Backend receives only {}, not the synthetic show_volume_ma / ma_length params.
+    // RSI consolidation (RSI-1C.1): inject synthetic settings with midline and smoothing disabled.
+    let finalParams: Record<string, number | string>
+    let label: string
+    if (metadata.tool_id === VOLUME_TOOL_ID) {
+      finalParams = {
+        show_volume_ma: 0,
+        ma_length: VOLUME_MA_DEFAULT,
+        volume_color_mode: 'directional',
+        volume_color: VOLUME_COLOR_DEFAULT,
+      }
+      label       = 'Volume'
+    } else if (metadata.tool_id === RSI_TOOL_ID) {
+      // RSI-1C.1: Create composite RSI instance with midline.
+      // Smoothing will be added in RSI-1C.2.
+      finalParams = {
+        period: 14,
+        midline_value: RSI_MIDLINE_DEFAULT,
+        show_smoothing: 0,
+        smoothing_type: 'SMA',
+        smoothing_length: 14,
+      }
+      label       = 'RSI'
+    } else {
+      finalParams = getDefaultParameters(metadata)
+      label       = makeInstanceLabel(metadata.display_name, metadata.editable_parameters, finalParams, metadata.short_name)
+    }
 
     const newInstance: IndicatorInstance = {
       instanceId,
-      toolId:        metadata.tool_id,
-      displayName:   metadata.display_name,
-      instanceLabel: label,
-      instanceColor: color,
-      seriesColors:  {},
-      parameters:    defaultParams,
-      artifact:      null,
-      visible:       true,
-      loading:       true,
-      error:         null,
+      toolId:           metadata.tool_id,
+      displayName:      metadata.display_name,
+      instanceLabel:    label,
+      instanceColor:    color,
+      seriesColors:     {},
+      seriesLineStyles: {},
+      parameters:       finalParams,
+      artifact:         null,
+      visible:          true,
+      loading:          true,
+      error:            null,
     }
 
     const next = [...instances, newInstance]
     setInstances(next)
-    setEditedParams(prev => ({ ...prev, [instanceId]: _toStrings(defaultParams) }))
+    setEditedParams(prev => ({ ...prev, [instanceId]: _toStrings(finalParams) }))
     setShowPicker(false)
 
-    await computeArtifact(newInstance, defaultParams)
+    await computeArtifact(newInstance, finalParams)
   }
 
   function handleToggleVisible(instanceId: string) {
@@ -313,15 +503,71 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
 
   async function handleApply(instance: IndicatorInstance) {
     if (!params) return
-    const specs = indicators.find(m => m.tool_id === instance.toolId)?.parameters ?? []
+
+    // Volume family: custom apply — switches toolId based on show_volume_ma checkbox.
+    if (isVolumeFamily(instance.toolId)) {
+      const edits     = editedParams[instance.instanceId] ?? {}
+      const showMA     = edits.show_volume_ma === '1'
+      const maLength   = parseInt(edits.ma_length ?? String(VOLUME_MA_DEFAULT), 10) || VOLUME_MA_DEFAULT
+      const colorMode  = edits.volume_color_mode ?? 'directional'
+      const volumeColor = edits.volume_color ?? VOLUME_COLOR_DEFAULT
+      const newToolId  = showMA ? VOLUME_MA_TOOL_ID : VOLUME_TOOL_ID
+      const newParams: Record<string, number | string> = {
+        show_volume_ma: showMA ? 1 : 0,
+        ma_length: maLength,
+        volume_color_mode: colorMode,
+        volume_color: volumeColor,
+      }
+      const newLabel   = showMA ? `Volume MA (${maLength})` : 'Volume'
+      setInstances(prev => prev.map(i =>
+        i.instanceId === instance.instanceId
+          ? { ...i, toolId: newToolId, parameters: newParams, instanceLabel: newLabel }
+          : i
+      ))
+      setEditingId(null)
+      await computeArtifact({ ...instance, toolId: newToolId, parameters: newParams }, newParams)
+      return
+    }
+
+    // RSI custom apply (RSI-1C.2)
+    if (instance.toolId === RSI_TOOL_ID) {
+      const edits = editedParams[instance.instanceId] ?? {}
+      const period = parseInt(edits.period ?? String(instance.parameters.period ?? 14), 10) || 14
+      const midlineValue = parseRsiMidlineValue(edits.midline_value ?? instance.parameters.midline_value)
+      const showSmoothing = edits.show_smoothing === '1'
+      const smoothingType = edits.smoothing_type ?? String(instance.parameters.smoothing_type ?? 'SMA')
+      const smoothingLength = parseInt(edits.smoothing_length ?? String(instance.parameters.smoothing_length ?? 14), 10) || 14
+
+      const newParams: Record<string, number | string> = {
+        period,
+        midline_value: midlineValue,
+        show_smoothing: showSmoothing ? 1 : 0,
+        smoothing_type: smoothingType,
+        smoothing_length: smoothingLength,
+      }
+
+      // Label: "RSI (period)" — shown on compact row
+      const newLabel = `RSI (${period})`
+
+      setInstances(prev => prev.map(i =>
+        i.instanceId === instance.instanceId
+          ? { ...i, parameters: newParams, instanceLabel: newLabel }
+          : i
+      ))
+      setEditingId(null)
+      await computeArtifact({ ...instance, parameters: newParams }, newParams)
+      return
+    }
+
+    // Generic apply for all other indicators.
+    const specs  = indicators.find(m => m.tool_id === instance.toolId)?.parameters ?? []
     const parsed = parseEditedParams(editedParams[instance.instanceId] ?? {}, instance, specs)
-    const label = makeInstanceLabel(
+    const label  = makeInstanceLabel(
       instance.displayName,
       indicators.find(m => m.tool_id === instance.toolId)?.editable_parameters ?? [],
       parsed,
       indicators.find(m => m.tool_id === instance.toolId)?.short_name,
     )
-    // Update label when params change
     setInstances(prev => prev.map(i =>
       i.instanceId === instance.instanceId ? { ...i, instanceLabel: label } : i
     ))
@@ -343,9 +589,22 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
     }))
   }
 
-  // Category map for picker
+  function handleSeriesLineStyleChange(instanceId: string, seriesId: string, style: string) {
+    setInstances(prev => prev.map(i => {
+      if (i.instanceId !== instanceId) return i
+      return { ...i, seriesLineStyles: { ...i.seriesLineStyles, [seriesId]: style } }
+    }))
+  }
+
+  // Category map for picker.
+  // volume_ma is intentionally excluded: it is surfaced through the single
+  // "Volume" indicator's settings panel (Show Volume MA checkbox).
+  // rsi_midline and rsi_smoothing are intentionally excluded: they are managed
+  // through the single "RSI" indicator's settings panel (RSI-1C.1).
   const categoryMap = new Map<string, ChartIndicatorMetadata[]>()
   for (const m of indicators) {
+    if (m.tool_id === VOLUME_MA_TOOL_ID) continue
+    if (m.tool_id === RSI_MIDLINE_TOOL_ID || m.tool_id === RSI_SMOOTHING_TOOL_ID) continue
     if (searchQuery.trim() && !matchesSearch(m, searchQuery)) continue
     const list = categoryMap.get(m.category) ?? []
     categoryMap.set(m.category, [...list, m])
@@ -509,11 +768,328 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
                 </div>
 
                 {/* Inline parameter editor — collapsed by default */}
-                {isEditing && (
+
+                {/* ── Volume settings (VOL-UX-2) ── */}
+                {isEditing && isVolumeFamily(inst.toolId) && (
+                  <div data-testid={`editor-${inst.instanceId}`} style={s.editor}>
+
+                    {/* Show Volume MA toggle */}
+                    <label style={s.paramRow}>
+                      <span style={s.paramName}>Show Volume MA</span>
+                      <input
+                        data-testid={`param-${inst.instanceId}-show_volume_ma`}
+                        type="checkbox"
+                        checked={currEdits.show_volume_ma === '1'}
+                        onChange={e => setEditedParams(prev => ({
+                          ...prev,
+                          [inst.instanceId]: {
+                            ...(prev[inst.instanceId] ?? {}),
+                            show_volume_ma: e.target.checked ? '1' : '0',
+                          },
+                        }))}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    </label>
+
+                    {/* MA Length — only shown when MA is enabled */}
+                    {currEdits.show_volume_ma === '1' && (
+                      <label style={s.paramRow}>
+                        <span style={s.paramName}>MA Length</span>
+                        <input
+                          data-testid={`param-${inst.instanceId}-ma_length`}
+                          type="number"
+                          value={currEdits.ma_length ?? String(VOLUME_MA_DEFAULT)}
+                          min={1}
+                          step={1}
+                          onChange={e => setEditedParams(prev => ({
+                            ...prev,
+                            [inst.instanceId]: {
+                              ...(prev[inst.instanceId] ?? {}),
+                              ma_length: e.target.value,
+                            },
+                          }))}
+                          style={s.paramInput}
+                        />
+                      </label>
+                    )}
+
+                    {/* Histogram bar color mode — always visible, no artifact gate */}
+                    <div style={s.paramRow}>
+                      <span style={s.paramName}>Bar Color</span>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                          <input
+                            data-testid={`param-${inst.instanceId}-volume_color_mode-directional`}
+                            type="radio"
+                            name={`volume_color_mode_${inst.instanceId}`}
+                            value="directional"
+                            checked={currEdits.volume_color_mode !== 'single'}
+                            onChange={() => setEditedParams(prev => ({
+                              ...prev,
+                              [inst.instanceId]: {
+                                ...(prev[inst.instanceId] ?? {}),
+                                volume_color_mode: 'directional',
+                              },
+                            }))}
+                          />
+                          <span style={s.paramName}>Directional</span>
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                          <input
+                            data-testid={`param-${inst.instanceId}-volume_color_mode-single`}
+                            type="radio"
+                            name={`volume_color_mode_${inst.instanceId}`}
+                            value="single"
+                            checked={currEdits.volume_color_mode === 'single'}
+                            onChange={() => setEditedParams(prev => ({
+                              ...prev,
+                              [inst.instanceId]: {
+                                ...(prev[inst.instanceId] ?? {}),
+                                volume_color_mode: 'single',
+                              },
+                            }))}
+                          />
+                          <span style={s.paramName}>Single</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Volume bar color picker — always visible; only effective in single mode */}
+                    <label style={{ ...s.colorRow, opacity: currEdits.volume_color_mode === 'single' ? 1 : 0.4 }}>
+                      <span style={s.paramName}>Color</span>
+                      <input
+                        data-testid={`param-${inst.instanceId}-volume_color`}
+                        type="color"
+                        value={currEdits.volume_color ?? VOLUME_COLOR_DEFAULT}
+                        disabled={currEdits.volume_color_mode !== 'single'}
+                        onChange={e => setEditedParams(prev => ({
+                          ...prev,
+                          [inst.instanceId]: {
+                            ...(prev[inst.instanceId] ?? {}),
+                            volume_color: e.target.value,
+                          },
+                        }))}
+                        style={s.colorInput}
+                      />
+                    </label>
+
+                    {/* MA line color — only when MA enabled and artifact has volume_ma series */}
+                    {(() => {
+                      if (currEdits.show_volume_ma !== '1' || !inst.artifact) return null
+                      const maSer = inst.artifact.series.find(ser => ser.series_id === 'volume_ma')
+                      if (!maSer) return null
+                      const maColor = inst.seriesColors[maSer.series_id] ?? maSer.default_color
+                      return (
+                        <label style={s.colorRow}>
+                          <span style={s.paramName}>MA Color</span>
+                          <input
+                            data-testid={`color-${inst.instanceId}-volume_ma`}
+                            type="color"
+                            value={maColor}
+                            onChange={e => handleSeriesColorChange(inst.instanceId, maSer.series_id, e.target.value)}
+                            style={s.colorInput}
+                          />
+                        </label>
+                      )
+                    })()}
+
+                    <div style={s.editorFooter}>
+                      <button
+                        type="button"
+                        data-testid={`apply-${inst.instanceId}`}
+                        style={s.applyBtn}
+                        onClick={() => handleApply(inst)}
+                        disabled={inst.loading || !params}
+                      >
+                        Apply
+                      </button>
+                      <button
+                        type="button"
+                        data-testid={`cancel-${inst.instanceId}`}
+                        style={s.cancelBtn}
+                        onClick={handleCancel}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── RSI settings (RSI-1C.2) ── */}
+                {isEditing && inst.toolId === RSI_TOOL_ID && (
+                  <div data-testid={`editor-${inst.instanceId}`} style={s.editor}>
+
+                    {/* RSI Period */}
+                    <label style={s.paramRow}>
+                      <span style={s.paramName}>RSI Period</span>
+                      <input
+                        data-testid={`param-${inst.instanceId}-period`}
+                        type="number"
+                        value={currEdits.period ?? String(inst.parameters.period ?? 14)}
+                        min={2}
+                        step={1}
+                        onChange={e => setEditedParams(prev => ({
+                          ...prev,
+                          [inst.instanceId]: {
+                            ...(prev[inst.instanceId] ?? {}),
+                            period: e.target.value,
+                          },
+                        }))}
+                        style={s.paramInput}
+                      />
+                    </label>
+
+                    {/* Middle Band (Midline Value) */}
+                    <label style={s.paramRow}>
+                      <span style={s.paramName}>Middle Band</span>
+                      <input
+                        data-testid={`param-${inst.instanceId}-midline_value`}
+                        type="number"
+                        value={currEdits.midline_value ?? String(inst.parameters.midline_value ?? RSI_MIDLINE_DEFAULT)}
+                        min={0}
+                        max={100}
+                        step={0.1}
+                        onChange={e => setEditedParams(prev => ({
+                          ...prev,
+                          [inst.instanceId]: {
+                            ...(prev[inst.instanceId] ?? {}),
+                            midline_value: e.target.value,
+                          },
+                        }))}
+                        style={s.paramInput}
+                      />
+                    </label>
+
+                    {/* Show RSI Smoothing */}
+                    <label style={s.paramRow}>
+                      <span style={s.paramName}>Show RSI Smoothing</span>
+                      <input
+                        data-testid={`param-${inst.instanceId}-show_smoothing`}
+                        type="checkbox"
+                        checked={currEdits.show_smoothing === '1'}
+                        onChange={e => setEditedParams(prev => ({
+                          ...prev,
+                          [inst.instanceId]: {
+                            ...(prev[inst.instanceId] ?? {}),
+                            show_smoothing: e.target.checked ? '1' : '0',
+                          },
+                        }))}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    </label>
+
+                    {/* Smoothing Type — only shown when smoothing enabled */}
+                    {currEdits.show_smoothing === '1' && (
+                      <label style={s.paramRow}>
+                        <span style={s.paramName}>Smoothing Type</span>
+                        <select
+                          data-testid={`param-${inst.instanceId}-smoothing_type`}
+                          value={currEdits.smoothing_type ?? String(inst.parameters.smoothing_type ?? 'SMA')}
+                          onChange={e => setEditedParams(prev => ({
+                            ...prev,
+                            [inst.instanceId]: {
+                              ...(prev[inst.instanceId] ?? {}),
+                              smoothing_type: e.target.value,
+                            },
+                          }))}
+                          style={s.paramInput}
+                        >
+                          <option value="SMA">SMA</option>
+                          <option value="EMA">EMA</option>
+                        </select>
+                      </label>
+                    )}
+
+                    {/* Smoothing Length — only shown when smoothing enabled */}
+                    {currEdits.show_smoothing === '1' && (
+                      <label style={s.paramRow}>
+                        <span style={s.paramName}>Smoothing Length</span>
+                        <input
+                          data-testid={`param-${inst.instanceId}-smoothing_length`}
+                          type="number"
+                          value={currEdits.smoothing_length ?? String(inst.parameters.smoothing_length ?? 14)}
+                          min={1}
+                          step={1}
+                          onChange={e => setEditedParams(prev => ({
+                            ...prev,
+                            [inst.instanceId]: {
+                              ...(prev[inst.instanceId] ?? {}),
+                              smoothing_length: e.target.value,
+                            },
+                          }))}
+                          style={s.paramInput}
+                        />
+                      </label>
+                    )}
+
+                    {/* Per-series style editor (color + line style) — applies immediately */}
+                    {inst.artifact && inst.artifact.series.length > 0 && (
+                      <div data-testid={`color-section-${inst.instanceId}`} style={s.colorSection}>
+                        <div style={s.colorSectionTitle}>Style</div>
+                        {inst.artifact.series.map(series => {
+                          const effectiveColor = inst.seriesColors[series.series_id]
+                            ?? (inst.artifact!.series.length === 1 ? inst.instanceColor : series.default_color)
+                          const isLine = series.render_type !== 'histogram'
+                          return (
+                            <div key={series.series_id} style={s.colorRow}>
+                              <span style={s.paramName}>{series.label}</span>
+                              <input
+                                data-testid={`color-${inst.instanceId}-${series.series_id}`}
+                                type="color"
+                                value={effectiveColor}
+                                onChange={e => handleSeriesColorChange(inst.instanceId, series.series_id, e.target.value)}
+                                style={s.colorInput}
+                              />
+                              {isLine && (
+                                <select
+                                  data-testid={`linestyle-${inst.instanceId}-${series.series_id}`}
+                                  value={inst.seriesLineStyles[series.series_id] ?? 'solid'}
+                                  onChange={e => handleSeriesLineStyleChange(inst.instanceId, series.series_id, e.target.value)}
+                                  style={s.paramInput}
+                                >
+                                  <option value="solid">Solid</option>
+                                  <option value="dashed">Dashed</option>
+                                  <option value="dotted">Dotted</option>
+                                </select>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    <div style={s.editorFooter}>
+                      <button
+                        type="button"
+                        data-testid={`apply-${inst.instanceId}`}
+                        style={s.applyBtn}
+                        onClick={() => handleApply(inst)}
+                        disabled={inst.loading || !params}
+                      >
+                        Apply
+                      </button>
+                      <button
+                        type="button"
+                        data-testid={`cancel-${inst.instanceId}`}
+                        style={s.cancelBtn}
+                        onClick={handleCancel}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Generic parameter editor (all non-volume, non-RSI indicators) ── */}
+                {isEditing && !isVolumeFamily(inst.toolId) && inst.toolId !== RSI_TOOL_ID && (
                   <div data-testid={`editor-${inst.instanceId}`} style={s.editor}>
                     {editableSpecs.map(spec => {
                       const val = currEdits[spec.name] ?? String(inst.parameters[spec.name] ?? '')
-                      const dropdownOptions = CHART_PARAM_DROPDOWNS[spec.name]
+                      // Metadata-driven options take priority; fall back to the
+                      // hardcoded table for parameters not yet updated on the backend.
+                      const dropdownOptions =
+                        (spec.options && spec.options.length > 0 ? spec.options : null)
+                        ?? CHART_PARAM_DROPDOWNS[spec.name]
                       return (
                         <label key={spec.name} style={s.paramRow}>
                           <span style={s.paramName}>{spec.name}</span>
@@ -552,15 +1128,16 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
                       )
                     })}
 
-                    {/* Per-series color editor — applies immediately without backend recompute */}
+                    {/* Per-series style editor (color + line style) — applies immediately */}
                     {inst.artifact && inst.artifact.series.length > 0 && (
                       <div data-testid={`color-section-${inst.instanceId}`} style={s.colorSection}>
-                        <div style={s.colorSectionTitle}>Colors</div>
+                        <div style={s.colorSectionTitle}>Style</div>
                         {inst.artifact.series.map(series => {
                           const effectiveColor = inst.seriesColors[series.series_id]
                             ?? (inst.artifact!.series.length === 1 ? inst.instanceColor : series.default_color)
+                          const isLine = series.render_type !== 'histogram'
                           return (
-                            <label key={series.series_id} style={s.colorRow}>
+                            <div key={series.series_id} style={s.colorRow}>
                               <span style={s.paramName}>{series.label}</span>
                               <input
                                 data-testid={`color-${inst.instanceId}-${series.series_id}`}
@@ -569,7 +1146,19 @@ function ChartIndicatorPanel({ hasData, params, onInstancesChange, highlightedIn
                                 onChange={e => handleSeriesColorChange(inst.instanceId, series.series_id, e.target.value)}
                                 style={s.colorInput}
                               />
-                            </label>
+                              {isLine && (
+                                <select
+                                  data-testid={`linestyle-${inst.instanceId}-${series.series_id}`}
+                                  value={inst.seriesLineStyles[series.series_id] ?? 'solid'}
+                                  onChange={e => handleSeriesLineStyleChange(inst.instanceId, series.series_id, e.target.value)}
+                                  style={s.paramInput}
+                                >
+                                  <option value="solid">Solid</option>
+                                  <option value="dashed">Dashed</option>
+                                  <option value="dotted">Dotted</option>
+                                </select>
+                              )}
+                            </div>
                           )
                         })}
                       </div>

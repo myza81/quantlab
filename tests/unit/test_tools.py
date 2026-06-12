@@ -319,9 +319,19 @@ class TestSmaMetadata:
         names = [p.name for p in SMA_METADATA.parameters]
         assert "period" in names
 
+    def test_has_source_parameter(self) -> None:
+        names = [p.name for p in SMA_METADATA.parameters]
+        assert "source" in names
+
     def test_period_parameter_required(self) -> None:
         param = next(p for p in SMA_METADATA.parameters if p.name == "period")
         assert param.required is True
+
+    def test_source_parameter_options(self) -> None:
+        param = next(p for p in SMA_METADATA.parameters if p.name == "source")
+        assert param.required is False
+        assert param.default == "close"
+        assert param.options == ("close", "open", "high", "low", "hl2", "hlc3", "ohlc4")
 
     def test_output_feature_name(self) -> None:
         assert "sma" in SMA_METADATA.output_feature_names

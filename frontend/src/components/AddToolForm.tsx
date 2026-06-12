@@ -252,7 +252,7 @@ export function AddToolForm({ draftId: _draftId, onSubmit, onCancel }: Props) {
               )
             }
 
-            // Standard params: bool → select, int/float → number, str → text
+            // Standard params: options → select, bool → select, int/float → number, str → text
             return (
               <div key={p.name} style={s.row}>
                 <label style={s.label}>
@@ -260,7 +260,19 @@ export function AddToolForm({ draftId: _draftId, onSubmit, onCancel }: Props) {
                   {p.required && <span style={s.required}> *</span>}
                   <span style={s.typeHint}> ({p.type_label})</span>
                 </label>
-                {p.type_label === 'bool' ? (
+                {p.options && p.options.length > 0 ? (
+                  // Metadata-driven enum dropdown — no frontend hardcoding required
+                  <select
+                    data-testid={`param-${p.name}-select`}
+                    style={s.select}
+                    value={params[p.name] ?? String(p.default ?? p.options[0])}
+                    onChange={e => handleParamChange(p.name, e.target.value)}
+                  >
+                    {p.options.map(opt => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                ) : p.type_label === 'bool' ? (
                   <select
                     style={s.select}
                     value={params[p.name] ?? ''}

@@ -8,6 +8,7 @@ class ToolParameterResponse(BaseModel):
     default: object | None = None
     min_value: float | None = None
     max_value: float | None = None
+    options: list[str] | None = None
 
 
 class ToolMetadataResponse(BaseModel):

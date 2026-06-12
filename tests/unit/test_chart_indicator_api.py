@@ -216,7 +216,7 @@ class TestGetChartIndicators:
         client = TestClient(app)
         resp = client.get("/chart/indicators")
         ids = {m["tool_id"] for m in resp.json()["indicators"]}
-        assert ids == {"sma", "ema", "rsi", "macd", "bollinger_bands", "atr", "volume", "volume_ma"}
+        assert ids == {"sma", "ema", "rsi", "rsi_midline", "rsi_smoothing", "macd", "bollinger_bands", "atr", "volume", "volume_ma"}
 
     def test_excludes_hidden_tool(self) -> None:
         reg = create_default_registry()
@@ -1515,3 +1515,61 @@ class TestChartIndicatorShortName:
             # short_name intentionally omitted — should default to None
         )
         assert meta.short_name is None
+
+
+# ---------------------------------------------------------------------------
+# TOOLSET-UX-ENUM-1 — options field on ChartIndicatorParameterSpec
+# ---------------------------------------------------------------------------
+
+class TestChartIndicatorParameterOptions:
+    """GET /chart/indicators serializes parameter options for chart-visible tools."""
+
+    def _params(self, tool_id: str) -> dict[str, dict]:
+        resp = TestClient(app).get("/chart/indicators")
+        assert resp.status_code == 200
+        indicators = {ind["tool_id"]: ind for ind in resp.json()["indicators"]}
+        return {p["name"]: p for p in indicators[tool_id]["parameters"]}
+
+    def test_rsi_smoothing_smoothing_type_options_serialized(self) -> None:
+        params = self._params("rsi_smoothing")
+        assert params["smoothing_type"]["options"] == ["SMA", "EMA"]
+
+    def test_rsi_smoothing_period_options_is_null(self) -> None:
+        params = self._params("rsi_smoothing")
+        assert params["period"]["options"] is None
+
+    def test_rsi_smoothing_smoothing_length_options_is_null(self) -> None:
+        params = self._params("rsi_smoothing")
+        assert params["smoothing_length"]["options"] is None
+
+    def test_sma_period_options_is_null(self) -> None:
+        params = self._params("sma")
+        assert params["period"]["options"] is None
+
+    def test_chart_indicator_parameter_spec_accepts_options(self) -> None:
+        from backend.api.schemas.chart import ChartIndicatorParameterSpec
+        spec = ChartIndicatorParameterSpec(
+            name="smoothing_type", description="SMA or EMA",
+            type_label="str", required=True, default="SMA",
+            options=["SMA", "EMA"],
+        )
+        assert spec.options == ["SMA", "EMA"]
+
+    def test_chart_indicator_parameter_spec_options_defaults_to_none(self) -> None:
+        from backend.api.schemas.chart import ChartIndicatorParameterSpec
+        spec = ChartIndicatorParameterSpec(
+            name="period", description="Window",
+            type_label="int", required=True, default=14,
+        )
+        assert spec.options is None
+
+    def test_options_field_present_on_all_chart_indicator_params(self) -> None:
+        """options key must appear on every parameter in the chart indicators response."""
+        resp = TestClient(app).get("/chart/indicators")
+        assert resp.status_code == 200
+        for indicator in resp.json()["indicators"]:
+            for param in indicator["parameters"]:
+                assert "options" in param, (
+                    f"options missing from chart indicator "
+                    f"{indicator['tool_id']}.{param['name']}"
+                )

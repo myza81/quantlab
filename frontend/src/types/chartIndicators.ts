@@ -26,6 +26,8 @@ export interface ChartIndicatorParameterSpec {
   default: number | string | null
   min_value: number | null
   max_value: number | null
+  /** Ordered allowed values. When present, render a <select> instead of a numeric input. */
+  options?: string[] | null
 }
 
 export interface ChartIndicatorMetadata {
@@ -78,6 +80,8 @@ export interface IndicatorArtifactSeries {
   render_type: 'line' | 'histogram' | 'area' | 'band_fill' | string
   default_color: string
   values: IndicatorSeriesPoint[]
+  /** Frontend-only: patched by App.tsx from seriesLineStyles. Never present in backend responses. */
+  line_style?: string
 }
 
 export interface IndicatorArtifactResponse {
@@ -115,6 +119,8 @@ export interface IndicatorInstance {
   instanceLabel: string                         // compact label derived from params
   instanceColor: string                         // palette color (or user-set for single-series)
   seriesColors: Record<string, string>          // series_id → hex, user override per series
+  /** Frontend-only: per-series line style ('solid'|'dashed'|'dotted'). Never sent to backend. */
+  seriesLineStyles: Record<string, string>
   parameters: Record<string, number | string>
   artifact: IndicatorArtifactResponse | null
   visible: boolean

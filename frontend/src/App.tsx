@@ -83,14 +83,17 @@ export default function App() {
       .filter(i => i.visible && i.artifact !== null)
       .map(i => {
         const artifact = i.artifact!
-        // Patch series.default_color with user overrides so Chart doesn't need
-        // a separate seriesColorOverrides prop
-        if (Object.keys(i.seriesColors).length === 0) return artifact
+        // Patch series.default_color and line_style with user overrides so Chart
+        // doesn't need separate override props.
+        const hasColorOverrides = Object.keys(i.seriesColors).length > 0
+        const hasStyleOverrides = Object.keys(i.seriesLineStyles).length > 0
+        if (!hasColorOverrides && !hasStyleOverrides) return artifact
         return {
           ...artifact,
           series: artifact.series.map(s => ({
             ...s,
             default_color: i.seriesColors[s.series_id] ?? s.default_color,
+            line_style:    i.seriesLineStyles[s.series_id],
           })),
         }
       }),
@@ -109,6 +112,19 @@ export default function App() {
 
   const instanceVisibleMap = useMemo(
     () => new Map(indicatorInstances.map(i => [i.instanceId, i.visible])),
+    [indicatorInstances]
+  )
+
+  const volumeColorModes = useMemo(
+    () => {
+      const m = new Map<string, string>()
+      for (const i of indicatorInstances) {
+        if (i.parameters.volume_color_mode === 'single') {
+          m.set(i.instanceId, String(i.parameters.volume_color ?? '#26a69a'))
+        }
+      }
+      return m
+    },
     [indicatorInstances]
   )
 
@@ -477,6 +493,7 @@ export default function App() {
                       onHoverInstance={setHoveredInstanceId}
                       onIndicatorToggle={id => indicatorPanelRef.current?.toggleVisible(id)}
                       onIndicatorRemove={id => indicatorPanelRef.current?.removeInstance(id)}
+                      volumeColorModes={volumeColorModes}
                     />
                   </>
                 )}

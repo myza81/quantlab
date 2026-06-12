@@ -266,6 +266,12 @@ def derive_warmup_bars_required(
     elif tid == "rsi":
         period = tool_config.parameters.get("period", 14)
         warmup = int(period)   # needs `period` price diffs; first output at bar index `period`
+    elif tid == "rsi_midline":
+        warmup = 0  # constant value; no computation needed; every bar produces output
+    elif tid == "rsi_smoothing":
+        period = int(tool_config.parameters.get("period", 14))
+        smoothing_length = int(tool_config.parameters.get("smoothing_length", 14))
+        warmup = period + smoothing_length - 1  # RSI warmup + smoothing warmup
     elif tid == "macd":
         slow   = int(tool_config.parameters.get("slow_period",   26))
         signal = int(tool_config.parameters.get("signal_period",  9))
@@ -292,7 +298,6 @@ def derive_warmup_bars_required(
 # SMA computation (internal)
 # ---------------------------------------------------------------------------
 
-_SMA_CLOSE_FIELD = "close"
 _SMA_OUTPUT_NAME = "sma"  # matches SMA_METADATA.output_feature_names[0]
 
 
@@ -305,43 +310,41 @@ def _compute_sma_series(
 
     Rules:
     - period extracted from tool_config.parameters["period"]
-    - source field: always "close" (price_fields["close"])
+    - source extracted from tool_config.parameters.get("source", "close")
     - warmup: first (period - 1) bars produce no output point
-    - no lookahead: bar N's SMA uses only closes at positions 0..N
+    - no lookahead: bar N's SMA uses only source values at positions 0..N
     - deterministic: identical inputs → identical outputs
 
     Args:
         tool_config: Validated SMA tool configuration with period parameter.
-        bars: Sorted (by bar_index) bar inputs; must have price_fields["close"].
+                     Optional "source" parameter selects the price field (default "close").
+        bars: Sorted (by bar_index) bar inputs; must have required price_fields.
 
     Returns:
         List with one ToolOutputSeries (SMA produces one output: "sma").
 
     Raises:
-        ToolComputationError: if "close" is missing from any bar's price_fields.
+        ToolComputationError: invalid source value, or required price field absent.
     """
     period = int(tool_config.parameters["period"])
+    source = str(tool_config.parameters.get("source", "close"))
     warmup = _derive_period_warmup(period, tool_config.instance_id)
 
-    # Extract close prices, validating presence
-    closes: list[float] = []
+    prices: list[float] = []
     for bar in bars:
-        if _SMA_CLOSE_FIELD not in bar.price_fields:
-            raise ToolComputationError(
-                f"instance '{tool_config.instance_id}': "
-                f"price_fields missing '{_SMA_CLOSE_FIELD}' at bar_index={bar.bar_index}"
-            )
-        closes.append(bar.price_fields[_SMA_CLOSE_FIELD])
+        prices.append(
+            _resolve_source_value(source, bar.price_fields, tool_config.instance_id, bar.bar_index)
+        )
 
     points: list[ToolOutputPoint] = []
     running_sum = 0.0
 
     for i, bar in enumerate(bars):
-        running_sum += closes[i]
+        running_sum += prices[i]
         if i >= warmup:
             # Remove bar that fell out of window
             if i >= period:
-                running_sum -= closes[i - period]
+                running_sum -= prices[i - period]
             sma_value = running_sum / period
             points.append(ToolOutputPoint(
                 bar_index=bar.bar_index,
@@ -359,7 +362,7 @@ def _compute_sma_series(
 
 
 # ---------------------------------------------------------------------------
-# Source-field resolution helper — used by EMA (Tool-Backend-1A)
+# Source-field resolution helper — used by SMA and EMA (Tool-Backend-1A)
 # ---------------------------------------------------------------------------
 
 _VALID_SOURCE_FIELDS = frozenset({"close", "open", "high", "low", "hl2", "hlc3", "ohlc4"})
@@ -512,6 +515,54 @@ _RSI_CLOSE_FIELD  = "close"
 _RSI_OUTPUT_NAME  = "rsi"   # matches RSI_METADATA.output_feature_names[0]
 
 
+def _compute_raw_rsi_values(
+    closes: list[float],
+    period: int,
+) -> tuple[list[float | None], int]:
+    """
+    Compute raw RSI values using Wilder's smoothing formula.
+
+    Returns a tuple of (rsi_values, warmup_count) where:
+    - rsi_values is a list of RSI values (indexed 0..len(closes)-1)
+    - Values at indices 0..(period-1) are None (warmup period)
+    - Values at indices period..len(closes)-1 are computed RSI values
+    - warmup_count = period
+
+    This is extracted as a reusable helper for RSI and RSI_SMOOTHING tools.
+    """
+    warmup = period
+    rsi_values: list[float | None] = [None] * len(closes)
+    avg_gain: float | None = None
+    avg_loss: float | None = None
+
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gain  = max(0.0, delta)
+        loss  = abs(min(0.0, delta))
+
+        if i < period:
+            continue
+
+        if i == period:
+            gains_seed  = [max(0.0, closes[j] - closes[j - 1]) for j in range(1, period + 1)]
+            losses_seed = [abs(min(0.0, closes[j] - closes[j - 1])) for j in range(1, period + 1)]
+            avg_gain = sum(gains_seed) / period
+            avg_loss = sum(losses_seed) / period
+        else:
+            avg_gain = (avg_gain * (period - 1) + gain)  / period  # type: ignore[operator]
+            avg_loss = (avg_loss * (period - 1) + loss)  / period  # type: ignore[operator]
+
+        if avg_loss == 0.0:
+            rsi = 100.0
+        else:
+            rs  = avg_gain / avg_loss   # type: ignore[operator]
+            rsi = 100.0 - (100.0 / (1.0 + rs))
+
+        rsi_values[i] = rsi
+
+    return rsi_values, warmup
+
+
 def _compute_rsi_series(
     tool_config: ToolConfiguration,
     bars:        list[ToolComputationBarInput],
@@ -541,7 +592,6 @@ def _compute_rsi_series(
         ToolComputationError: if "close" is missing from any bar's price_fields.
     """
     period  = int(tool_config.parameters.get("period", 14))
-    warmup  = period   # first RSI value at bar_index position `period`
 
     closes: list[float] = []
     for bar in bars:
@@ -552,41 +602,16 @@ def _compute_rsi_series(
             )
         closes.append(bar.price_fields[_RSI_CLOSE_FIELD])
 
+    rsi_values, warmup = _compute_raw_rsi_values(closes, period)
+
     points: list[ToolOutputPoint] = []
-    avg_gain: float | None = None
-    avg_loss: float | None = None
-
-    for i in range(1, len(closes)):
-        delta = closes[i] - closes[i - 1]
-        gain  = max(0.0, delta)
-        loss  = abs(min(0.0, delta))
-
-        if i < period:
-            # Still accumulating seed deltas — no output yet
-            continue
-
-        if i == period:
-            # Seed: SMA of the first `period` gains and losses (diffs at 1..period)
-            gains_seed  = [max(0.0, closes[j] - closes[j - 1]) for j in range(1, period + 1)]
-            losses_seed = [abs(min(0.0, closes[j] - closes[j - 1])) for j in range(1, period + 1)]
-            avg_gain = sum(gains_seed) / period
-            avg_loss = sum(losses_seed) / period
-        else:
-            # Wilder smoothing
-            avg_gain = (avg_gain * (period - 1) + gain)  / period  # type: ignore[operator]
-            avg_loss = (avg_loss * (period - 1) + loss)  / period  # type: ignore[operator]
-
-        if avg_loss == 0.0:
-            rsi = 100.0
-        else:
-            rs  = avg_gain / avg_loss   # type: ignore[operator]
-            rsi = 100.0 - (100.0 / (1.0 + rs))
-
-        points.append(ToolOutputPoint(
-            bar_index=bars[i].bar_index,
-            timestamp=bars[i].timestamp,
-            value=rsi,
-        ))
+    for i, rsi_value in enumerate(rsi_values):
+        if rsi_value is not None:
+            points.append(ToolOutputPoint(
+                bar_index=bars[i].bar_index,
+                timestamp=bars[i].timestamp,
+                value=rsi_value,
+            ))
 
     return [ToolOutputSeries(
         instance_id=tool_config.instance_id,
@@ -1068,6 +1093,222 @@ def _compute_volume_series(
 
 
 # ---------------------------------------------------------------------------
+# RSI Midline computation (internal) — "rsi_midline" tool
+# ---------------------------------------------------------------------------
+# Strategy output: constant reference level for RSI rules.
+# Computation: for every bar, emit the configured value.
+# No warmup; stateless; deterministic.
+
+_RSI_MIDLINE_OUTPUT_NAME = "rsi_midline"  # matches RSI_MIDLINE_METADATA.output_feature_names[0]
+
+
+def _compute_rsi_midline_series(
+    tool_config: ToolConfiguration,
+    bars:        list[ToolComputationBarInput],
+) -> list[ToolOutputSeries]:
+    """
+    Emit constant RSI midline value for every input bar.
+
+    Rules:
+    - value: extracted from parameters; must be numeric and in range [0, 100]
+    - warmup: 0 (every bar produces output)
+    - no lookahead: value is constant across all bars
+    - deterministic: identical inputs → identical outputs
+
+    Args:
+        tool_config: Validated rsi_midline configuration with value parameter.
+        bars: Sorted bar inputs (value of bars doesn't matter; we emit constant).
+
+    Returns:
+        List with one ToolOutputSeries (output_name="rsi_midline").
+
+    Raises:
+        ToolComputationError: if value invalid (non-numeric, out of range).
+    """
+    value_raw = tool_config.parameters.get("value")
+
+    # Validate and parse value
+    try:
+        value = float(value_raw)
+    except (ValueError, TypeError) as exc:
+        raise ToolComputationError(
+            f"instance '{tool_config.instance_id}': "
+            f"value must be numeric, got {value_raw!r}"
+        ) from exc
+
+    if not (0 <= value <= 100):
+        raise ToolComputationError(
+            f"instance '{tool_config.instance_id}': "
+            f"value must be in range [0, 100], got {value}"
+        )
+
+    # Emit one point per bar with constant value
+    points: list[ToolOutputPoint] = []
+    for bar in bars:
+        points.append(ToolOutputPoint(
+            bar_index=bar.bar_index,
+            timestamp=bar.timestamp,
+            value=value,
+        ))
+
+    return [ToolOutputSeries(
+        instance_id=tool_config.instance_id,
+        tool_id=tool_config.tool_id,
+        output_name=_RSI_MIDLINE_OUTPUT_NAME,
+        warmup_bar_count=0,
+        points=tuple(points),
+    )]
+
+
+# ---------------------------------------------------------------------------
+# RSI Smoothing computation (internal) — "rsi_smoothing" tool
+# ---------------------------------------------------------------------------
+# Strategy output: RSI value smoothed with SMA or EMA.
+# Computation: compute RSI, then apply smoothing.
+# Warmup: period + (smoothing_length - 1)
+
+_RSI_SMOOTHING_OUTPUT_NAME = "rsi_smoothing"  # matches RSI_SMOOTHING_METADATA.output_feature_names[0]
+
+
+def _compute_rsi_smoothing_series(
+    tool_config: ToolConfiguration,
+    bars:        list[ToolComputationBarInput],
+) -> list[ToolOutputSeries]:
+    """
+    Compute RSI then apply SMA or EMA smoothing.
+
+    Rules:
+    - period: RSI lookback; must be >= 2
+    - smoothing_type: "SMA" or "EMA"
+    - smoothing_length: length of smoothing MA; must be >= 1
+    - warmup: period + (smoothing_length - 1)
+      (needs period bars for RSI seed, then smoothing_length-1 more bars for MA seed)
+    - no lookahead: bar N uses only closes at positions 0..N
+    - deterministic: identical inputs → identical outputs
+
+    Args:
+        tool_config: Validated rsi_smoothing configuration.
+        bars: Sorted (by bar_index) bar inputs; must have price_fields["close"].
+
+    Returns:
+        List with one ToolOutputSeries (output_name="rsi_smoothing").
+
+    Raises:
+        ToolComputationError: on validation failure, missing close field, or insufficient bars.
+    """
+    period = int(tool_config.parameters.get("period", 14))
+    smoothing_type = str(tool_config.parameters.get("smoothing_type", "SMA")).upper()
+    smoothing_length = int(tool_config.parameters.get("smoothing_length", 14))
+
+    # Validate parameters
+    if period < 2:
+        raise ToolComputationError(
+            f"instance '{tool_config.instance_id}': period must be >= 2, got {period}"
+        )
+    if smoothing_length < 1:
+        raise ToolComputationError(
+            f"instance '{tool_config.instance_id}': smoothing_length must be >= 1, got {smoothing_length}"
+        )
+    if smoothing_type not in ("SMA", "EMA"):
+        raise ToolComputationError(
+            f"instance '{tool_config.instance_id}': smoothing_type must be 'SMA' or 'EMA', got {smoothing_type!r}"
+        )
+
+    # Extract closes
+    closes: list[float] = []
+    for bar in bars:
+        if _RSI_CLOSE_FIELD not in bar.price_fields:
+            raise ToolComputationError(
+                f"instance '{tool_config.instance_id}': "
+                f"price_fields missing '{_RSI_CLOSE_FIELD}' at bar_index={bar.bar_index}"
+            )
+        closes.append(bar.price_fields[_RSI_CLOSE_FIELD])
+
+    # Compute raw RSI values
+    rsi_values, rsi_warmup = _compute_raw_rsi_values(closes, period)
+
+    # Apply smoothing to RSI values
+    # We only smooth RSI values that exist (after RSI warmup)
+    available_rsi_values = [v for v in rsi_values if v is not None]
+
+    if len(available_rsi_values) < smoothing_length:
+        # Not enough RSI values to apply smoothing
+        return [ToolOutputSeries(
+            instance_id=tool_config.instance_id,
+            tool_id=tool_config.tool_id,
+            output_name=_RSI_SMOOTHING_OUTPUT_NAME,
+            warmup_bar_count=period + smoothing_length - 1,
+            points=tuple(),
+        )]
+
+    # Apply smoothing
+    if smoothing_type == "SMA":
+        smoothed_values = _apply_sma_to_rsi(available_rsi_values, smoothing_length)
+    else:  # EMA
+        smoothed_values = _apply_ema_to_rsi(available_rsi_values, smoothing_length)
+
+    # Map smoothed values back to bar indices
+    # First RSI value is at bar index `period`
+    # First smoothed value is at bar index `period + smoothing_length - 1`
+    warmup = period + smoothing_length - 1
+    first_rsi_bar_index = period
+    first_smoothed_idx = smoothing_length - 1
+
+    points: list[ToolOutputPoint] = []
+    for smoothed_idx, smoothed_value in enumerate(smoothed_values):
+        rsi_idx = first_smoothed_idx + smoothed_idx
+        bar_idx = first_rsi_bar_index + rsi_idx
+        if bar_idx < len(bars):
+            points.append(ToolOutputPoint(
+                bar_index=bars[bar_idx].bar_index,
+                timestamp=bars[bar_idx].timestamp,
+                value=smoothed_value,
+            ))
+
+    return [ToolOutputSeries(
+        instance_id=tool_config.instance_id,
+        tool_id=tool_config.tool_id,
+        output_name=_RSI_SMOOTHING_OUTPUT_NAME,
+        warmup_bar_count=warmup,
+        points=tuple(points),
+    )]
+
+
+def _apply_sma_to_rsi(rsi_values: list[float], period: int) -> list[float]:
+    """Apply SMA smoothing to RSI values. Returns values starting from bar index period-1."""
+    sma_values: list[float] = []
+    running_sum = 0.0
+
+    for i, rsi_val in enumerate(rsi_values):
+        running_sum += rsi_val
+        if i >= period - 1:
+            if i >= period:
+                running_sum -= rsi_values[i - period]
+            sma = running_sum / period
+            sma_values.append(sma)
+
+    return sma_values
+
+
+def _apply_ema_to_rsi(rsi_values: list[float], period: int) -> list[float]:
+    """Apply EMA smoothing to RSI values. Returns values starting from bar index period-1."""
+    alpha = 2.0 / (period + 1)
+    ema_values: list[float] = []
+
+    # Seed: SMA of first `period` RSI values
+    seed_sma = sum(rsi_values[:period]) / period
+    ema = seed_sma
+    ema_values.append(ema)
+
+    # Recursive EMA for remaining values
+    for i in range(period, len(rsi_values)):
+        ema = (rsi_values[i] * alpha) + (ema * (1 - alpha))
+        ema_values.append(ema)
+
+    return ema_values
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher registry (tool_id → compute function)
 # ---------------------------------------------------------------------------
 # Adding a new indicator: implement _compute_<tool>_series() above,
@@ -1077,14 +1318,16 @@ _TOOL_DISPATCHERS: dict[
     str,
     Callable[[ToolConfiguration, list[ToolComputationBarInput]], list[ToolOutputSeries]],
 ] = {
-    "sma":             _compute_sma_series,
-    "ema":             _compute_ema_series,
-    "rsi":             _compute_rsi_series,
-    "macd":            _compute_macd_series,
-    "atr":             _compute_atr_series,
-    "bollinger_bands": _compute_bollinger_series,
-    "volume":          _compute_raw_volume_series,
-    "volume_ma":       _compute_volume_series,
+    "sma":              _compute_sma_series,
+    "ema":              _compute_ema_series,
+    "rsi":              _compute_rsi_series,
+    "rsi_midline":      _compute_rsi_midline_series,
+    "rsi_smoothing":    _compute_rsi_smoothing_series,
+    "macd":             _compute_macd_series,
+    "atr":              _compute_atr_series,
+    "bollinger_bands":  _compute_bollinger_series,
+    "volume":           _compute_raw_volume_series,
+    "volume_ma":        _compute_volume_series,
 }
 
 

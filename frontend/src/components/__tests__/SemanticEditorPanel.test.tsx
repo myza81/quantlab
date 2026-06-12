@@ -1,5 +1,5 @@
 /**
- * SemanticEditorPanel.test.tsx — Strategy-UX-1B / VOL-E2E-1.
+ * SemanticEditorPanel.test.tsx — Strategy-UX-1B / VOL-E2E-1 / RSI-1D.
  *
  * Verifies that the rule builder uses human-friendly labels while preserving
  * internal instance IDs in serialized condition data.
@@ -19,6 +19,13 @@
  * 12.  Volume MA option has label "Volume.volume_ma" in dropdown
  * 13.  No duplicate "Volume.volume" entries when both volume tools present
  * 14.  Selecting volume.volume left operand stores correct ref on save
+ * 15.  RSI-1D: rsi_midline option present in dropdown when toolset includes rsi_midline
+ * 16.  RSI-1D: rsi_smoothing option present in dropdown when toolset includes rsi_smoothing
+ * 17.  RSI-1D: no duplicate RSI entries when rsi, rsi_midline, rsi_smoothing all present
+ * 18.  RSI-1D: selecting rsi_midline.rsi_midline stores correct internal ref on save
+ * 19.  RSI-1D: selecting rsi_smoothing.rsi_smoothing stores correct internal ref on save
+ * 20.  RSI-1D: rsi option still present alongside rsi_midline / rsi_smoothing (no collision)
+ * 21.  RSI-1D: rsi_midline ref displayed correctly in existing condition (no label bleed)
  */
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -44,6 +51,13 @@ const VOL_MA_OPTION: ToolOutputOption = { label: 'Volume.volume_ma', value: 'vol
 
 const VOLUME_OPTIONS: ToolOutputOption[] = [VOL_OPTION, VOL_MA_OPTION]
 const ALL_OPTIONS:    ToolOutputOption[] = [...MOCK_OPTIONS, VOL_OPTION, VOL_MA_OPTION]
+
+// RSI family options — rsi uses IDENTITY_FIELDS (period → "RSI (14)"),
+// rsi_midline and rsi_smoothing have no IDENTITY_FIELDS entry so their labels
+// are the bare short names with output appended.
+const RSI_MIDLINE_OPTION:   ToolOutputOption = { label: 'RSI Midline.rsi_midline', value: 'rsi_midline.rsi_midline' }
+const RSI_SMOOTHING_OPTION: ToolOutputOption = { label: 'RSI Smoothing.rsi_smoothing', value: 'rsi_smoothing.rsi_smoothing' }
+const RSI_ALL_OPTIONS: ToolOutputOption[] = [RSI14_OPTION, RSI_MIDLINE_OPTION, RSI_SMOOTHING_OPTION]
 
 function makeSemantics(leftRef = '', rightRef = '0'): StrategySemantics {
   return {
@@ -291,5 +305,124 @@ describe('SemanticEditorPanel — Strategy-UX-1B', () => {
     const ref = saved[0].entry_rules[0].condition_group.conditions[0].left.ref
     expect(ref).toBe('volume.volume')
     expect(ref).not.toContain('Volume.')  // must be the internal ID, not the label
+  })
+
+  // ---------------------------------------------------------------------------
+  // RSI-1D: RSI family (rsi, rsi_midline, rsi_smoothing) dropdown tests
+  // ---------------------------------------------------------------------------
+
+  it('15. rsi_midline option present in dropdown when toolset includes rsi_midline', () => {
+    render(
+      <SemanticEditorPanel
+        semantics={makeSemantics()}
+        onSave={mockSave}
+        onValidate={mockValidate}
+        toolOutputOptions={RSI_ALL_OPTIONS}
+      />
+    )
+    const select = screen.getAllByTestId('tool-output-select')[0]
+    const optionTexts = Array.from(select.querySelectorAll('option')).map(o => o.textContent)
+    expect(optionTexts).toContain('RSI Midline.rsi_midline')
+  })
+
+  it('16. rsi_smoothing option present in dropdown when toolset includes rsi_smoothing', () => {
+    render(
+      <SemanticEditorPanel
+        semantics={makeSemantics()}
+        onSave={mockSave}
+        onValidate={mockValidate}
+        toolOutputOptions={RSI_ALL_OPTIONS}
+      />
+    )
+    const select = screen.getAllByTestId('tool-output-select')[0]
+    const optionTexts = Array.from(select.querySelectorAll('option')).map(o => o.textContent)
+    expect(optionTexts).toContain('RSI Smoothing.rsi_smoothing')
+  })
+
+  it('17. no duplicate RSI entries when rsi, rsi_midline, rsi_smoothing all present', () => {
+    render(
+      <SemanticEditorPanel
+        semantics={makeSemantics()}
+        onSave={mockSave}
+        onValidate={mockValidate}
+        toolOutputOptions={RSI_ALL_OPTIONS}
+      />
+    )
+    const select = screen.getAllByTestId('tool-output-select')[0]
+    const optionTexts = Array.from(select.querySelectorAll('option')).map(o => o.textContent)
+    const rsiEntries = optionTexts.filter(t => t === 'RSI (14).rsi')
+    expect(rsiEntries).toHaveLength(1)
+  })
+
+  it('18. selecting rsi_midline.rsi_midline stores correct internal ref on save', async () => {
+    const saved: StrategySemantics[] = []
+    mockSave.mockImplementation(async (s: StrategySemantics) => { saved.push(s); return s })
+
+    render(
+      <SemanticEditorPanel
+        semantics={makeSemantics('rsi_midline.rsi_midline')}
+        onSave={mockSave}
+        onValidate={mockValidate}
+        toolOutputOptions={RSI_ALL_OPTIONS}
+      />
+    )
+
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(saved.length).toBeGreaterThan(0))
+
+    const ref = saved[0].entry_rules[0].condition_group.conditions[0].left.ref
+    expect(ref).toBe('rsi_midline.rsi_midline')
+    expect(ref).not.toContain('RSI Midline.')
+  })
+
+  it('19. selecting rsi_smoothing.rsi_smoothing stores correct internal ref on save', async () => {
+    const saved: StrategySemantics[] = []
+    mockSave.mockImplementation(async (s: StrategySemantics) => { saved.push(s); return s })
+
+    render(
+      <SemanticEditorPanel
+        semantics={makeSemantics('rsi_smoothing.rsi_smoothing')}
+        onSave={mockSave}
+        onValidate={mockValidate}
+        toolOutputOptions={RSI_ALL_OPTIONS}
+      />
+    )
+
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(saved.length).toBeGreaterThan(0))
+
+    const ref = saved[0].entry_rules[0].condition_group.conditions[0].left.ref
+    expect(ref).toBe('rsi_smoothing.rsi_smoothing')
+    expect(ref).not.toContain('RSI Smoothing.')
+  })
+
+  it('20. rsi option still present alongside rsi_midline / rsi_smoothing (no collision)', () => {
+    render(
+      <SemanticEditorPanel
+        semantics={makeSemantics()}
+        onSave={mockSave}
+        onValidate={mockValidate}
+        toolOutputOptions={RSI_ALL_OPTIONS}
+      />
+    )
+    const select = screen.getAllByTestId('tool-output-select')[0]
+    const optionTexts = Array.from(select.querySelectorAll('option')).map(o => o.textContent)
+    expect(optionTexts).toContain('RSI (14).rsi')
+    expect(optionTexts).toContain('RSI Midline.rsi_midline')
+    expect(optionTexts).toContain('RSI Smoothing.rsi_smoothing')
+  })
+
+  it('21. rsi_midline ref displayed correctly in existing condition (no label bleed)', () => {
+    render(
+      <SemanticEditorPanel
+        semantics={makeSemantics('rsi_midline.rsi_midline')}
+        onSave={mockSave}
+        onValidate={mockValidate}
+        toolOutputOptions={RSI_ALL_OPTIONS}
+      />
+    )
+    const select = screen.getAllByTestId('tool-output-select')[0] as HTMLSelectElement
+    // The select should have the internal value selected, not a label string
+    expect(select.value).toBe('rsi_midline.rsi_midline')
   })
 })

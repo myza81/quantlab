@@ -31,6 +31,8 @@ from backend.tools.registry import (
     ToolRegistryError,
 )
 from backend.tools.rsi import RSI_METADATA, compute_rsi
+from backend.tools.rsi_midline import RSI_MIDLINE_METADATA
+from backend.tools.rsi_smoothing import RSI_SMOOTHING_METADATA
 from backend.tools.sma import SMA_METADATA, compute_sma
 from backend.tools.toolset import StrategyToolSet
 from backend.tools.validation import (
@@ -47,6 +49,8 @@ def create_default_registry() -> ToolRegistry:
     registry.register(SMA_METADATA)
     registry.register(EMA_METADATA)
     registry.register(RSI_METADATA)
+    registry.register(RSI_MIDLINE_METADATA)
+    registry.register(RSI_SMOOTHING_METADATA)
     registry.register(MACD_METADATA)
     registry.register(ATR_METADATA)
     registry.register(BOLLINGER_METADATA)
@@ -77,6 +81,10 @@ __all__ = [
     # rsi (Phase 2S)
     "RSI_METADATA",
     "compute_rsi",
+    # rsi_midline (Phase RSI-1A)
+    "RSI_MIDLINE_METADATA",
+    # rsi_smoothing (Phase RSI-1B)
+    "RSI_SMOOTHING_METADATA",
     # macd (Phase 2S)
     "MACD_METADATA",
     "compute_macd",

@@ -55,11 +55,19 @@ _CLIENT = TestClient(app)
 # Factories
 # ---------------------------------------------------------------------------
 
-def _sma_config(instance_id: str, period: int, enabled: bool = True) -> ToolConfiguration:
+def _sma_config(
+    instance_id: str,
+    period: int,
+    enabled: bool = True,
+    source: str | None = None,
+) -> ToolConfiguration:
+    parameters: dict[str, object] = {"period": period}
+    if source is not None:
+        parameters["source"] = source
     return ToolConfiguration(
         instance_id=instance_id,
         tool_id="sma",
-        parameters={"period": period},
+        parameters=parameters,
         enabled=enabled,
     )
 
@@ -230,6 +238,20 @@ class TestSmaComputationCorrectness:
         assert len(values) == 2
         assert values[0] == pytest.approx(20.0)
         assert values[1] == pytest.approx(30.0)
+
+    def test_source_open_uses_open_prices(self):
+        bars = [
+            ToolComputationBarInput(
+                bar_index=i,
+                price_fields={"open": float(i + 1), "close": 100.0 + i},
+            )
+            for i in range(4)
+        ]
+        result = compute_tool_outputs_for_history(
+            _toolset(_sma_config("s1", 2, source="open")), bars, _REGISTRY
+        )
+        values = [p.value for p in result.series[0].points]
+        assert values == pytest.approx([1.5, 2.5, 3.5])
 
     def test_period_5_on_5_bars(self):
         closes = [100.0, 102.0, 104.0, 106.0, 108.0]

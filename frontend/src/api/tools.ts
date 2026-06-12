@@ -6,6 +6,8 @@ export interface ToolParameterResponse {
   default: unknown
   min_value: number | null
   max_value: number | null
+  /** Ordered allowed values. When present, render a <select> instead of a text/number input. */
+  options?: string[] | null
 }
 
 export interface ToolMetadataResponse {

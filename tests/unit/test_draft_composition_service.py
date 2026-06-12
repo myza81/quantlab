@@ -60,6 +60,18 @@ def _sma(instance_id: str, period: int, **kw: object) -> ToolConfiguration:
     )
 
 
+def _rsi_smoothing(instance_id: str, smoothing_type: str) -> ToolConfiguration:
+    return ToolConfiguration(
+        instance_id=instance_id,
+        tool_id="rsi_smoothing",
+        parameters={
+            "period": 14,
+            "smoothing_type": smoothing_type,
+            "smoothing_length": 14,
+        },
+    )
+
+
 def _toolset(*tools: ToolConfiguration) -> StrategyToolSet:
     return StrategyToolSet(toolset_id="ts1", tools=tools)
 
@@ -420,6 +432,19 @@ class TestValidateDraft:
         repo.save(draft)
         result = validate_draft("alpha", _registry(), repo)
         assert isinstance(result.errors, list)
+
+    def test_invalid_option_returns_errors(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path)
+        repo.save(_draft("alpha", _rsi_smoothing("rsi_bad", "VWMA")))
+        result = validate_draft("alpha", _registry(), repo)
+        assert result.valid is False
+        assert any(
+            "rsi_bad" in e
+            and "smoothing_type" in e
+            and "VWMA" in e
+            and "allowed options" in e
+            for e in result.errors
+        )
 
 
 # ---------------------------------------------------------------------------

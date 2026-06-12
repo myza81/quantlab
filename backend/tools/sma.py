@@ -15,6 +15,8 @@ from backend.tools.models import (
     VisualizationCapability,
 )
 
+_OHLC_SOURCE_OPTIONS = ("close", "open", "high", "low", "hl2", "hlc3", "ohlc4")
+
 SMA_METADATA = ToolMetadata(
     tool_id="sma",
     name="Simple Moving Average",
@@ -35,6 +37,14 @@ SMA_METADATA = ToolMetadata(
             type_label="int",
             required=True,
             min_value=1,
+        ),
+        ParameterSpec(
+            name="source",
+            description="Price field to compute SMA over. Accepted values: close (default), open, high, low, hl2 = (H+L)/2, hlc3 = (H+L+C)/3, ohlc4 = (O+H+L+C)/4.",
+            type_label="str",
+            required=False,
+            default="close",
+            options=_OHLC_SOURCE_OPTIONS,
         ),
         ParameterSpec(
             name="name",

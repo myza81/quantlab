@@ -172,6 +172,26 @@ class TestValidateToolConfiguration:
         )
         validate_tool_configuration(cfg, SMA_METADATA)
 
+    def test_valid_sma_source_close_passes(self) -> None:
+        cfg = ToolConfiguration(
+            instance_id="sma_source",
+            tool_id="sma",
+            parameters={"period": 20, "source": "close"},
+        )
+        validate_tool_configuration(cfg, SMA_METADATA)
+
+    def test_invalid_sma_source_rejected(self) -> None:
+        cfg = ToolConfiguration(
+            instance_id="sma_source",
+            tool_id="sma",
+            parameters={"period": 20, "source": "bogus"},
+        )
+        with pytest.raises(ConfigurationValidationError) as exc_info:
+            validate_tool_configuration(cfg, SMA_METADATA)
+        assert "source" in str(exc_info.value)
+        assert "bogus" in str(exc_info.value)
+        assert "allowed options" in str(exc_info.value)
+
     def test_required_parameter_missing_raises(self) -> None:
         metadata = _minimal_metadata(
             parameters=(_param("period", "int", required=True, min_value=1),)
@@ -279,6 +299,58 @@ class TestValidateToolConfiguration:
         with pytest.raises(ConfigurationValidationError) as exc_info:
             validate_tool_configuration(cfg, metadata)
         assert "label" in str(exc_info.value)
+
+    def test_str_param_valid_option_passes(self) -> None:
+        metadata = _minimal_metadata(
+            parameters=(_param("smoothing_type", "str", options=("SMA", "EMA")),)
+        )
+        cfg = ToolConfiguration(
+            instance_id="x",
+            tool_id="test_tool",
+            parameters={"smoothing_type": "SMA"},
+        )
+        validate_tool_configuration(cfg, metadata)
+
+    def test_str_param_invalid_option_rejected(self) -> None:
+        metadata = _minimal_metadata(
+            parameters=(_param("smoothing_type", "str", options=("SMA", "EMA")),)
+        )
+        cfg = ToolConfiguration(
+            instance_id="x",
+            tool_id="test_tool",
+            parameters={"smoothing_type": "VWMA"},
+        )
+        with pytest.raises(ConfigurationValidationError) as exc_info:
+            validate_tool_configuration(cfg, metadata)
+        assert "smoothing_type" in str(exc_info.value)
+        assert "VWMA" in str(exc_info.value)
+        assert "allowed options" in str(exc_info.value)
+
+    def test_str_param_options_are_case_sensitive(self) -> None:
+        metadata = _minimal_metadata(
+            parameters=(_param("smoothing_type", "str", options=("SMA", "EMA")),)
+        )
+        cfg = ToolConfiguration(
+            instance_id="x",
+            tool_id="test_tool",
+            parameters={"smoothing_type": "sma"},
+        )
+        with pytest.raises(ConfigurationValidationError):
+            validate_tool_configuration(cfg, metadata)
+
+    def test_optional_param_with_options_may_be_omitted(self) -> None:
+        metadata = _minimal_metadata(
+            parameters=(
+                _param(
+                    "smoothing_type",
+                    "str",
+                    required=False,
+                    options=("SMA", "EMA"),
+                ),
+            )
+        )
+        cfg = ToolConfiguration(instance_id="x", tool_id="test_tool", parameters={})
+        validate_tool_configuration(cfg, metadata)
 
     def test_below_min_value_raises(self) -> None:
         metadata = _minimal_metadata(

@@ -102,6 +102,7 @@ class ChartIndicatorParameterSpec(BaseModel):
     default: Any = None
     min_value: Optional[float] = None
     max_value: Optional[float] = None
+    options: Optional[list[str]] = None
 
 
 class ChartIndicatorSeriesSpec(BaseModel):

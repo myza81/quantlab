@@ -46,6 +46,9 @@ class ParameterSpec(BaseModel):
     default: Any = None
     min_value: float | None = None
     max_value: float | None = None
+    # Ordered allowed values. When set, the frontend must render a <select>
+    # instead of a free-text or numeric input.  None means no restriction.
+    options: tuple[str, ...] | None = None
 
     @field_validator("name", "description", "type_label")
     @classmethod

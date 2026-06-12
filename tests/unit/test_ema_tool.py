@@ -135,6 +135,7 @@ class TestEmaMetadata:
         assert spec.required is False
         assert spec.type_label == "str"
         assert spec.default == "close"
+        assert spec.options == ("close", "open", "high", "low", "hl2", "hlc3", "ohlc4")
 
     def test_visualization_line_overlay(self):
         assert VisualizationCapability.produces_line_overlay in EMA_METADATA.visualization_capabilities
@@ -145,7 +146,7 @@ class TestEmaMetadata:
         assert "sma" in registry
         assert "rsi" in registry
         assert "macd" in registry
-        assert len(registry) == 8   # sma, ema, rsi, macd, atr, bollinger_bands, volume, volume_ma
+        assert len(registry) == 10   # sma, ema, rsi, rsi_midline, rsi_smoothing, macd, atr, bollinger_bands, volume, volume_ma
 
     def test_registry_get_returns_ema_metadata(self):
         registry = create_default_registry()
@@ -766,6 +767,15 @@ class TestEmaValidation:
         cfg = _ema_config("e", 12, source="close")
         validate_tool_configuration(cfg, EMA_METADATA)
 
+    def test_invalid_source_rejected_by_validation(self):
+        from backend.tools.validation import validate_tool_configuration, ConfigurationValidationError
+        cfg = _ema_config("e", 12, source="bogus")
+        with pytest.raises(ConfigurationValidationError) as exc_info:
+            validate_tool_configuration(cfg, EMA_METADATA)
+        assert "source" in str(exc_info.value)
+        assert "bogus" in str(exc_info.value)
+        assert "allowed options" in str(exc_info.value)
+
     def test_missing_period_raises(self):
         from backend.tools.validation import validate_tool_configuration, ConfigurationValidationError
         cfg = ToolConfiguration(instance_id="e", tool_id="ema", parameters={})
@@ -1049,7 +1059,7 @@ class TestEmaSourceAware:
     def test_invalid_source_raises(self):
         bars = _ema_source_bars()
         cfg  = _ema_config("e", 2, source="vwap")
-        with pytest.raises(ToolComputationError, match="invalid source"):
+        with pytest.raises(ToolComputationError, match="configuration invalid"):
             compute_tool_outputs_for_history(_toolset(cfg), bars, _REGISTRY)
 
     def test_invalid_source_error_names_the_bad_value(self):

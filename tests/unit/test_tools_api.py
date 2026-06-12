@@ -210,3 +210,102 @@ class TestToolShortName:
             visualization_capabilities=frozenset(),
         )
         assert meta.short_name is None
+
+
+# ---------------------------------------------------------------------------
+# TOOLSET-UX-ENUM-1 — ParameterSpec.options + API serialization
+# ---------------------------------------------------------------------------
+
+class TestParameterSpecOptions:
+    """ParameterSpec accepts options and the /tools API serializes them."""
+
+    def test_parameter_spec_accepts_options(self) -> None:
+        spec = ParameterSpec(
+            name="smoothing_type",
+            description="SMA or EMA",
+            type_label="str",
+            required=True,
+            default="SMA",
+            options=("SMA", "EMA"),
+        )
+        assert spec.options == ("SMA", "EMA")
+
+    def test_parameter_spec_options_defaults_to_none(self) -> None:
+        spec = ParameterSpec(
+            name="period",
+            description="Window",
+            type_label="int",
+            required=True,
+            default=14,
+        )
+        assert spec.options is None
+
+    def test_parameter_spec_options_is_ordered(self) -> None:
+        spec = ParameterSpec(
+            name="mode",
+            description="Mode",
+            type_label="str",
+            required=True,
+            default="A",
+            options=("A", "B", "C"),
+        )
+        assert list(spec.options) == ["A", "B", "C"]  # type: ignore[arg-type]
+
+    def test_rsi_smoothing_smoothing_type_has_options(self) -> None:
+        from backend.tools.rsi_smoothing import RSI_SMOOTHING_METADATA
+        param = next(p for p in RSI_SMOOTHING_METADATA.parameters if p.name == "smoothing_type")
+        assert param.options == ("SMA", "EMA")
+
+    def test_sma_source_has_options(self) -> None:
+        from backend.tools.sma import SMA_METADATA
+        param = next(p for p in SMA_METADATA.parameters if p.name == "source")
+        assert param.options == ("close", "open", "high", "low", "hl2", "hlc3", "ohlc4")
+
+    def test_ema_source_has_options(self) -> None:
+        from backend.tools.ema import EMA_METADATA
+        param = next(p for p in EMA_METADATA.parameters if p.name == "source")
+        assert param.options == ("close", "open", "high", "low", "hl2", "hlc3", "ohlc4")
+
+    def test_rsi_smoothing_other_params_have_no_options(self) -> None:
+        from backend.tools.rsi_smoothing import RSI_SMOOTHING_METADATA
+        for p in RSI_SMOOTHING_METADATA.parameters:
+            if p.name != "smoothing_type":
+                assert p.options is None, f"{p.name} should have options=None"
+
+    def test_api_serializes_options_for_rsi_smoothing(self) -> None:
+        resp = _client().get("/tools")
+        assert resp.status_code == 200
+        tools = {t["tool_id"]: t for t in resp.json()["tools"]}
+        params = {p["name"]: p for p in tools["rsi_smoothing"]["parameters"]}
+        assert params["smoothing_type"]["options"] == ["SMA", "EMA"]
+
+    def test_api_serializes_options_for_source_params(self) -> None:
+        resp = _client().get("/tools")
+        assert resp.status_code == 200
+        tools = {t["tool_id"]: t for t in resp.json()["tools"]}
+        expected = ["close", "open", "high", "low", "hl2", "hlc3", "ohlc4"]
+        for tool_id in ("sma", "ema"):
+            params = {p["name"]: p for p in tools[tool_id]["parameters"]}
+            assert params["source"]["options"] == expected
+
+    def test_api_options_field_present_on_all_tools(self) -> None:
+        """options key must be present in every parameter response (may be null)."""
+        resp = _client().get("/tools")
+        assert resp.status_code == 200
+        for tool in resp.json()["tools"]:
+            for param in tool["parameters"]:
+                assert "options" in param, (
+                    f"options missing from {tool['tool_id']}.{param['name']}"
+                )
+
+    def test_non_enum_params_without_options_are_unaffected(self) -> None:
+        """Non-enum params return null; no existing behavior changes."""
+        resp = _client().get("/tools")
+        assert resp.status_code == 200
+        tools = {t["tool_id"]: t for t in resp.json()["tools"]}
+        for tool_id in ("sma", "ema", "rsi", "macd", "bollinger_bands", "atr"):
+            for param in tools[tool_id]["parameters"]:
+                if param["name"] not in ("source", "smoothing_type"):
+                    assert param["options"] is None, (
+                        f"Unexpected options on {tool_id}.{param['name']}"
+                    )

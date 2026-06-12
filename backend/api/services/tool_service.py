@@ -54,6 +54,7 @@ def _serialize_tool_metadata(metadata: ToolMetadata) -> ToolMetadataResponse:
                 default=parameter.default,
                 min_value=parameter.min_value,
                 max_value=parameter.max_value,
+                options=list(parameter.options) if parameter.options else None,
             )
             for parameter in metadata.parameters
         ],

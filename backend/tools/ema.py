@@ -37,6 +37,8 @@ from backend.tools.models import (
     VisualizationCapability,
 )
 
+_OHLC_SOURCE_OPTIONS = ("close", "open", "high", "low", "hl2", "hlc3", "ohlc4")
+
 EMA_METADATA = ToolMetadata(
     tool_id="ema",
     name="Exponential Moving Average",
@@ -66,6 +68,7 @@ EMA_METADATA = ToolMetadata(
             type_label="str",
             required=False,
             default="close",
+            options=_OHLC_SOURCE_OPTIONS,
         ),
         ParameterSpec(
             name="name",

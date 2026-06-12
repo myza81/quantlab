@@ -55,6 +55,15 @@
  * 71.  strategy-run volume + EMA — histogram on volume scale, EMA on default
  * 72.  strategy-run oscillator indicator triggers strategy oscillator pane label
  * 73.  indicator artifact rendering unchanged when strategy overlay also active
+ * Volume histogram single-color mode (VOL-UX-2)
+ * 74.  volumeColorModes absent → histogram uses directional close-to-close colors
+ * 75.  volumeColorModes with matching instance_id → all bars use that single color
+ * 76.  volumeColorModes with non-matching instance_id → histogram falls back to directional
+ * 77.  empty volumeColorModes Map → histogram uses directional colors
+ * Strategy oscillator crosshair sync
+ * 78.  strategy-run oscillator subscribes to price chart crosshair movement
+ * 79.  strategy-run oscillator sets crosshair position for matching timestamp data
+ * 80.  strategy-run oscillator clears crosshair when event has no time
  */
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -121,6 +130,10 @@ const mocks = vi.hoisted(() => {
   const removeSeries       = vi.fn()
   const applyOptions       = vi.fn()
   const chartRemove        = vi.fn()
+  const chartInstances: Array<{
+    clearCrosshairPosition: ReturnType<typeof vi.fn>
+    setCrosshairPosition: ReturnType<typeof vi.fn>
+  }> = []
   // Volume price scale (volume_ma tool renders histogram on named 'volume' scale)
   const priceScaleApplyOptions = vi.fn()
   const priceScaleMock         = { applyOptions: priceScaleApplyOptions }
@@ -154,7 +167,7 @@ const mocks = vi.hoisted(() => {
   }
 
   function makeChart() {
-    return {
+    const chart = {
       addSeries:               addSeries.mockReturnValue(makeSeries()),
       removeSeries,
       remove:                  chartRemove,
@@ -166,6 +179,8 @@ const mocks = vi.hoisted(() => {
       setCrosshairPosition:    vi.fn(),
       priceScale:              vi.fn().mockReturnValue(priceScaleMock),
     }
+    chartInstances.push(chart)
+    return chart
   }
 
   return {
@@ -174,6 +189,7 @@ const mocks = vi.hoisted(() => {
     subCrosshair, unsubCrosshair, fitContent,
     setData, addSeries, removeSeries, applyOptions, chartRemove,
     priceScaleApplyOptions, priceScaleMock,
+    chartInstances,
     makeChart, makeTimeScale, makeSeries,
   }
 })
@@ -184,7 +200,7 @@ vi.mock('lightweight-charts', () => ({
   CandlestickSeries:   'CandlestickSeries',
   LineSeries:          'LineSeries',
   HistogramSeries:     'HistogramSeries',
-  LineStyle:           { Dashed: 2 },
+  LineStyle:           { Solid: 0, Dotted: 1, Dashed: 2 },
 }))
 
 // ---------------------------------------------------------------------------
@@ -315,6 +331,7 @@ function renderChart(props: Partial<React.ComponentProps<typeof Chart>> = {}) {
 describe('Chart', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.chartInstances.length = 0
     _rafCallbacks = []
     _rafCounter   = 0
     localStorage.clear()  // prevent pane height persistence leaking between tests
@@ -1199,5 +1216,128 @@ describe('Chart', () => {
     expect(lineCalls.length).toBeGreaterThanOrEqual(1)
     // No oscillator pane splitter (neither artifact is oscillator, RSI not in overlay)
     expect(screen.queryByTestId('pane-splitter')).not.toBeInTheDocument()
+  })
+
+  it('78. strategy-run oscillator subscribes to price chart crosshair movement', () => {
+    renderChart({ overlay: makeStrategyOverlay([makeRsiStrategyIndicator()]) })
+    expect(mocks.subCrosshair.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('79. strategy-run oscillator sets crosshair position for matching timestamp data', () => {
+    renderChart({ overlay: makeStrategyOverlay([makeRsiStrategyIndicator()]) })
+    const syncCrosshair = mocks.subCrosshair.mock.calls[0]?.[0]
+
+    syncCrosshair?.({ time: TS_UNIX(1), seriesData: new Map() })
+
+    expect(mocks.chartInstances[1].setCrosshairPosition).toHaveBeenCalledWith(
+      60,
+      TS_UNIX(1),
+      expect.anything(),
+    )
+  })
+
+  it('80. strategy-run oscillator clears crosshair when event has no time', () => {
+    renderChart({ overlay: makeStrategyOverlay([makeRsiStrategyIndicator()]) })
+    const syncCrosshair = mocks.subCrosshair.mock.calls[0]?.[0]
+
+    syncCrosshair?.({ seriesData: new Map() })
+
+    expect(mocks.chartInstances[1].clearCrosshairPosition).toHaveBeenCalled()
+  })
+
+  // ── Volume histogram single-color mode (VOL-UX-2) ─────────────────────────
+  //
+  // volumeColorModes: Map<instanceId, hexColor> — when present for an artifact,
+  // every histogram bar uses that single color instead of directional red/green.
+
+  it('74. volumeColorModes absent → histogram uses directional close-to-close colors', () => {
+    const candles = makeDirectionalCandles()
+    renderChart({ candles, indicatorArtifacts: [makeVolumeArtifactForCandles(candles)] })
+    const data = findHistogramSetData()!
+    expect(data.map(p => p.color)).toEqual([
+      '#26a69a', // bar 0 — neutral/green
+      '#26a69a', // bar 1 — 110 >= 100
+      '#ef5350', // bar 2 — 90  <  110
+      '#26a69a', // bar 3 — 105 >= 90
+      '#ef5350', // bar 4 — 100 <  105
+    ])
+  })
+
+  it('75. volumeColorModes with matching instance_id → all bars use that single color', () => {
+    const candles = makeDirectionalCandles()
+    const volumeColorModes = new Map([['vol_dir', '#ff00ff']])
+    renderChart({
+      candles,
+      indicatorArtifacts: [makeVolumeArtifactForCandles(candles)],
+      volumeColorModes,
+    })
+    const data = findHistogramSetData()!
+    expect(data.every(p => p.color === '#ff00ff')).toBe(true)
+  })
+
+  it('76. volumeColorModes with non-matching instance_id → histogram falls back to directional', () => {
+    const candles = makeDirectionalCandles()
+    const volumeColorModes = new Map([['other_instance', '#ff00ff']])
+    renderChart({
+      candles,
+      indicatorArtifacts: [makeVolumeArtifactForCandles(candles)],
+      volumeColorModes,
+    })
+    const data = findHistogramSetData()!
+    expect(data.map(p => p.color)).toEqual([
+      '#26a69a', '#26a69a', '#ef5350', '#26a69a', '#ef5350',
+    ])
+  })
+
+  it('77. empty volumeColorModes Map → histogram uses directional colors', () => {
+    const candles = makeDirectionalCandles()
+    renderChart({
+      candles,
+      indicatorArtifacts: [makeVolumeArtifactForCandles(candles)],
+      volumeColorModes: new Map(),
+    })
+    const data = findHistogramSetData()!
+    expect(data.map(p => p.color)).toEqual([
+      '#26a69a', '#26a69a', '#ef5350', '#26a69a', '#ef5350',
+    ])
+  })
+
+  // ── TOOL-VIS-STYLE-1 — line style rendering ─────────────────────────────────
+  // Filter helper: overlay artifact LineSeries are identified by lastValueVisible: true
+  // (the forecast series created on mount uses lastValueVisible: false).
+
+  function findOverlayLineCalls() {
+    return mocks.addSeries.mock.calls.filter(
+      ([type, opts]: [string, Record<string, unknown>]) =>
+        type === 'LineSeries' && opts?.lastValueVisible === true
+    )
+  }
+
+  it('81. line overlay without line_style uses LineStyle.Solid (0)', () => {
+    renderChart({ indicatorArtifacts: [makeOverlayArtifact('sma', 'sma_1')] })
+    const calls = findOverlayLineCalls()
+    expect(calls.length).toBeGreaterThan(0)
+    const opts = calls[0][1] as Record<string, unknown>
+    expect(opts.lineStyle).toBe(0) // LineStyle.Solid
+  })
+
+  it('82. line overlay with line_style="dashed" uses LineStyle.Dashed (2)', () => {
+    const artifact = makeOverlayArtifact('sma', 'sma_1')
+    artifact.series[0] = { ...artifact.series[0], line_style: 'dashed' }
+    renderChart({ indicatorArtifacts: [artifact] })
+    const calls = findOverlayLineCalls()
+    expect(calls.length).toBeGreaterThan(0)
+    const opts = calls[0][1] as Record<string, unknown>
+    expect(opts.lineStyle).toBe(2) // LineStyle.Dashed
+  })
+
+  it('83. line overlay with line_style="dotted" uses LineStyle.Dotted (1)', () => {
+    const artifact = makeOverlayArtifact('sma', 'sma_1')
+    artifact.series[0] = { ...artifact.series[0], line_style: 'dotted' }
+    renderChart({ indicatorArtifacts: [artifact] })
+    const calls = findOverlayLineCalls()
+    expect(calls.length).toBeGreaterThan(0)
+    const opts = calls[0][1] as Record<string, unknown>
+    expect(opts.lineStyle).toBe(1) // LineStyle.Dotted
   })
 })

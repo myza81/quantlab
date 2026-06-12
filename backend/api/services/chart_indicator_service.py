@@ -126,6 +126,7 @@ def list_chart_indicators(registry: ToolRegistry) -> ChartIndicatorsListResponse
                 default=p.default,
                 min_value=p.min_value,
                 max_value=p.max_value,
+                options=list(p.options) if p.options else None,
             )
             for p in metadata.parameters
         ]
