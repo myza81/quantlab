@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/unit/test_chart_indicator_api.py -v)"
+    ]
+  }
+}

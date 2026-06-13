@@ -5,10 +5,15 @@ interface Props {
   onNavigateToReport?: () => void
   onResumeReport?:     () => void   // Phase 3S-C: resume last report after refresh
   resuming?:           boolean
+  /** When true, suppress the source/symbol/timeframe/candles metadata spans.
+   *  Action buttons (Resume, View Report) are still shown when present. */
+  hideMetadata?:       boolean
 }
 
-export function SessionProvenanceStrip({ session, onNavigateToReport, onResumeReport, resuming }: Props) {
+export function SessionProvenanceStrip({ session, onNavigateToReport, onResumeReport, resuming, hideMetadata }: Props) {
+  const hasActions = !!onResumeReport || !!(session.latestBacktestRunId && onNavigateToReport)
   if (!session.sourceMode && !onResumeReport) return null
+  if (hideMetadata && !hasActions) return null
 
   const sourceLabel = session.sourceMode === 'catalog'
     ? `catalog · ${session.catalogDisplayName ?? session.catalogId?.slice(0, 8) ?? '?'}`
@@ -26,29 +31,34 @@ export function SessionProvenanceStrip({ session, onNavigateToReport, onResumeRe
           {resuming ? 'Resuming…' : 'Resume Last Report'}
         </button>
       )}
-      {session.sourceMode && (
-      <span style={s.item}>
-        <span style={s.key}>source</span>
-        <span style={s.val}>{sourceLabel}</span>
-      </span>
+      {!hideMetadata && session.sourceMode && (
+        <span style={s.item}>
+          <span style={s.key}>source</span>
+          <span style={s.val}>{sourceLabel}</span>
+        </span>
       )}
-      <span style={s.sep}>·</span>
-      <span style={s.item}>
-        <span style={s.key}>symbol</span>
-        <span style={s.val}>{session.symbol || '—'}</span>
-      </span>
-      <span style={s.sep}>·</span>
-      <span style={s.item}>
-        <span style={s.key}>timeframe</span>
-        <span style={s.val}>{session.timeframe || '—'}</span>
-      </span>
-      <span style={s.sep}>·</span>
-      <span style={s.item}>
-        <span style={s.key}>candles</span>
-        <span style={s.val}>{session.candleCount.toLocaleString()}</span>
-      </span>
-
-      {session.latestDraftName && (
+      {!hideMetadata && <span style={s.sep}>·</span>}
+      {!hideMetadata && (
+        <span style={s.item}>
+          <span style={s.key}>symbol</span>
+          <span style={s.val}>{session.symbol || '—'}</span>
+        </span>
+      )}
+      {!hideMetadata && <span style={s.sep}>·</span>}
+      {!hideMetadata && (
+        <span style={s.item}>
+          <span style={s.key}>timeframe</span>
+          <span style={s.val}>{session.timeframe || '—'}</span>
+        </span>
+      )}
+      {!hideMetadata && <span style={s.sep}>·</span>}
+      {!hideMetadata && (
+        <span style={s.item}>
+          <span style={s.key}>candles</span>
+          <span style={s.val}>{session.candleCount.toLocaleString()}</span>
+        </span>
+      )}
+      {!hideMetadata && session.latestDraftName && (
         <>
           <span style={s.sep}>·</span>
           <span style={s.item}>

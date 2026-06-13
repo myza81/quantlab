@@ -16,6 +16,7 @@
  */
 
 import type { IndicatorArtifactResponse } from '../types/chartIndicators'
+import type { ChartTheme } from '../types/chartTheme'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -47,6 +48,7 @@ interface ChartDataInspectorProps {
   exchange?: string
   /** Candle at current crosshair position (latest candle when no hover) */
   candle: InspectorCandle | null
+  theme?: ChartTheme
   // Indicator props below are accepted but not currently rendered.
   // They are retained so caller sites do not need to change and the
   // plumbing is available for future re-enablement.
@@ -77,13 +79,20 @@ export function fmtVolume(v: number): string {
 // ---------------------------------------------------------------------------
 
 export default function ChartDataInspector({
-  symbol, timeframe, exchange, candle,
+  symbol, timeframe, exchange, candle, theme,
 }: ChartDataInspectorProps) {
+  const tc = theme?.colors
 
   if (!candle) {
     return (
-      <div data-testid="chart-data-inspector" style={s.bar}>
-        <span style={s.meta}>{symbol}{timeframe ? ` · ${timeframe}` : ''}{exchange ? ` · ${exchange}` : ''}</span>
+      <div data-testid="chart-data-inspector" style={{
+        ...s.bar,
+        background:   tc?.ohlcBarBg     ?? s.bar.background as string,
+        borderBottom: `1px solid ${tc?.ohlcBarBorder ?? '#1a1a2e'}`,
+      }}>
+        <span style={{ ...s.meta, color: tc?.metaText ?? s.meta.color as string }}>
+          {symbol}{timeframe ? ` · ${timeframe}` : ''}{exchange ? ` · ${exchange}` : ''}
+        </span>
       </div>
     )
   }
@@ -101,10 +110,14 @@ export default function ChartDataInspector({
     : undefined
 
   return (
-    <div data-testid="chart-data-inspector" style={s.bar}>
+    <div data-testid="chart-data-inspector" style={{
+      ...s.bar,
+      background:   tc?.ohlcBarBg     ?? s.bar.background as string,
+      borderBottom: `1px solid ${tc?.ohlcBarBorder ?? '#1a1a2e'}`,
+    }}>
       {/* ── OHLC header: symbol · timeframe · exchange · O H L C · change ── */}
       <div style={s.primaryRow}>
-        <span data-testid="inspector-meta" style={s.meta}>
+        <span data-testid="inspector-meta" style={{ ...s.meta, color: tc?.metaText ?? s.meta.color as string }}>
           {symbol}{timeframe ? ` · ${timeframe}` : ''}{exchange ? ` · ${exchange}` : ''}
         </span>
         <span style={s.gap} />
@@ -133,7 +146,8 @@ const s: Record<string, React.CSSProperties> = {
     padding:        '3px 10px',
     background:     'rgba(10, 10, 20, 0.85)',
     borderBottom:   '1px solid #1a1a2e',
-    flexShrink:     0,
+    flex:           1,
+    minWidth:       0,
     userSelect:     'none',
     pointerEvents:  'none',
   },

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import Controls from './components/Controls'
-import Chart from './components/Chart'
+import Chart, { type ChartHandle } from './components/Chart'
 import { DraftWorkspace } from './components/DraftWorkspace'
 import { StrategyTestPanel } from './components/StrategyTestPanel'
 import { BacktestReportPage } from './components/BacktestReportPage'
@@ -34,6 +34,9 @@ import type { ForwardTestPrefill } from './types/forwardTesting'
 import { ChartIndicatorPanel } from './components/ChartIndicatorPanel'
 import type { ChartIndicatorPanelHandle } from './components/ChartIndicatorPanel'
 import type { IndicatorInstance } from './types/chartIndicators'
+import { useChartSettings } from './hooks/useChartSettings'
+import ChartHeader from './components/ChartHeader'
+import type { SelectedAsset } from './components/AssetResolverInput'
 
 type Status     = 'idle' | 'loading' | 'success' | 'error'
 type ActiveView = 'chart' | 'composer' | 'credentials' | 'report' | 'admin' | 'datasets' | 'history' | 'forward-test' | 'paper-trading' | 'lifecycle'
@@ -70,10 +73,17 @@ export default function App() {
   const [resuming,           setResuming]           = useState(false)
   const [forwardTestPrefill, setForwardTestPrefill] = useState<ForwardTestPrefill | null>(null)
 
+  // Chart-wide visualization preferences (CHART-SETTINGS-1A)
+  const { settings: chartSettings, updateSettings: updateChartSettings } = useChartSettings()
+  // Chart header identity — lifted from Controls when user selects an asset
+  const [selectedAsset, setSelectedAsset] = useState<SelectedAsset | null>(null)
+
   // Chart-UX-3C.1: full indicator instances (visibility, colors, artifacts)
   const [indicatorInstances, setIndicatorInstances] = useState<IndicatorInstance[]>([])
   // Chart-UX-3C.5: indicator panel ref (for Chart legend/header action callbacks)
   const indicatorPanelRef = useRef<ChartIndicatorPanelHandle>(null)
+  // CHART-TOOLBAR-1A: screenshot handle — enables the screenshot button when chart is loaded
+  const chartHandleRef = useRef<ChartHandle | null>(null)
   // Chart-UX-3C.5: hovered instance for ownership feedback (sidebar ↔ chart legend)
   const [hoveredInstanceId, setHoveredInstanceId] = useState<string | null>(null)
 
@@ -286,7 +296,7 @@ export default function App() {
       <StrategyContextProvider>
       <div style={st.app}>
 
-        {/* ── Global header ── */}
+        {/* ── Global header — app identity and account only ── */}
         <header style={st.header}>
           <span style={st.logo}>QuantLab</span>
           <span style={st.tagline}>Research-first strategy platform</span>
@@ -308,12 +318,13 @@ export default function App() {
 
           {/* ── Main content area ── */}
           <div style={st.content}>
-            {/* ── Session provenance strip ── */}
+            {/* ── Session provenance strip — metadata hidden on chart view (shown in ChartHeader) ── */}
             <SessionProvenanceStrip
               session={session}
               onNavigateToReport={backtestReport ? () => setActiveView('report') : undefined}
               onResumeReport={resumableRunId && !backtestReport ? handleResumeReport : undefined}
               resuming={resuming}
+              hideMetadata={activeView === 'chart'}
             />
 
             {/* ── Persistent strategy context bar (workflow pages only) ── */}
@@ -435,7 +446,11 @@ export default function App() {
 
               {/* Left sidebar */}
               <aside style={st.sidebar}>
-                <Controls onFetch={handleFetch} loading={status === 'loading'} />
+                <Controls
+                  onFetch={handleFetch}
+                  loading={status === 'loading'}
+                  onAssetSelect={setSelectedAsset}
+                />
                 <StrategyTestPanel
                   candles={candles}
                   symbol={catalogMeta?.entry.symbol ?? params?.symbol ?? ''}
@@ -459,6 +474,20 @@ export default function App() {
 
               {/* Chart area */}
               <div style={st.chartArea}>
+                {/* Chart-local toolbar — symbol identity and action buttons */}
+                <ChartHeader
+                  symbol={catalogMeta?.entry.symbol ?? params?.symbol ?? ''}
+                  timeframe={catalogMeta?.entry.timeframe ?? params?.timeframe ?? ''}
+                  instrumentName={catalogMeta ? catalogMeta.entry.display_name : (selectedAsset?.name ?? undefined)}
+                  exchange={params?.exchange ?? undefined}
+                  assetClass={params?.asset_class ?? undefined}
+                  candleCount={candles.length > 0 ? candles.length : undefined}
+                  chartSettings={chartSettings}
+                  onSettingsChange={updateChartSettings}
+                  onScreenshot={candles.length > 0 ? () => chartHandleRef.current?.takeScreenshot() : undefined}
+                  onResetView={candles.length > 0 ? () => chartHandleRef.current?.resetView() : undefined}
+                  onAutoScale={candles.length > 0 ? () => chartHandleRef.current?.autoScale() : undefined}
+                />
                 {status === 'idle' && (
                   <div style={st.placeholder}>Select a symbol and click Fetch to load chart data.</div>
                 )}
@@ -472,30 +501,24 @@ export default function App() {
                   <div style={st.placeholder}>No candles returned for this symbol / timeframe / date range.</div>
                 )}
                 {status === 'success' && candles.length > 0 && (
-                  <>
-                    {fetchMetadata && (
-                      <DatasetMetaBadge metadata={fetchMetadata} candleCount={candles.length} />
-                    )}
-                    {catalogMeta && (
-                      <CatalogMetaBadge response={catalogMeta.response} entry={catalogMeta.entry} candleCount={candles.length} />
-                    )}
-                    <Chart
-                      candles={candles}
-                      symbol={catalogMeta?.entry.symbol ?? params?.symbol ?? ''}
-                      timeframe={catalogMeta?.entry.timeframe ?? params?.timeframe ?? ''}
-                      overlay={overlay}
-                      indicatorArtifacts={visibleArtifacts}
-                      instanceColors={instanceColorMap}
-                      instanceLabels={instanceLabelMap}
-                      instanceVisible={instanceVisibleMap}
-                      highlightedInstanceId={hoveredInstanceId}
-                      onClearStrategyResults={clearStrategyResults}
-                      onHoverInstance={setHoveredInstanceId}
-                      onIndicatorToggle={id => indicatorPanelRef.current?.toggleVisible(id)}
-                      onIndicatorRemove={id => indicatorPanelRef.current?.removeInstance(id)}
-                      volumeColorModes={volumeColorModes}
-                    />
-                  </>
+                  <Chart
+                    ref={chartHandleRef}
+                    candles={candles}
+                    symbol={catalogMeta?.entry.symbol ?? params?.symbol ?? ''}
+                    timeframe={catalogMeta?.entry.timeframe ?? params?.timeframe ?? ''}
+                    overlay={overlay}
+                    indicatorArtifacts={visibleArtifacts}
+                    instanceColors={instanceColorMap}
+                    instanceLabels={instanceLabelMap}
+                    instanceVisible={instanceVisibleMap}
+                    highlightedInstanceId={hoveredInstanceId}
+                    onClearStrategyResults={clearStrategyResults}
+                    onHoverInstance={setHoveredInstanceId}
+                    onIndicatorToggle={id => indicatorPanelRef.current?.toggleVisible(id)}
+                    onIndicatorRemove={id => indicatorPanelRef.current?.removeInstance(id)}
+                    volumeColorModes={volumeColorModes}
+                    chartSettings={chartSettings}
+                  />
                 )}
               </div>
             </div>
@@ -506,89 +529,6 @@ export default function App() {
       </StrategyContextProvider>
       </SubscriptionGate>
     </AuthGuard>
-  )
-}
-
-// Compact dataset provenance strip shown above the chart after a successful fetch
-function DatasetMetaBadge({
-  metadata,
-  candleCount,
-}: {
-  metadata:    DatasetFetchMetadata
-  candleCount: number
-}) {
-  return (
-    <div data-testid="dataset-meta-badge" style={st.metaBadge}>
-      <span style={st.metaItem}>
-        <span style={st.metaKey}>provider</span>
-        <span style={st.metaVal}>{metadata.provider}</span>
-      </span>
-      <span style={st.metaSep}>·</span>
-      <span style={st.metaItem}>
-        <span style={st.metaKey}>candles</span>
-        <span style={st.metaVal}>{candleCount.toLocaleString()}</span>
-      </span>
-      <span style={st.metaSep}>·</span>
-      <span style={st.metaItem}>
-        <span style={st.metaKey}>dataset</span>
-        <span style={st.metaVal} title={metadata.dataset_id}>
-          {metadata.dataset_id.slice(0, 40)}{metadata.dataset_id.length > 40 ? '…' : ''}
-        </span>
-      </span>
-      <span style={st.metaSep}>·</span>
-      <span style={st.metaItem}>
-        <span style={st.metaKey}>fingerprint</span>
-        <span style={st.metaVal} title={metadata.fingerprint}>
-          {metadata.fingerprint.slice(0, 12)}
-        </span>
-      </span>
-    </div>
-  )
-}
-
-function CatalogMetaBadge({
-  response,
-  entry,
-  candleCount,
-}: {
-  response:    CatalogOHLCVResponse
-  entry:       CatalogEntry
-  candleCount: number
-}) {
-  return (
-    <div data-testid="catalog-meta-badge" style={st.metaBadge}>
-      <span style={st.metaItem}>
-        <span style={st.metaKey}>source</span>
-        <span style={st.metaVal}>catalog/local</span>
-      </span>
-      <span style={st.metaSep}>·</span>
-      <span style={st.metaItem}>
-        <span style={st.metaKey}>dataset</span>
-        <span style={st.metaVal}>{entry.display_name}</span>
-      </span>
-      <span style={st.metaSep}>·</span>
-      <span style={st.metaItem}>
-        <span style={st.metaKey}>symbol</span>
-        <span style={st.metaVal}>{response.symbol}</span>
-      </span>
-      <span style={st.metaSep}>·</span>
-      <span style={st.metaItem}>
-        <span style={st.metaKey}>timeframe</span>
-        <span style={st.metaVal}>{response.timeframe}</span>
-      </span>
-      <span style={st.metaSep}>·</span>
-      <span style={st.metaItem}>
-        <span style={st.metaKey}>candles</span>
-        <span style={st.metaVal}>{candleCount.toLocaleString()}</span>
-      </span>
-      <span style={st.metaSep}>·</span>
-      <span style={st.metaItem}>
-        <span style={st.metaKey}>catalog_id</span>
-        <span style={st.metaVal} title={response.catalog_id}>
-          {response.catalog_id.slice(0, 12)}…
-        </span>
-      </span>
-    </div>
   )
 }
 

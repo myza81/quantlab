@@ -19,6 +19,10 @@
  * 15.  Context bar hidden on Research and Settings
  * 16.  Report can still be navigated to internally (from BacktestHistoryPanel callback)
  * 17.  Report tab is not rendered in nav even when backtestReport exists
+ * CHART-HEADER-1 — gear button in chart header toolbar
+ * 18.  gear button renders in chart header toolbar
+ * 19.  clicking gear shows settings panel
+ * 20.  clicking backdrop closes settings panel
  */
 import React from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
@@ -394,5 +398,30 @@ describe('AppNavigation — Report behavior', () => {
     fireEvent.click(screen.getByTestId('report-back-btn'))
     // Should return to backtest history, not chart
     expect(screen.getByTestId('backtest-history-panel')).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 18–20: Chart Settings gear button in App header (CHART-SETTINGS-1A)
+// ---------------------------------------------------------------------------
+
+describe('AppNavigation — Chart Settings gear button (CHART-HEADER-1)', () => {
+  it('18. gear button renders in chart header toolbar', () => {
+    render(<App />)
+    expect(screen.getByTestId('chart-settings-btn')).toBeInTheDocument()
+  })
+
+  it('19. clicking gear button shows settings panel', () => {
+    render(<App />)
+    fireEvent.click(screen.getByTestId('chart-settings-btn'))
+    expect(screen.getByTestId('chart-settings-panel')).toBeInTheDocument()
+  })
+
+  it('20. clicking backdrop closes settings panel', () => {
+    render(<App />)
+    fireEvent.click(screen.getByTestId('chart-settings-btn'))
+    expect(screen.getByTestId('chart-settings-panel')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('chart-settings-backdrop'))
+    expect(screen.queryByTestId('chart-settings-panel')).not.toBeInTheDocument()
   })
 })

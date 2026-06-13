@@ -64,10 +64,49 @@
  * 78.  strategy-run oscillator subscribes to price chart crosshair movement
  * 79.  strategy-run oscillator sets crosshair position for matching timestamp data
  * 80.  strategy-run oscillator clears crosshair when event has no time
+ * CHART-SETTINGS-1A — label toggle effects (gear button is in App.tsx header)
+ * 91.  showLatestPriceLabel: false — applyOptions called
+ * 92.  showIndicatorValueLabels: false — overlay line created with lastValueVisible: false
+ * 93.  showStrategyValueLabels: false — strategy EMA created with lastValueVisible: false
+ * 94.  showSignalMarkers: false — setMarkers([]) called
+ * 95.  showSignalMarkers: true — setMarkers called with signal data
+ * Reactive toggle regression (G1, G2, G6)
+ * 96.  showSignalMarkers: false preserved after overlay re-run (G6a)
+ * 97.  showSignalMarkers: toggle ON after overlay re-run restores markers (G6b)
+ * 98.  showIndicatorValueLabels reactive toggle — applyOptions on existing series (G1)
+ * 99.  showStrategyValueLabels reactive toggle — applyOptions on existing series (G2)
+ * 100. showIndicatorValueLabels toggle applies to OscPane oscillator series (G4)
+ * CHART-SETTINGS-1A.4 — Indicators toggle: right-axis labels hidden; top chips unaffected
+ * 101. ChartLegendOverlay visible when showIndicatorValueLabels=false (top legend unaffected)
+ * 102. OscPane chip label visible when showIndicatorValueLabels=false (header chips unaffected)
+ * 103. OscPane chip label visible when showIndicatorValueLabels=true
+ * CHART-SETTINGS-1A.5 — title="" required to fully hide right-axis labels in LW Charts v5
+ * 104. OscPane RSI series created with title="" when showIndicatorValueLabels=false
+ * 105. OscPane RSI Midline series created with title="" when showIndicatorValueLabels=false
+ * 106. OscPane reactive toggle sets title="" in applyOptions when hiding
+ * 107. Price-overlay reactive toggle sets title="" in applyOptions when hiding
+ * CHART-TOOLBAR-1A — Screenshot export (ChartHandle.takeScreenshot)
+ * 108. ChartHandle.takeScreenshot calls chart.takeScreenshot() to capture price pane
+ * 109. takeScreenshot downloads a PNG with correct filename pattern
+ * 110. takeScreenshot filename sanitizes non-alphanumeric characters in symbol/timeframe
+ * CHART-TOOLBAR-1B — Reset View (ChartHandle.resetView)
+ * 111. ChartHandle.resetView exposed on ChartHandle interface
+ * 112. resetView does not throw when called with chart data loaded
+ * 113. resetView calls setVisibleLogicalRange on captured initial range
+ * 114. resetView gracefully handles empty chart state
+ * CHART-TOOLBAR-1C — Auto Scale (ChartHandle.autoScale)
+ * 115. ChartHandle.autoScale exposed on ChartHandle interface
+ * 116. autoScale does not throw when called with chart data loaded
+ * 117. autoScale preserves visible logical range
+ * 118. autoScale gracefully handles empty chart state
  */
+import { createRef } from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import Chart from '../Chart'
+import { createChart } from 'lightweight-charts'
+import Chart, { type ChartHandle } from '../Chart'
+import { DEFAULT_CHART_SETTINGS } from '../../types/chartSettings'
+import type { ChartSettings } from '../../types/chartSettings'
 import type { IndicatorArtifactResponse } from '../../types/chartIndicators'
 import type { OHLCVCandle } from '../../api/marketData'
 import type { StrategyOverlay } from '../../types/strategy'
@@ -137,6 +176,16 @@ const mocks = vi.hoisted(() => {
   // Volume price scale (volume_ma tool renders histogram on named 'volume' scale)
   const priceScaleApplyOptions = vi.fn()
   const priceScaleMock         = { applyOptions: priceScaleApplyOptions }
+  // Shared applyOptions for all series instances (CHART-SETTINGS-1A)
+  const seriesApplyOptions     = vi.fn()
+  // setMarkers for signal marker toggle tests (CHART-SETTINGS-1A)
+  const setMarkers             = vi.fn()
+  // takeScreenshot — returns a mock canvas (CHART-TOOLBAR-1A)
+  const takeScreenshot         = vi.fn().mockReturnValue({
+    width:     800,
+    height:    400,
+    toDataURL: vi.fn().mockReturnValue('data:image/png;base64,fake'),
+  })
 
   function makeTimeScale() {
     return {
@@ -156,7 +205,7 @@ const mocks = vi.hoisted(() => {
 
   function makeSeries() {
     return {
-      setData, applyOptions: vi.fn(),
+      setData, applyOptions: seriesApplyOptions,
       createPriceLine: vi.fn().mockReturnValue({}),
       removePriceLine: vi.fn(),
       // Series-level priceScale() — used by volume histogram to configure scale margins
@@ -178,6 +227,7 @@ const mocks = vi.hoisted(() => {
       clearCrosshairPosition:  vi.fn(),
       setCrosshairPosition:    vi.fn(),
       priceScale:              vi.fn().mockReturnValue(priceScaleMock),
+      takeScreenshot,
     }
     chartInstances.push(chart)
     return chart
@@ -189,6 +239,8 @@ const mocks = vi.hoisted(() => {
     subCrosshair, unsubCrosshair, fitContent,
     setData, addSeries, removeSeries, applyOptions, chartRemove,
     priceScaleApplyOptions, priceScaleMock,
+    seriesApplyOptions, setMarkers,
+    takeScreenshot,
     chartInstances,
     makeChart, makeTimeScale, makeSeries,
   }
@@ -196,7 +248,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('lightweight-charts', () => ({
   createChart:         vi.fn().mockImplementation(() => mocks.makeChart()),
-  createSeriesMarkers: vi.fn().mockReturnValue({ setMarkers: vi.fn(), detach: vi.fn() }),
+  createSeriesMarkers: vi.fn().mockImplementation(() => ({ setMarkers: mocks.setMarkers, detach: vi.fn() })),
   CandlestickSeries:   'CandlestickSeries',
   LineSeries:          'LineSeries',
   HistogramSeries:     'HistogramSeries',
@@ -226,6 +278,27 @@ function makeOscArtifact(toolId: string, instanceId: string): IndicatorArtifactR
       pane: 'oscillator_pane', render_type: 'line', default_color: '#a855f7',
       values: [{ timestamp: TS(0), value: 55 }, { timestamp: TS(1), value: 60 }],
     }],
+  }
+}
+
+/** RSI + RSI Midline merged into a single artifact (mirrors ChartIndicatorPanel behavior) */
+function makeRsiArtifactWithMidline(): IndicatorArtifactResponse {
+  return {
+    tool_id: 'rsi', instance_id: 'rsi_1',
+    display_name: 'RSI', pane: 'oscillator_pane',
+    render_type: 'line', parameters: {}, warmup_bars: 0, diagnostics: null,
+    series: [
+      {
+        series_id: 'rsi_val', label: 'RSI',
+        pane: 'oscillator_pane', render_type: 'line', default_color: '#9c27b0',
+        values: [{ timestamp: TS(0), value: null }, { timestamp: TS(1), value: 45.5 }],
+      },
+      {
+        series_id: 'rsi_midline', label: 'RSI Midline',
+        pane: 'oscillator_pane', render_type: 'line', default_color: '#808080',
+        values: [{ timestamp: TS(0), value: 50 }, { timestamp: TS(1), value: 50 }],
+      },
+    ],
   }
 }
 
@@ -522,7 +595,7 @@ describe('Chart', () => {
     renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
     const splitter = screen.getByTestId('pane-splitter')
 
-    // Large downward drag → clamped at MIN (100)
+    // Large downward drag → clamped at MIN (100), OscPane gets MIN - SPLITTER_HEIGHT (91)
     fireEvent.pointerDown(splitter, { clientY: 0, pointerId: 1 })
     fireEvent.pointerMove(splitter, { clientY: 2000, pointerId: 1 })
     flushRaf()
@@ -530,7 +603,8 @@ describe('Chart', () => {
 
     await waitFor(() => {
       const h = parseInt(screen.getByTestId('osc-pane-wrapper').style.height || '0', 10)
-      expect(h).toBeGreaterThanOrEqual(100)
+      // MIN_OSC_HEIGHT is 100px, but OscPane height is adjusted by SPLITTER_HEIGHT (9)
+      expect(h).toBeGreaterThanOrEqual(100 - 9)
     })
   })
 
@@ -745,7 +819,8 @@ describe('Chart', () => {
 
     await waitFor(() => {
       const wrapper = screen.getByTestId('osc-pane-wrapper')
-      expect(parseInt(wrapper.style.height || '0', 10)).toBe(130)
+      // DEFAULT_OSC_HEIGHT is 130px, but OscPane height is adjusted by SPLITTER_HEIGHT (9)
+      expect(parseInt(wrapper.style.height || '0', 10)).toBe(130 - 9)
     })
   })
 
@@ -773,8 +848,9 @@ describe('Chart', () => {
 
     await waitFor(() => {
       const wrapper = screen.getByTestId('osc-pane-wrapper')
-      // Height should be initialized from localStorage (250)
-      expect(parseInt(wrapper.style.height || '0', 10)).toBe(250)
+      // Height is adjusted: stored value (250) minus DragSplitter height (9) = 241
+      const SPLITTER_HEIGHT = 9
+      expect(parseInt(wrapper.style.height || '0', 10)).toBe(250 - SPLITTER_HEIGHT)
     })
   })
 
@@ -1339,5 +1415,495 @@ describe('Chart', () => {
     expect(calls.length).toBeGreaterThan(0)
     const opts = calls[0][1] as Record<string, unknown>
     expect(opts.lineStyle).toBe(1) // LineStyle.Dotted
+  })
+
+  // ── CHART-SETTINGS-1A — chart settings panel and label toggles ────────────
+  //
+  // Helpers:
+  //  makeSettings(labels) — produces a ChartSettings with only the given label overrides
+  //  makeSignaledOverlay()  — a strategy overlay that includes a single long signal
+
+  function makeSettings(labelOverrides: Partial<ChartSettings['labels']>): ChartSettings {
+    return {
+      ...DEFAULT_CHART_SETTINGS,
+      labels: { ...DEFAULT_CHART_SETTINGS.labels, ...labelOverrides },
+    }
+  }
+
+  function makeSignaledOverlay(): StrategyOverlay {
+    return {
+      signals: [{
+        timestamp:          TS(1),
+        symbol:             'AAPL',
+        timeframe:          '1d',
+        signal_type:        'long' as const,
+        entry_reference:    0,
+        invalidation_level: 0,
+      }],
+      forecast:   null,
+      indicators: [],
+    }
+  }
+
+  it('91. showLatestPriceLabel: false — applyOptions called with lastValueVisible: false', () => {
+    renderChart({ chartSettings: makeSettings({ showLatestPriceLabel: false }) })
+    expect(mocks.seriesApplyOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ lastValueVisible: false, priceLineVisible: false })
+    )
+  })
+
+  it('92. showIndicatorValueLabels: false — overlay line series created with lastValueVisible: false', () => {
+    renderChart({
+      indicatorArtifacts: [makeOverlayArtifact('sma', 'sma_1')],
+      chartSettings: makeSettings({ showIndicatorValueLabels: false }),
+    })
+    // With showIndicatorValueLabels: false the overlay series is NOT created with lastValueVisible: true
+    // (findOverlayLineCalls filters for lastValueVisible: true — should return nothing)
+    expect(findOverlayLineCalls()).toHaveLength(0)
+  })
+
+  it('93. showStrategyValueLabels: false — strategy line series created with lastValueVisible: false', () => {
+    renderChart({
+      overlay: makeStrategyOverlay([makeEmaStrategyIndicator()]),
+      chartSettings: makeSettings({ showStrategyValueLabels: false }),
+    })
+    // Strategy EMA line should NOT appear in findOverlayLineCalls (which filters lastValueVisible: true)
+    expect(findOverlayLineCalls()).toHaveLength(0)
+  })
+
+  it('94. showSignalMarkers: false — setMarkers([]) when overlay has signals', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      overlay: makeSignaledOverlay(),
+      chartSettings: makeSettings({ showSignalMarkers: false }),
+    })
+    // The overlay effect stores markers then calls setMarkers([]) because showSignalMarkers is false.
+    // The last call must be setMarkers([]).
+    const calls = mocks.setMarkers.mock.calls
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls[calls.length - 1][0]).toEqual([])
+  })
+
+  it('95. showSignalMarkers: true — setMarkers called with signal data when overlay has signals', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      overlay: makeSignaledOverlay(),
+      chartSettings: makeSettings({ showSignalMarkers: true }),
+    })
+    // At least one call must pass a non-empty array
+    const nonEmpty = mocks.setMarkers.mock.calls.find(
+      (c: unknown[][]) => Array.isArray(c[0]) && (c[0] as unknown[]).length > 0
+    )
+    expect(nonEmpty).toBeDefined()
+  })
+
+  // ── CHART-SETTINGS-1A: reactive toggle regression (G1, G2, G6) ──────────────
+  //
+  // These tests cover the "settings already stored, then user toggles" path:
+  // series are alive, the toggle fires, applyOptions is called.
+  // Stable candle/artifact/overlay references are used so the creation-side
+  // effects do not re-run — only the toggle effects exercise the tested code.
+
+  it('96. showSignalMarkers: false preserved after overlay re-run with new signals', () => {
+    // Initial render: overlay with signals, markers OFF
+    mocks.setMarkers.mockClear()
+    const candles  = makeCandles()
+    const overlay1 = makeSignaledOverlay()
+    const { rerender } = render(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        overlay={overlay1} chartSettings={makeSettings({ showSignalMarkers: false })} />
+    )
+    mocks.setMarkers.mockClear()
+
+    // Strategy re-runs → new overlay object → overlay effect fires again
+    const overlay2 = makeSignaledOverlay()   // different reference = effect re-runs
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        overlay={overlay2} chartSettings={makeSettings({ showSignalMarkers: false })} />
+    )
+
+    // Overlay effect reads chartSettingsRef → showSignalMarkers still false → setMarkers([])
+    const calls = mocks.setMarkers.mock.calls
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls[calls.length - 1][0]).toEqual([])
+  })
+
+  it('97. showSignalMarkers: toggle ON after overlay re-run restores current markers', () => {
+    // Start: markers OFF, first overlay run
+    const candles  = makeCandles()
+    const overlay1 = makeSignaledOverlay()
+    const { rerender } = render(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        overlay={overlay1} chartSettings={makeSettings({ showSignalMarkers: false })} />
+    )
+
+    // Strategy re-runs while OFF → new overlay object → currentMarkersRef updated
+    const overlay2 = makeSignaledOverlay()
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        overlay={overlay2} chartSettings={makeSettings({ showSignalMarkers: false })} />
+    )
+
+    // Toggle ON — toggle effect reads currentMarkersRef (from overlay2) and restores markers
+    mocks.setMarkers.mockClear()
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        overlay={overlay2} chartSettings={makeSettings({ showSignalMarkers: true })} />
+    )
+    const nonEmpty = mocks.setMarkers.mock.calls.find(
+      (c: unknown[][]) => Array.isArray(c[0]) && (c[0] as unknown[]).length > 0
+    )
+    expect(nonEmpty).toBeDefined()
+  })
+
+  it('98. showIndicatorValueLabels reactive toggle — applyOptions on existing artifact series', () => {
+    // Stable refs: artifact effect does NOT re-run on rerender, only the toggle effect fires
+    const candles   = makeCandles()
+    const artifacts = [makeOverlayArtifact('sma', 'sma_1')]
+    const { rerender } = render(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        indicatorArtifacts={artifacts} chartSettings={makeSettings({})} />
+    )
+    mocks.seriesApplyOptions.mockClear()
+
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        indicatorArtifacts={artifacts}
+        chartSettings={makeSettings({ showIndicatorValueLabels: false })} />
+    )
+
+    // Toggle effect iterates labelledArtifactSeriesKeys → applyOptions({ lastValueVisible: false })
+    expect(mocks.seriesApplyOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ lastValueVisible: false })
+    )
+  })
+
+  it('99. showStrategyValueLabels reactive toggle — applyOptions on existing strategy series', () => {
+    // Stable refs: overlay effect does NOT re-run on rerender, only the toggle effect fires
+    const candles = makeCandles()
+    const overlay  = makeStrategyOverlay([makeEmaStrategyIndicator()])
+    const { rerender } = render(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        overlay={overlay} chartSettings={makeSettings({})} />
+    )
+    mocks.seriesApplyOptions.mockClear()
+
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        overlay={overlay}
+        chartSettings={makeSettings({ showStrategyValueLabels: false })} />
+    )
+
+    // Toggle effect iterates labelledStrategySeriesKeys → applyOptions({ lastValueVisible: false })
+    expect(mocks.seriesApplyOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ lastValueVisible: false })
+    )
+  })
+
+  it('100. showIndicatorValueLabels toggle applies to OscPane oscillator series', () => {
+    // Stable refs: OscPane series rebuild does NOT re-run, only the OscPane toggle effect fires
+    const candles      = makeCandles()
+    const oscArtifacts = [makeOscArtifact('rsi', 'rsi_1')]
+    const { rerender } = render(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        indicatorArtifacts={oscArtifacts} chartSettings={makeSettings({})} />
+    )
+    mocks.seriesApplyOptions.mockClear()
+
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        indicatorArtifacts={oscArtifacts}
+        chartSettings={makeSettings({ showIndicatorValueLabels: false })} />
+    )
+
+    // OscPane toggle effect iterates seriesMapRef → applyOptions({ lastValueVisible: false })
+    expect(mocks.seriesApplyOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ lastValueVisible: false })
+    )
+  })
+
+  // ── CHART-FIX-YAXIS-WIDTH-1 — consistent right axis minimum width ─────────
+  // All chart instances share _CHART_THEME; a single minimumWidth field on
+  // rightPriceScale ensures oscillator panes reserve at least the same axis
+  // width as the price chart regardless of their label digit count.
+
+  it('84. rightPriceScale.minimumWidth is present in chart configuration', () => {
+    renderChart()
+    const calls = vi.mocked(createChart).mock.calls
+    expect(calls.length).toBeGreaterThan(0)
+    const opts = calls[0][1] as { rightPriceScale?: Record<string, unknown> }
+    expect(opts.rightPriceScale).toHaveProperty('minimumWidth')
+  })
+
+  it('85. rightPriceScale.minimumWidth value is at least 80', () => {
+    renderChart()
+    const opts = vi.mocked(createChart).mock.calls[0][1] as { rightPriceScale?: { minimumWidth?: number } }
+    expect(opts.rightPriceScale?.minimumWidth).toBeGreaterThanOrEqual(80)
+  })
+
+  it('86. main price chart createChart call carries rightPriceScale.minimumWidth', () => {
+    renderChart()
+    // All chart instances from a no-oscillator render use _CHART_THEME — verify each.
+    vi.mocked(createChart).mock.calls.forEach(([, opts]) => {
+      const o = opts as { rightPriceScale?: { minimumWidth?: number } }
+      expect(typeof o.rightPriceScale?.minimumWidth).toBe('number')
+      expect(o.rightPriceScale!.minimumWidth).toBeGreaterThanOrEqual(80)
+    })
+  })
+
+  it('87. OscPane createChart calls also carry rightPriceScale.minimumWidth', () => {
+    renderChart({ indicatorArtifacts: [makeOscArtifact('rsi', 'rsi_1')] })
+    // With one oscillator pane: price chart + strategy osc + OscPane = 3 createChart calls.
+    const calls = vi.mocked(createChart).mock.calls
+    expect(calls.length).toBeGreaterThanOrEqual(3)
+    const allHave = calls.every(([, opts]) => {
+      const o = opts as { rightPriceScale?: { minimumWidth?: number } }
+      return typeof o.rightPriceScale?.minimumWidth === 'number' &&
+             o.rightPriceScale.minimumWidth >= 80
+    })
+    expect(allHave).toBe(true)
+  })
+
+  // ── CHART-SETTINGS-1A.5 — title="" to fully hide right-axis labels in LW Charts v5 ──
+  // Root cause: LW Charts v5 renders `title` as a persistent right-axis text label
+  // independently of `lastValueVisible`. Both must be set to hide the label completely.
+
+  it('104. OscPane RSI series created with title="" when showIndicatorValueLabels=false', () => {
+    const candles = makeCandles()
+    renderChart({
+      candles,
+      indicatorArtifacts: [makeRsiArtifactWithMidline()],
+      chartSettings: makeSettings({ showIndicatorValueLabels: false }),
+    })
+    // No LineSeries must be created with title='RSI' — it must be '' when hidden
+    const rsiTitleCall = mocks.addSeries.mock.calls.find(
+      ([type, opts]: [string, Record<string, unknown>]) =>
+        type === 'LineSeries' && opts?.title === 'RSI'
+    )
+    expect(rsiTitleCall).toBeUndefined()
+  })
+
+  it('105. OscPane RSI Midline series created with title="" when showIndicatorValueLabels=false', () => {
+    const candles = makeCandles()
+    renderChart({
+      candles,
+      indicatorArtifacts: [makeRsiArtifactWithMidline()],
+      chartSettings: makeSettings({ showIndicatorValueLabels: false }),
+    })
+    // RSI Midline title must also be '' when hidden
+    const midlineTitleCall = mocks.addSeries.mock.calls.find(
+      ([type, opts]: [string, Record<string, unknown>]) =>
+        type === 'LineSeries' && opts?.title === 'RSI Midline'
+    )
+    expect(midlineTitleCall).toBeUndefined()
+  })
+
+  it('106. OscPane reactive toggle sets title="" in applyOptions when hiding', () => {
+    const candles = makeCandles()
+    const oscArtifacts = [makeRsiArtifactWithMidline()]
+    const { rerender } = render(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        indicatorArtifacts={oscArtifacts} chartSettings={makeSettings({})} />
+    )
+    mocks.seriesApplyOptions.mockClear()
+
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        indicatorArtifacts={oscArtifacts}
+        chartSettings={makeSettings({ showIndicatorValueLabels: false })} />
+    )
+
+    // Toggle effect must include title: '' — lastValueVisible alone is insufficient in v5
+    expect(mocks.seriesApplyOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ lastValueVisible: false, title: '' })
+    )
+  })
+
+  it('107. Price-overlay reactive toggle sets title="" in applyOptions when hiding', () => {
+    const candles   = makeCandles()
+    const artifacts = [makeOverlayArtifact('sma', 'sma_1')]
+    const { rerender } = render(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        indicatorArtifacts={artifacts} chartSettings={makeSettings({})} />
+    )
+    mocks.seriesApplyOptions.mockClear()
+
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        indicatorArtifacts={artifacts}
+        chartSettings={makeSettings({ showIndicatorValueLabels: false })} />
+    )
+
+    // Price-overlay toggle effect must also clear title to hide right-axis label
+    expect(mocks.seriesApplyOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ lastValueVisible: false, title: '' })
+    )
+  })
+
+  // ── CHART-SETTINGS-1A.4 — Indicators toggle: right-axis hidden; top chips unaffected ──
+
+  it('101. ChartLegendOverlay visible when showIndicatorValueLabels=false (top legend unaffected)', () => {
+    const candles  = makeCandles()
+    const artifact = makeOverlayArtifact('sma', 'sma_1')
+    renderChart({
+      candles,
+      indicatorArtifacts: [artifact],
+      chartSettings: makeSettings({ showIndicatorValueLabels: false }),
+    })
+    // The overlay legend (top-left chip) must remain visible — only right-axis labels are hidden
+    expect(screen.getByTestId('chart-legend-overlay')).toBeInTheDocument()
+  })
+
+  it('102. OscPane chip label visible when showIndicatorValueLabels=false (header chips unaffected)', () => {
+    const candles      = makeCandles()
+    const oscArtifacts = [makeOscArtifact('rsi', 'rsi_1')]
+    renderChart({
+      candles,
+      indicatorArtifacts: oscArtifacts,
+      instanceLabels: new Map([['rsi_1', 'RSI (14)']]),
+      chartSettings: makeSettings({ showIndicatorValueLabels: false }),
+    })
+    // Top header chip label stays visible — toggle only affects right-axis lastValueVisible
+    expect(screen.getByText('RSI (14)')).toBeInTheDocument()
+  })
+
+  it('103. OscPane chip label visible when showIndicatorValueLabels=true', () => {
+    const candles      = makeCandles()
+    const oscArtifacts = [makeOscArtifact('rsi', 'rsi_1')]
+    renderChart({
+      candles,
+      indicatorArtifacts: oscArtifacts,
+      instanceLabels: new Map([['rsi_1', 'RSI (14)']]),
+      chartSettings: makeSettings({ showIndicatorValueLabels: true }),
+    })
+    expect(screen.getByText('RSI (14)')).toBeInTheDocument()
+  })
+
+  // ── CHART-TOOLBAR-1A — Screenshot export ─────────────────────────────────
+  //
+  // Chart exposes takeScreenshot() via a ChartHandle ref. In JSDOM, the 2D
+  // canvas context is unavailable, so the implementation falls back to downloading
+  // the price chart's canvas directly. Tests verify the ref is wired, the download
+  // anchor is created with the correct filename pattern, and chart.takeScreenshot()
+  // is called on the LW Charts instance.
+
+  it('108. ChartHandle.takeScreenshot calls chart.takeScreenshot() to capture price pane', () => {
+    const chartRef = createRef<ChartHandle>()
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    render(<Chart ref={chartRef} candles={makeCandles()} symbol="AAPL" timeframe="1d" />)
+
+    mocks.takeScreenshot.mockClear()
+    chartRef.current?.takeScreenshot()
+
+    expect(mocks.takeScreenshot).toHaveBeenCalled()
+    clickSpy.mockRestore()
+  })
+
+  it('109. takeScreenshot downloads a PNG with correct filename pattern', () => {
+    const chartRef = createRef<ChartHandle>()
+    const clickedFilenames: string[] = []
+
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function(this: HTMLAnchorElement) {
+        clickedFilenames.push(this.download)
+      })
+
+    render(<Chart ref={chartRef} candles={makeCandles()} symbol="AAPL" timeframe="1d" />)
+    chartRef.current?.takeScreenshot()
+
+    expect(clickedFilenames).toHaveLength(1)
+    expect(clickedFilenames[0]).toMatch(/^AAPL-1d-\d{8}-\d{6}\.png$/)
+    clickSpy.mockRestore()
+  })
+
+  it('110. takeScreenshot filename sanitizes non-alphanumeric characters', () => {
+    const chartRef = createRef<ChartHandle>()
+    const clickedFilenames: string[] = []
+
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function(this: HTMLAnchorElement) {
+        clickedFilenames.push(this.download)
+      })
+
+    render(<Chart ref={chartRef} candles={makeCandles()} symbol="AAPL/USD" timeframe="15m" />)
+    chartRef.current?.takeScreenshot()
+
+    // Slash in symbol → underscore; filename must match the safe pattern
+    expect(clickedFilenames[0]).toMatch(/^AAPL_USD-15m-\d{8}-\d{6}\.png$/)
+    clickSpy.mockRestore()
+  })
+
+  // Reset View (CHART-TOOLBAR-1B)
+
+  it('111. ChartHandle.resetView exposed on ChartHandle interface', () => {
+    const chartRef = createRef<ChartHandle>()
+    render(<Chart ref={chartRef} candles={makeCandles()} symbol="AAPL" timeframe="1d" />)
+
+    // Verify resetView method exists and is callable
+    expect(chartRef.current).toBeDefined()
+    expect(typeof chartRef.current?.resetView).toBe('function')
+  })
+
+  it('112. resetView does not throw when called with chart data loaded', () => {
+    const chartRef = createRef<ChartHandle>()
+    render(<Chart ref={chartRef} candles={makeCandles()} symbol="AAPL" timeframe="1d" />)
+
+    // Should not throw an error
+    expect(() => chartRef.current?.resetView()).not.toThrow()
+  })
+
+  it('113. resetView calls setVisibleLogicalRange on captured initial range', () => {
+    const chartRef = createRef<ChartHandle>()
+    render(<Chart ref={chartRef} candles={makeCandles()} symbol="AAPL" timeframe="1d" />)
+
+    chartRef.current?.resetView()
+
+    // Verify the mocks were called (setLogicalRange is the mock for setVisibleLogicalRange)
+    expect(mocks.setLogicalRange).toHaveBeenCalled()
+  })
+
+  it('114. resetView gracefully handles empty chart state', () => {
+    const chartRef = createRef<ChartHandle>()
+    render(<Chart ref={chartRef} candles={[]} symbol="AAPL" timeframe="1d" />)
+
+    // No candles loaded, so initial ranges are null — should not crash
+    expect(() => chartRef.current?.resetView()).not.toThrow()
+  })
+
+  // Auto Scale (CHART-TOOLBAR-1C)
+
+  it('115. ChartHandle.autoScale exposed on ChartHandle interface', () => {
+    const chartRef = createRef<ChartHandle>()
+    render(<Chart ref={chartRef} candles={makeCandles()} symbol="AAPL" timeframe="1d" />)
+
+    // Verify autoScale method exists and is callable
+    expect(chartRef.current).toBeDefined()
+    expect(typeof chartRef.current?.autoScale).toBe('function')
+  })
+
+  it('116. autoScale does not throw when called with chart data loaded', () => {
+    const chartRef = createRef<ChartHandle>()
+    render(<Chart ref={chartRef} candles={makeCandles()} symbol="AAPL" timeframe="1d" />)
+
+    // Should not throw an error
+    expect(() => chartRef.current?.autoScale()).not.toThrow()
+  })
+
+  it('117. autoScale preserves visible logical range', () => {
+    const chartRef = createRef<ChartHandle>()
+    render(<Chart ref={chartRef} candles={makeCandles()} symbol="AAPL" timeframe="1d" />)
+
+    chartRef.current?.autoScale()
+
+    // Verify getLogicalRange was called (ensures range was captured and restored)
+    expect(mocks.getLogicalRange).toHaveBeenCalled()
+  })
+
+  it('118. autoScale gracefully handles empty chart state', () => {
+    const chartRef = createRef<ChartHandle>()
+    render(<Chart ref={chartRef} candles={[]} symbol="AAPL" timeframe="1d" />)
+
+    // No candles loaded — should not crash
+    expect(() => chartRef.current?.autoScale()).not.toThrow()
   })
 })

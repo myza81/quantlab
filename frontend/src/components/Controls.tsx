@@ -20,8 +20,9 @@ import { AssetResolverInput } from './AssetResolverInput'
 import type { SelectedAsset } from './AssetResolverInput'
 
 interface ControlsProps {
-  onFetch: (params: MarketDataParams) => void
-  loading: boolean
+  onFetch:        (params: MarketDataParams) => void
+  loading:        boolean
+  onAssetSelect?: (asset: SelectedAsset | null) => void
 }
 
 const TIMEFRAMES = ['1d', '1w', '1M', '1h', '30m', '15m', '5m', '1m']
@@ -39,7 +40,7 @@ function oneYearAgoStr(): string {
   return d.toISOString().split('T')[0]
 }
 
-export default function Controls({ onFetch, loading }: ControlsProps) {
+export default function Controls({ onFetch, loading, onAssetSelect }: ControlsProps) {
   const { logout } = useAuth()
 
   const [provider,       setProvider]       = useState('yahoo')
@@ -53,6 +54,11 @@ export default function Controls({ onFetch, loading }: ControlsProps) {
   const [credentialsLoading, setCredentialsLoading] = useState(false)
   const [credentialsError,   setCredentialsError]   = useState<string | null>(null)
   const [credentialId,       setCredentialId]       = useState<string>('')
+
+  // Lift selectedAsset to parent for chart header display
+  useEffect(() => {
+    onAssetSelect?.(selectedAsset)
+  }, [selectedAsset]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load all credentials once; filtering by provider is done in-component
   useEffect(() => {

@@ -52,6 +52,9 @@ import type { StrategyOverlay } from '../types/strategy'
 import type { IndicatorArtifactResponse, IndicatorSeriesPoint } from '../types/chartIndicators'
 import { ChartLegendOverlay } from './ChartLegendOverlay'
 import ChartDataInspector, { type InspectorCandle, type InspectorIndicatorValues } from './ChartDataInspector'
+import type { ChartSettings } from '../types/chartSettings'
+import { getTheme, buildLwChartColorOptions } from '../themes'
+import type { ThemePreset } from '../types/chartTheme'
 
 // ---------------------------------------------------------------------------
 // Props
@@ -77,6 +80,8 @@ interface ChartProps {
   onIndicatorRemove?:    (instanceId: string) => void
   /** Per-instance volume color mode: present with a hex color → single-color mode for that instance */
   volumeColorModes?:     Map<string, string>
+  /** Chart-wide visualization preferences (CHART-SETTINGS-1A) */
+  chartSettings?:          ChartSettings
 }
 
 // ---------------------------------------------------------------------------
@@ -187,27 +192,24 @@ function resyncRange(oscChart: IChartApi, priceChart: IChartApi | null) {
 }
 
 // ---------------------------------------------------------------------------
-// Chart theme
+// Chart theme helpers
 // ---------------------------------------------------------------------------
 
-const _CHART_THEME = {
-  layout: {
-    background: { color: '#0f0f1a' },
-    textColor:  '#d1d4dc',
-  },
-  grid: {
-    vertLines: { color: '#1a1a2e' },
-    horzLines: { color: '#1a1a2e' },
-  },
-  crosshair: { mode: 0 },
-  rightPriceScale: { borderColor: '#2a2d3e' },
-  timeScale: {
-    borderColor:     '#2a2d3e',
-    timeVisible:     true,
-    secondsVisible:  false,
-    rightOffset:     5,
-    barSpacing:      8,
-  },
+/**
+ * Builds full chart creation options from a theme.
+ * Includes behavioral constants (crosshair mode, axis width, time scale settings)
+ * alongside theme colors. Do NOT use for applyOptions — it would reset barSpacing/rightOffset
+ * which track the user's current pan/zoom position.
+ */
+function buildChartCreateOpts(preset: ThemePreset | undefined) {
+  const theme = getTheme(preset)
+  return {
+    layout:          { background: { color: theme.lwChart.background }, textColor: theme.lwChart.text },
+    grid:            { vertLines: { color: theme.lwChart.grid }, horzLines: { color: theme.lwChart.grid } },
+    crosshair:       { mode: 0 },
+    rightPriceScale: { borderColor: theme.lwChart.border, minimumWidth: 80 },
+    timeScale:       { borderColor: theme.lwChart.border, timeVisible: true, secondsVisible: false, rightOffset: 5, barSpacing: 8 },
+  }
 }
 
 type AnySeriesApi = ISeriesApi<'Line'> | ISeriesApi<'Histogram'>
@@ -369,6 +371,12 @@ interface OscPaneProps {
   onCrosshairValues?: (vals: Map<string, Map<string, number | null>>) => void
   onToggle?:         (instanceId: string) => void
   onRemove?:         (instanceId: string) => void
+  /** When false, hides right-axis value markers on all oscillator series */
+  showIndicatorValueLabels?: boolean
+  /** Active theme preset — applied to this pane's LW Charts instance */
+  themePreset?: ThemePreset
+  /** Called after setting initial viewport range (CHART-TOOLBAR-1B) */
+  onInitialRangeCapture?: (range: LogicalRange) => void
 }
 
 const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
@@ -376,13 +384,17 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
     label, artifacts, instanceColors, instanceLabels, instanceVisible,
     candleTimestamps, priceChart, height = DEFAULT_OSC_HEIGHT,
     highlightedId, onCrosshairValues, onToggle, onRemove,
+    showIndicatorValueLabels = true,
+    themePreset,
+    onInitialRangeCapture,
   },
   ref,
 ) {
   const wrapperRef      = useRef<HTMLDivElement>(null)
   const containerRef    = useRef<HTMLDivElement>(null)
   const chartRef        = useRef<IChartApi | null>(null)
-  const seriesMapRef    = useRef<Map<string, AnySeriesApi>>(new Map())
+  const seriesMapRef      = useRef<Map<string, AnySeriesApi>>(new Map())
+  const seriesTitleMapRef = useRef<Map<string, string>>(new Map())
   const timeValueMapRef = useRef<Map<number, number>>(new Map())  // first-series values
   const isSyncingRef    = useRef(false)
   // Full value lookup for all series — instance_id → series_id → ts → value
@@ -396,10 +408,16 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
     get chart() { return chartRef.current },
   }), [])
 
+  // Reactive theme update for this pane's chart
+  useEffect(() => {
+    if (!chartRef.current) return
+    chartRef.current.applyOptions(buildLwChartColorOptions(getTheme(themePreset)))
+  }, [themePreset])
+
   // Create chart on mount
   useEffect(() => {
     if (!containerRef.current) return
-    const chart = createChart(containerRef.current, { ..._CHART_THEME, height })
+    const chart = createChart(containerRef.current, { ...buildChartCreateOpts(themePreset), height })
     chartRef.current = chart
 
     const ro = new ResizeObserver(entries => {
@@ -468,6 +486,19 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
     }
   }, [priceChart]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Apply showIndicatorValueLabels to all existing oscillator series when prop changes.
+  // Both lastValueVisible and title must be set: in LW Charts v5, title renders as a
+  // persistent right-axis text label independent of lastValueVisible.
+  useEffect(() => {
+    for (const [key, s] of seriesMapRef.current.entries()) {
+      const origTitle = seriesTitleMapRef.current.get(key) ?? ''
+      s.applyOptions({
+        lastValueVisible: showIndicatorValueLabels,
+        title: showIndicatorValueLabels ? origTitle : '',
+      })
+    }
+  }, [showIndicatorValueLabels])
+
   // Rebuild series data on artifacts/colors/timestamps change
   useEffect(() => {
     const chart = chartRef.current
@@ -477,6 +508,7 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
       try { chart.removeSeries(s) } catch { /* gone */ }
     }
     seriesMapRef.current.clear()
+    seriesTitleMapRef.current.clear()
     timeValueMapRef.current.clear()
     allValuesRef.current.clear()
 
@@ -494,8 +526,10 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
         if (series.render_type === 'histogram') {
           const data = buildAlignedHistData(series.values, candleTimestamps)
           if (data.every(d => !('value' in d))) continue
+          seriesTitleMapRef.current.set(key, series.label)
           const s = chart.addSeries(HistogramSeries, {
-            priceLineVisible: false, lastValueVisible: true, title: series.label,
+            priceLineVisible: false, lastValueVisible: showIndicatorValueLabels,
+            title: showIndicatorValueLabels ? series.label : '',
           })
           s.setData(data)
           seriesMapRef.current.set(key, s)
@@ -503,9 +537,11 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
           const color = (isSingleSeries && instanceColor) ? instanceColor : series.default_color
           const data  = buildAlignedLineData(series.values, candleTimestamps)
           if (data.every(d => !('value' in d))) continue
+          seriesTitleMapRef.current.set(key, series.label)
           const s = chart.addSeries(LineSeries, {
             color, lineWidth: 1, crosshairMarkerVisible: false,
-            lastValueVisible: true, priceLineVisible: false, title: series.label,
+            lastValueVisible: showIndicatorValueLabels, priceLineVisible: false,
+            title: showIndicatorValueLabels ? series.label : '',
             lineStyle: toLineStyle(series.line_style),
           })
           s.setData(data)
@@ -536,8 +572,11 @@ const OscPane = forwardRef<OscPaneHandle, OscPaneProps>(function OscPane(
       } else {
         chart.timeScale().fitContent()
       }
+      // Capture initial pane viewport for Reset View (CHART-TOOLBAR-1B)
+      const paneRange = chart.timeScale().getVisibleLogicalRange()
+      if (paneRange) onInitialRangeCapture?.(paneRange)
     }
-  }, [artifacts, instanceColors, candleTimestamps, priceChart])
+  }, [artifacts, instanceColors, candleTimestamps, priceChart, onInitialRangeCapture])
 
   const borderColor = isHovered ? '#2a3a6e' : 'transparent'
 
@@ -669,23 +708,58 @@ const oscPaneChartStyle: React.CSSProperties = {
 }
 
 // ---------------------------------------------------------------------------
+// Screenshot helpers
+// ---------------------------------------------------------------------------
+
+/** Imperative handle exposed to parent via forwardRef. */
+export interface ChartHandle {
+  /** Composites all visible chart panes and downloads as PNG. */
+  takeScreenshot: () => void
+  /** Resets all chart panes to their initial viewport. */
+  resetView: () => void
+  /** Refits vertical scales to visible content while preserving horizontal viewport. */
+  autoScale: () => void
+}
+
+function buildScreenshotFilename(symbol: string, timeframe: string): string {
+  const now = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  const date = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}`
+  const time = `${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`
+  const safe = (s: string) => s.replace(/[^a-zA-Z0-9-]/g, '_')
+  return `${safe(symbol)}-${safe(timeframe)}-${date}-${time}.png`
+}
+
+function downloadCanvas(canvas: HTMLCanvasElement, filename: string): void {
+  const url = canvas.toDataURL('image/png')
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+}
+
+// ---------------------------------------------------------------------------
 // Main Chart component
 // ---------------------------------------------------------------------------
 
-export default function Chart({
+const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
   candles, symbol, timeframe, exchange, overlay,
   indicatorArtifacts, instanceColors, instanceLabels, instanceVisible,
   highlightedInstanceId, onClearStrategyResults,
   onHoverInstance, onIndicatorToggle, onIndicatorRemove,
   volumeColorModes,
-}: ChartProps) {
+  chartSettings,
+}: ChartProps, ref: React.Ref<ChartHandle>) {
   const priceContainerRef         = useRef<HTMLDivElement>(null)
   const chartRef                  = useRef<IChartApi | null>(null)
   const candleSeriesRef           = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const markerApiRef              = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const forecastSeriesRef         = useRef<ISeriesApi<'Line'> | null>(null)
   const priceSeriesMapRef         = useRef<Map<string, AnySeriesApi>>(new Map())
-  const artifactPriceSeriesMapRef = useRef<Map<string, AnySeriesApi>>(new Map())
+  const artifactPriceSeriesMapRef  = useRef<Map<string, AnySeriesApi>>(new Map())
+  const artifactSeriesTitleMapRef  = useRef<Map<string, string>>(new Map())
 
   const [priceChartApi, setPriceChartApi] = useState<IChartApi | null>(null)
 
@@ -703,6 +777,21 @@ export default function Chart({
 
   const oscHandlesRef = useRef<Map<string, OscPaneHandle | null>>(new Map())
 
+  // CHART-SETTINGS-1A — chart-wide visualization preferences
+  // Always-fresh ref read by overlay/artifact effects (avoids adding chartSettings as dep)
+  const chartSettingsRef           = useRef<ChartSettings | undefined>(chartSettings)
+  // Stores the last applied signal markers for toggle restore without re-running overlay effect
+  const currentMarkersRef          = useRef<SeriesMarker<Time>[]>([])
+  // Keys of artifact price-overlay series that should respond to showIndicatorValueLabels
+  const labelledArtifactSeriesKeys = useRef<Set<string>>(new Set())
+  // Keys of strategy overlay series that should respond to showStrategyValueLabels
+  const labelledStrategySeriesKeys = useRef<Set<string>>(new Set())
+
+  // Initial viewport ranges (CHART-TOOLBAR-1B) — captured after fitContent()
+  const initialPriceRangeRef       = useRef<LogicalRange | null>(null)
+  const initialOscRangeRef         = useRef<LogicalRange | null>(null)
+  const initialOscPaneRangesRef    = useRef<Map<string, LogicalRange>>(new Map())
+
   // Crosshair values — updated on every price-chart crosshair move
   const [crosshairValues, setCrosshairValues] =
     useState<Map<string, Map<string, number | null>>>(new Map())
@@ -719,6 +808,157 @@ export default function Chart({
     () => normalizeChartData(candles.map(c => ({ time: toUTCTimestamp(c.timestamp) }))).map(d => d.time),
     [candles]
   )
+
+  // Keep chartSettingsRef always current so overlay/artifact effects can read settings
+  // without adding chartSettings to their dependency arrays (which would rebuild all series
+  // on every settings change instead of only applying the targeted applyOptions call).
+  useEffect(() => { chartSettingsRef.current = chartSettings })
+
+  // ── Label effects (CHART-SETTINGS-1A) ─────────────────────────────────────
+  // Each effect fires on mount (applying saved settings) and on toggle change.
+
+  // priceChartApi is included so the effect re-fires after mount when candleSeriesRef is set.
+  // On the initial render the effect fires before chart creation; priceChartApi going from
+  // null → non-null causes a second fire at which point candleSeriesRef.current is ready.
+  useEffect(() => {
+    const show = chartSettings?.labels.showLatestPriceLabel ?? true
+    candleSeriesRef.current?.applyOptions({ lastValueVisible: show, priceLineVisible: show })
+  }, [chartSettings?.labels.showLatestPriceLabel, priceChartApi])
+
+  useEffect(() => {
+    const show = chartSettings?.labels.showIndicatorValueLabels ?? true
+    for (const key of labelledArtifactSeriesKeys.current) {
+      const origTitle = artifactSeriesTitleMapRef.current.get(key) ?? ''
+      artifactPriceSeriesMapRef.current.get(key)?.applyOptions({
+        lastValueVisible: show,
+        title: show ? origTitle : '',
+      })
+    }
+  }, [chartSettings?.labels.showIndicatorValueLabels])
+
+  useEffect(() => {
+    const show = chartSettings?.labels.showStrategyValueLabels ?? true
+    for (const key of labelledStrategySeriesKeys.current) {
+      priceSeriesMapRef.current.get(key)?.applyOptions({ lastValueVisible: show })
+    }
+  }, [chartSettings?.labels.showStrategyValueLabels])
+
+  useEffect(() => {
+    const show = chartSettings?.labels.showSignalMarkers ?? true
+    markerApiRef.current?.setMarkers(show ? currentMarkersRef.current : [])
+  }, [chartSettings?.labels.showSignalMarkers])
+
+  // Reactive theme effect: apply color options to all chart instances when preset changes.
+  // priceChartApi in deps: causes a second fire after mount when charts are ready.
+  useEffect(() => {
+    const colorOpts = buildLwChartColorOptions(getTheme(chartSettings?.themePreset))
+    chartRef.current?.applyOptions(colorOpts)
+    oscChartRef.current?.applyOptions(colorOpts)
+    for (const handle of oscHandlesRef.current.values()) {
+      handle?.chart?.applyOptions(colorOpts)
+    }
+  }, [chartSettings?.themePreset, priceChartApi])
+
+  // Screenshot handle — composites all visible chart panes into a single PNG download.
+  // Reset View handle — restores all chart panes to their initial viewport (CHART-TOOLBAR-1B).
+  useImperativeHandle(ref, () => ({
+    takeScreenshot() {
+      if (!chartRef.current) return
+
+      // Collect individual canvases from each visible chart instance
+      const canvases: HTMLCanvasElement[] = []
+      const priceCanvas = chartRef.current.takeScreenshot()
+      if (priceCanvas) canvases.push(priceCanvas)
+
+      if (showOscillator && oscChartRef.current) {
+        const c = oscChartRef.current.takeScreenshot()
+        if (c) canvases.push(c)
+      }
+
+      for (const handle of oscHandlesRef.current.values()) {
+        const c = handle?.chart?.takeScreenshot()
+        if (c) canvases.push(c)
+      }
+
+      if (canvases.length === 0) return
+
+      // Stitch canvases vertically into a composite
+      const width       = canvases[0].width
+      const totalHeight = canvases.reduce((sum, c) => sum + c.height, 0)
+
+      const composite = document.createElement('canvas')
+      composite.width  = width
+      composite.height = totalHeight
+      const ctx = composite.getContext('2d')
+
+      if (ctx) {
+        let y = 0
+        for (const c of canvases) {
+          ctx.drawImage(c, 0, y)
+          y += c.height
+        }
+        downloadCanvas(composite, buildScreenshotFilename(symbol, timeframe))
+      } else {
+        // Fallback when getContext is unavailable (e.g. test environment):
+        // download the primary chart canvas directly
+        downloadCanvas(priceCanvas, buildScreenshotFilename(symbol, timeframe))
+      }
+    },
+    resetView() {
+      // Restore price chart to initial viewport
+      if (chartRef.current && initialPriceRangeRef.current) {
+        try { chartRef.current.timeScale().setVisibleLogicalRange(initialPriceRangeRef.current) } catch { /* not ready */ }
+      }
+      // Restore strategy oscillator to initial viewport
+      if (oscChartRef.current && initialOscRangeRef.current) {
+        try { oscChartRef.current.timeScale().setVisibleLogicalRange(initialOscRangeRef.current) } catch { /* not ready */ }
+      }
+      // Restore each indicator pane to initial viewport
+      for (const [key, handle] of oscHandlesRef.current.entries()) {
+        const range = initialOscPaneRangesRef.current.get(key)
+        if (handle?.chart && range) {
+          try { handle.chart.timeScale().setVisibleLogicalRange(range) } catch { /* not ready */ }
+        }
+      }
+    },
+    autoScale() {
+      // Preserve current horizontal viewport — capture before refit
+      const priceRange = chartRef.current?.timeScale().getVisibleLogicalRange()
+
+      // Refit price chart vertical scales to visible content
+      if (chartRef.current) {
+        try {
+          chartRef.current.priceScale('right').applyOptions({ autoScale: true })
+          chartRef.current.priceScale('left').applyOptions({ autoScale: true })
+          // If there's a volume scale, refit it too
+          try { chartRef.current.priceScale('volume').applyOptions({ autoScale: true }) } catch { /* volume scale may not exist */ }
+        } catch { /* price scales may not be ready */ }
+      }
+
+      // Refit strategy oscillator vertical scales
+      if (oscChartRef.current) {
+        try {
+          oscChartRef.current.priceScale('right').applyOptions({ autoScale: true })
+          oscChartRef.current.priceScale('left').applyOptions({ autoScale: true })
+        } catch { /* not ready */ }
+      }
+
+      // Refit each indicator oscillator pane vertical scales
+      for (const handle of oscHandlesRef.current.values()) {
+        if (handle?.chart) {
+          try {
+            handle.chart.priceScale('right').applyOptions({ autoScale: true })
+            handle.chart.priceScale('left').applyOptions({ autoScale: true })
+          } catch { /* not ready */ }
+        }
+      }
+
+      // Restore horizontal viewport to original range
+      if (chartRef.current && priceRange) {
+        try { chartRef.current.timeScale().setVisibleLogicalRange(priceRange) } catch { /* not ready */ }
+      }
+    },
+  }), [symbol, timeframe, showOscillator])
 
   // Pre-index candles by UTC timestamp (seconds) for O(1) inspector lookup
   const candleByTs = useMemo(() => {
@@ -791,7 +1031,7 @@ export default function Chart({
   useEffect(() => {
     if (!priceContainerRef.current) return
     const chart = createChart(priceContainerRef.current, {
-      ..._CHART_THEME,
+      ...buildChartCreateOpts(chartSettingsRef.current?.themePreset),
       width:  priceContainerRef.current.clientWidth,
       height: priceContainerRef.current.clientHeight || 400,
     })
@@ -833,7 +1073,7 @@ export default function Chart({
   useEffect(() => {
     if (!oscContainerRef.current) return
     const oscChart = createChart(oscContainerRef.current, {
-      ..._CHART_THEME,
+      ...buildChartCreateOpts(chartSettingsRef.current?.themePreset),
       width:  oscContainerRef.current.clientWidth,
       height: oscContainerRef.current.clientHeight || 160,
     })
@@ -968,6 +1208,9 @@ export default function Chart({
     )
     series.setData(data)
     chartRef.current?.timeScale().fitContent()
+    // Capture initial price chart viewport for Reset View (CHART-TOOLBAR-1B)
+    const range = chartRef.current?.timeScale().getVisibleLogicalRange()
+    if (range) initialPriceRangeRef.current = range
   }, [candles])
 
   // ── Strategy oscillator pane visibility ───────────────────────────────────
@@ -986,6 +1229,8 @@ export default function Chart({
 
     for (const s of priceSeriesMapRef.current.values()) priceChart.removeSeries(s)
     priceSeriesMapRef.current.clear()
+    labelledStrategySeriesKeys.current.clear()
+    currentMarkersRef.current = []
     if (oscChart) {
       clearOscillatorReferenceGuides(oscGuideMapRef.current)
       for (const s of oscSeriesMapRef.current.values()) oscChart.removeSeries(s)
@@ -1054,12 +1299,14 @@ export default function Chart({
           ind.points.map(p => ({ time: toUTCTimestamp(p.timestamp), value: p.value }))
         )
         if (pts.length === 0) return
+        const showStratLabels = chartSettingsRef.current?.labels.showStrategyValueLabels ?? true
         const s = priceChart.addSeries(LineSeries, {
           color, lineWidth: 1, crosshairMarkerVisible: false,
-          lastValueVisible: true, priceLineVisible: false, title: ind.name,
+          lastValueVisible: showStratLabels, priceLineVisible: false, title: ind.name,
         })
         s.setData(pts as LineData[])
         priceSeriesMapRef.current.set(ind.name, s)
+        labelledStrategySeriesKeys.current.add(ind.name)
       }
     })
 
@@ -1111,19 +1358,25 @@ export default function Chart({
       } else {
         oscChart.timeScale().fitContent()
       }
+      // Capture initial oscillator viewport (CHART-TOOLBAR-1B)
+      const oscRange = oscChart.timeScale().getVisibleLogicalRange()
+      if (oscRange) initialOscRangeRef.current = oscRange
     } else {
       oscTimeValueMapRef.current.clear()
     }
 
     if (overlay.signals.length > 0) {
-      markerApi.setMarkers(overlay.signals.map(sig => ({
+      const markers = overlay.signals.map(sig => ({
         time:     toUTCTimestamp(sig.timestamp),
         position: sig.signal_type === 'long' ? 'belowBar' : 'aboveBar',
         color:    sig.signal_type === 'long' ? '#26a69a' : '#ef5350',
         shape:    sig.signal_type === 'long' ? 'arrowUp' : 'arrowDown',
         text:     sig.signal_type.toUpperCase(),
         size:     1,
-      } as SeriesMarker<Time>)))
+      } as SeriesMarker<Time>))
+      currentMarkersRef.current = markers
+      const showSig = chartSettingsRef.current?.labels.showSignalMarkers ?? true
+      markerApi.setMarkers(showSig ? markers : [])
     }
 
     if (overlay.forecast && candles.length > 0) {
@@ -1143,6 +1396,8 @@ export default function Chart({
       try { priceChart.removeSeries(s) } catch { /* ignore */ }
     }
     artifactPriceSeriesMapRef.current.clear()
+    artifactSeriesTitleMapRef.current.clear()
+    labelledArtifactSeriesKeys.current.clear()
     if (!indicatorArtifacts || indicatorArtifacts.length === 0) return
 
     // Lazy color map: built once on first histogram encountered per render.
@@ -1231,13 +1486,17 @@ export default function Chart({
             artifactPriceSeriesMapRef.current.set(key, s)
           } else {
             // Regular line overlay (SMA, EMA, Bollinger, etc.)
+            const showLabels = chartSettingsRef.current?.labels.showIndicatorValueLabels ?? true
+            artifactSeriesTitleMapRef.current.set(key, series.label)
             const s = priceChart.addSeries(LineSeries, {
               color, lineWidth: 1, crosshairMarkerVisible: false,
-              lastValueVisible: true, priceLineVisible: false, title: series.label,
+              lastValueVisible: showLabels, priceLineVisible: false,
+              title: showLabels ? series.label : '',
               lineStyle: toLineStyle(series.line_style),
             })
             s.setData(pts as LineData[])
             artifactPriceSeriesMapRef.current.set(key, s)
+            labelledArtifactSeriesKeys.current.add(key)
           }
         }
       }
@@ -1258,24 +1517,30 @@ export default function Chart({
   const oscIndCount       = (overlay?.indicators ?? []).filter(i => i.pane === 'oscillator').length
   const hasStrategyResults = signalCount > 0 || priceIndCount > 0 || oscIndCount > 0 || !!overlay?.forecast
 
+  const activeTheme = getTheme(chartSettings?.themePreset)
+  const atc         = activeTheme.colors
+
   return (
-    <div style={styles.wrapper}>
-      {/* ── Data Inspector (replaces old header row) ─────────────────── */}
-      <ChartDataInspector
-        symbol={symbol}
-        timeframe={timeframe}
-        exchange={exchange}
-        candle={inspectorCandle ?? latestInspectorCandle}
-        indicatorArtifacts={indicatorArtifacts}
-        instanceLabels={instanceLabels}
-        instanceColors={instanceColors}
-        instanceVisible={instanceVisible}
-        indicatorValues={inspectorCandle !== null ? inspectorIndVals : undefined}
-      />
+    <div style={{ ...styles.wrapper, background: activeTheme.lwChart.background }}>
+      {/* ── Chart toolbar: OHLCV inspector (left) + action buttons (right) ── */}
+      <div style={styles.inspectorRow}>
+        <ChartDataInspector
+          symbol={symbol}
+          timeframe={timeframe}
+          exchange={exchange}
+          candle={inspectorCandle ?? latestInspectorCandle}
+          theme={activeTheme}
+          indicatorArtifacts={indicatorArtifacts}
+          instanceLabels={instanceLabels}
+          instanceColors={instanceColors}
+          instanceVisible={instanceVisible}
+          indicatorValues={inspectorCandle !== null ? inspectorIndVals : undefined}
+        />
+      </div>
 
       {/* ── Strategy results toolbar (hidden when no results) ────────── */}
       {hasStrategyResults && (
-        <div style={styles.toolbar}>
+        <div style={{ ...styles.toolbar, borderBottom: `1px solid ${atc.toolbarBorder}` }}>
           {priceIndCount > 0 && <span style={styles.badge}>{priceIndCount} overlay{priceIndCount !== 1 ? 's' : ''}</span>}
           {oscIndCount   > 0 && <span style={{ ...styles.badge, color: '#7e57c2' }}>{oscIndCount} oscillator{oscIndCount !== 1 ? 's' : ''}</span>}
           {signalCount   > 0 && <span style={styles.badge}>{signalCount} signal{signalCount !== 1 ? 's' : ''}</span>}
@@ -1311,7 +1576,7 @@ export default function Chart({
       </div>
 
       {/* Strategy oscillator pane */}
-      <div style={{ ...styles.oscWrapper, height: showOscillator ? 160 : 0, overflow: 'hidden' }}>
+      <div style={{ ...styles.oscWrapper, height: showOscillator ? 160 : 0, overflow: 'hidden', borderTop: `1px solid ${atc.toolbarBorder}` }}>
         {showOscillator && <div style={styles.oscLabel}>oscillator</div>}
         <div ref={oscContainerRef} style={styles.oscChart} />
       </div>
@@ -1319,8 +1584,12 @@ export default function Chart({
       {/* Indicator artifact oscillator panes */}
       {oscArtifactGroups.map(group => {
         const committedH = oscPaneHeights[group.key] ?? DEFAULT_OSC_HEIGHT
+        // DragSplitter has padding 4px top + 4px bottom + 1px line = ~9px total
+        // Subtract this from the pane height so total = committedH
+        const SPLITTER_HEIGHT = 9
+        const oscPaneHeight = Math.max(50, committedH - SPLITTER_HEIGHT)
         return (
-          <div key={group.key}>
+          <div key={group.key} style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <DragSplitter
               getCommittedHeight={() => oscPaneHeights[group.key] ?? DEFAULT_OSC_HEIGHT}
               onCommitHeight={h => commitHeight(group.key, h)}
@@ -1337,18 +1606,23 @@ export default function Chart({
               instanceVisible={instanceVisible}
               candleTimestamps={candleTimestamps}
               priceChart={priceChartApi}
-              height={committedH}
+              height={oscPaneHeight}
               highlightedId={highlightedInstanceId}
               onCrosshairValues={_vals => { /* values consumed inside OscPane header */ }}
               onToggle={onIndicatorToggle}
               onRemove={onIndicatorRemove}
+              showIndicatorValueLabels={chartSettings?.labels.showIndicatorValueLabels}
+              themePreset={chartSettings?.themePreset}
+              onInitialRangeCapture={(range) => initialOscPaneRangesRef.current.set(group.key, range)}
             />
           </div>
         )
       })}
     </div>
   )
-}
+})
+
+export default Chart
 
 function clearOscillatorReferenceGuides(guides: Map<string, ReferenceGuideBinding>) {
   for (const binding of guides.values()) {
@@ -1359,6 +1633,7 @@ function clearOscillatorReferenceGuides(guides: Map<string, ReferenceGuideBindin
 
 const styles: Record<string, React.CSSProperties> = {
   wrapper: { flex: 1, display: 'flex', flexDirection: 'column', background: '#0f0f1a', minHeight: 0, overflowY: 'auto' },
+  inspectorRow: { display: 'flex', alignItems: 'stretch', flexShrink: 0 },
   toolbar: {
     padding: '4px 10px', fontSize: '11px', color: '#8892a4', fontFamily: 'monospace',
     borderBottom: '1px solid #1a1a2e', display: 'flex',
