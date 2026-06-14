@@ -28,6 +28,8 @@ from backend.api.schemas.chart import (
     ChartIndicatorsListResponse,
     IndicatorArtifactRequest,
     IndicatorArtifactResponse,
+    MarketStructureRequest,
+    MarketStructureResponse,
 )
 from backend.api.services.chart_indicator_service import (
     IndicatorArtifactError,
@@ -35,6 +37,9 @@ from backend.api.services.chart_indicator_service import (
     ToolNotChartVisibleError,
     compute_indicator_artifact,
     list_chart_indicators,
+)
+from backend.api.services.market_structure_service import (
+    compute_market_structure_from_candles,
 )
 from backend.auth.entitlement import require_active_subscription
 from backend.auth.models import User
@@ -104,3 +109,27 @@ def post_indicator_artifact(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except IndicatorArtifactError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/market-structure", response_model=MarketStructureResponse)
+def post_market_structure(
+    request: MarketStructureRequest,
+    current_user: User = Depends(require_active_subscription),
+) -> MarketStructureResponse:
+    """
+    Compute minor and main market structure from a provided OHLCV candle list.
+
+    The frontend sends its already-loaded candles directly so no provider
+    re-fetch is needed.  Candles must be in chronological order; bar_index
+    in the response maps to the input index (0 = first candle).
+
+    Returns StructureResult with minor/main points, legs, and debug events
+    for visual verification on the chart.  No trading signals are generated.
+    """
+    if len(request.candles) < 2:
+        return MarketStructureResponse(
+            minor_points=[], minor_legs=[],
+            main_points=[], main_legs=[],
+            debug_events=[],
+        )
+    return compute_market_structure_from_candles(request)

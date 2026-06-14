@@ -26,6 +26,8 @@ export interface ChartSettingsStructure {
   showMainStructure: boolean
   showStructureLabels: boolean
   showDebugMetadata: boolean
+  showBos: boolean
+  showChoch: boolean
 }
 
 import type { ThemePreset } from './chartTheme'
@@ -60,10 +62,12 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
     rightAxisMinimumWidth: 80,
   },
   structure: {
-    showMinorStructure: false,
-    showMainStructure:  false,
+    showMinorStructure:  false,
+    showMainStructure:   false,
     showStructureLabels: false,
-    showDebugMetadata:  false,
+    showDebugMetadata:   false,
+    showBos:             false,
+    showChoch:           false,
   },
   themePreset: 'quantlab-dark',
 }

@@ -43,12 +43,63 @@ export interface StructureDebugEvent {
   affectedLevel: string
 }
 
+// ---------------------------------------------------------------------------
+// Break of Structure event
+// ---------------------------------------------------------------------------
+
+export type BosStatus    = 'valid' | 'pending' | 'invalid'
+export type BosDirection = 'bullish' | 'bearish'
+
+export interface BosEvent {
+  status:                      BosStatus
+  direction:                   BosDirection
+  structureScope:              StructureLevel
+  breakLevel:                  number
+  protectedLevel:              number
+  breakCandleIndex:            number
+  breakCandleTimestamp:        string
+  confirmationLevel?:          number
+  confirmationCandleIndex?:    number
+  confirmationCandleTimestamp?: string
+  invalidationCandleIndex?:    number
+  invalidationCandleTimestamp?: string
+  eventType:                   'bos'
+  eventEffect:                 'continuation'
+}
+
+// ---------------------------------------------------------------------------
+// Change of Character event
+// ---------------------------------------------------------------------------
+
+export type ChochDirection = 'bullish' | 'bearish'
+
+export interface ChochEvent {
+  direction:                  ChochDirection
+  structureScope:             StructureLevel
+  protectedLevel:             number
+  breakCandleIndex:           number
+  breakCandleTimestamp:       string
+  structureReferenceIndex:    number
+  structureReferenceTimestamp: string
+  referenceStructureType:     'HL' | 'LH'
+  violatedTrend:              'uptrend' | 'downtrend'
+  eventType:                  'choch'
+  status:                     'valid'
+  eventEffect:                'transition'
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate result returned by the market-structure API call
+// ---------------------------------------------------------------------------
+
 export interface StructureResult {
-  minorPoints: StructurePoint[]
-  minorLegs: StructureLeg[]
-  mainPoints: StructurePoint[]
-  mainLegs: StructureLeg[]
-  debugEvents: StructureDebugEvent[]
+  minorPoints:  StructurePoint[]
+  minorLegs:    StructureLeg[]
+  mainPoints:   StructurePoint[]
+  mainLegs:     StructureLeg[]
+  debugEvents:  StructureDebugEvent[]
+  bosEvents:    BosEvent[]
+  chochEvents:  ChochEvent[]
 }
 
 export interface StructureDisplay {

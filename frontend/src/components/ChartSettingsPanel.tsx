@@ -112,6 +112,20 @@ export default function ChartSettingsPanel({ settings, onChange, onClose }: Char
           onChange={v => patchStructure('showDebugMetadata', v)}
           labelColor={tc.panelText}
         />
+        <ToggleRow
+          label="BoS Events"
+          testId="settings-toggle-bos"
+          checked={settings.structure.showBos}
+          onChange={v => patchStructure('showBos', v)}
+          labelColor={tc.panelText}
+        />
+        <ToggleRow
+          label="CHoCH Events"
+          testId="settings-toggle-choch"
+          checked={settings.structure.showChoch}
+          onChange={v => patchStructure('showChoch', v)}
+          labelColor={tc.panelText}
+        />
       </div>
 
       {/* ── Theme ── */}

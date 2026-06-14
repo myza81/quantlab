@@ -199,19 +199,37 @@ class MarketStructureEngine:
         if len(candles) < 2:
             return result
 
-        # Phase 1: Compute minor structure
-        minor_points, minor_legs, debug_events = self._compute_minor_structure(candles)
-        result.minor_points = minor_points
-        result.minor_legs = minor_legs
+        # Phase 1: Compute minor structure (raw turning points)
+        minor_points, _, debug_events = self._compute_minor_structure(candles)
         result.debug_events = debug_events
 
-        # Phase 2: Compute main structure
+        # Phase 1.5: Refine minor pivot coordinates to container extremes.
+        # Scans all candles between consecutive same-direction turning points to
+        # find the true lowest low (for L between two Hs where second H > first)
+        # or the true highest high (for H between two Ls where second L < first).
         if minor_points:
-            main_points, main_legs = self._compute_main_structure(
-                minor_points, candles
-            )
+            self._refine_minor_pivots(minor_points, candles)
+
+        # Build minor legs from the (potentially refined) point coordinates.
+        minor_legs = [
+            self._create_structure_leg(StructureLevel.MINOR, minor_points[j], minor_points[j + 1])
+            for j in range(len(minor_points) - 1)
+        ]
+        result.minor_points = minor_points
+        result.minor_legs = minor_legs
+
+        # Phase 2: Compute main structure from refined minor points.
+        # Minor points still carry raw H/L at this stage — _compute_main_structure
+        # relies on plain H/L for its container candidate queries.
+        if minor_points:
+            main_points, main_legs = self._compute_main_structure(minor_points)
             result.main_points = main_points
             result.main_legs = main_legs
+
+        # Phase 2.5: Relabel minor_points with comparative labels (MS-7A).
+        # Must run AFTER Phase 2 so the main engine still receives raw H/L input.
+        if minor_points:
+            self._label_structure_points(minor_points)
 
         return result
 
@@ -236,6 +254,8 @@ class MarketStructureEngine:
         last_high: Optional[float] = None
         last_low: Optional[float] = None
         last_close: Optional[float] = None
+        last_high_candle: Optional[OHLCVCandle] = None
+        last_low_candle: Optional[OHLCVCandle] = None
 
         for i in range(1, len(candles)):
             prev = candles[i - 1]
@@ -266,6 +286,8 @@ class MarketStructureEngine:
                     last_high = curr.high
                     last_low = curr.low
                     last_close = curr.close
+                    last_high_candle = curr
+                    last_low_candle = curr
                     debug_events.append(
                         StructureDebugEvent(
                             bar_index=i,
@@ -282,6 +304,8 @@ class MarketStructureEngine:
                     last_high = curr.high
                     last_low = curr.low
                     last_close = curr.close
+                    last_high_candle = curr
+                    last_low_candle = curr
                     debug_events.append(
                         StructureDebugEvent(
                             bar_index=i,
@@ -298,6 +322,8 @@ class MarketStructureEngine:
                     last_high = curr.high
                     last_low = curr.low
                     last_close = curr.close
+                    last_high_candle = curr
+                    last_low_candle = curr
                     debug_events.append(
                         StructureDebugEvent(
                             bar_index=i,
@@ -311,9 +337,10 @@ class MarketStructureEngine:
             else:
                 # Direction established: handle continuations and reversals
                 if direction == Direction.UP:
-                    if is_higher_high:
+                    if rel == CandleRelationship.HIGHER_HIGH:
                         # Continue UP
                         last_high = curr.high
+                        last_high_candle = curr
                         last_low = curr.low
                         last_close = curr.close
                         debug_events.append(
@@ -328,18 +355,21 @@ class MarketStructureEngine:
                                 affected_level="minor",
                             )
                         )
-                    elif is_lower_low:
+                    elif rel == CandleRelationship.LOWER_LOW:
                         # Reverse to DOWN
                         new_direction = Direction.DOWN
-                        # Record the high point before reversal
+                        # Record the high point before reversal — use the candle that
+                        # established the true highest high of the completed UP leg.
                         point = self._create_structure_point(
-                            prev, StructureLevel.MINOR, PointKind.H, "price"
+                            last_high_candle or prev, StructureLevel.MINOR, PointKind.H, "price"
                         )
                         points.append(point)
                         direction = new_direction
                         last_high = curr.high
                         last_low = curr.low
                         last_close = curr.close
+                        last_high_candle = curr
+                        last_low_candle = curr
                         debug_events.append(
                             StructureDebugEvent(
                                 bar_index=i,
@@ -372,16 +402,19 @@ class MarketStructureEngine:
                                 )
                             )
                         else:
-                            # Reverse to DOWN
+                            # Reverse to DOWN — use the candle that established
+                            # the true highest high of the completed UP leg.
                             new_direction = Direction.DOWN
                             point = self._create_structure_point(
-                                prev, StructureLevel.MINOR, PointKind.H, "price"
+                                last_high_candle or prev, StructureLevel.MINOR, PointKind.H, "price"
                             )
                             points.append(point)
                             direction = new_direction
                             last_high = curr.high
                             last_low = curr.low
                             last_close = curr.close
+                            last_high_candle = curr
+                            last_low_candle = curr
                             debug_events.append(
                                 StructureDebugEvent(
                                     bar_index=i,
@@ -397,6 +430,8 @@ class MarketStructureEngine:
                             )
                     else:
                         # Outside bar: continue UP
+                        if curr.high > (last_high or 0):
+                            last_high_candle = curr
                         last_high = max(last_high or curr.high, curr.high)
                         last_close = curr.close
                         debug_events.append(
@@ -413,9 +448,10 @@ class MarketStructureEngine:
                         )
 
                 else:  # direction == Direction.DOWN
-                    if is_lower_low:
+                    if rel == CandleRelationship.LOWER_LOW:
                         # Continue DOWN
                         last_low = curr.low
+                        last_low_candle = curr
                         last_high = curr.high
                         last_close = curr.close
                         debug_events.append(
@@ -430,17 +466,20 @@ class MarketStructureEngine:
                                 affected_level="minor",
                             )
                         )
-                    elif is_higher_high:
-                        # Reverse to UP
+                    elif rel == CandleRelationship.HIGHER_HIGH:
+                        # Reverse to UP — use the candle that established the true
+                        # lowest low of the completed DOWN leg.
                         new_direction = Direction.UP
                         point = self._create_structure_point(
-                            prev, StructureLevel.MINOR, PointKind.L, "price"
+                            last_low_candle or prev, StructureLevel.MINOR, PointKind.L, "price"
                         )
                         points.append(point)
                         direction = new_direction
                         last_high = curr.high
                         last_low = curr.low
                         last_close = curr.close
+                        last_high_candle = curr
+                        last_low_candle = curr
                         debug_events.append(
                             StructureDebugEvent(
                                 bar_index=i,
@@ -473,16 +512,19 @@ class MarketStructureEngine:
                                 )
                             )
                         else:
-                            # Reverse to UP
+                            # Reverse to UP — use the candle that established the
+                            # true lowest low of the completed DOWN leg.
                             new_direction = Direction.UP
                             point = self._create_structure_point(
-                                prev, StructureLevel.MINOR, PointKind.L, "price"
+                                last_low_candle or prev, StructureLevel.MINOR, PointKind.L, "price"
                             )
                             points.append(point)
                             direction = new_direction
                             last_high = curr.high
                             last_low = curr.low
                             last_close = curr.close
+                            last_high_candle = curr
+                            last_low_candle = curr
                             debug_events.append(
                                 StructureDebugEvent(
                                     bar_index=i,
@@ -498,6 +540,8 @@ class MarketStructureEngine:
                             )
                     else:
                         # Outside bar: continue DOWN
+                        if curr.low < (last_low or float('inf')):
+                            last_low_candle = curr
                         last_low = min(last_low or curr.low, curr.low)
                         last_close = curr.close
                         debug_events.append(
@@ -523,129 +567,318 @@ class MarketStructureEngine:
 
         return points, legs, debug_events
 
+    def _refine_minor_pivots(
+        self,
+        minor_points: list[StructurePoint],
+        candles: list[OHLCVCandle],
+    ) -> None:
+        """
+        Post-processing pass: refine minor L/H coordinates to container extremes.
+
+        For H₁ → L₁ → H₂ where H₂.price > H₁.price (minor HH context):
+          Scan candles in (H₁.bar_index, H₂.bar_index) exclusive.
+          If the container's lowest-low candle has a lower low than L₁.price,
+          move L₁ to that candle (bar_index, timestamp, low).
+
+        For L₁ → H₁ → L₂ where L₂.price < L₁.price (minor LL context):
+          Scan candles in (L₁.bar_index, L₂.bar_index) exclusive.
+          If the container's highest-high candle has a higher high than H₁.price,
+          move H₁ to that candle (bar_index, timestamp, high).
+
+        Tie-breaking: earliest bar_index for equal lows and equal highs.
+        Mutates minor_points in place. Does not change point kinds.
+        """
+        for i in range(1, len(minor_points) - 1):
+            prev_p = minor_points[i - 1]
+            curr_p = minor_points[i]
+            next_p = minor_points[i + 1]
+
+            if (
+                curr_p.kind == PointKind.L
+                and prev_p.kind == PointKind.H
+                and next_p.kind == PointKind.H
+                and next_p.price > prev_p.price
+            ):
+                # H₁ → L₁ → H₂ where H₂ > H₁: minor HH context — refine L₁
+                container = [
+                    c for c in candles
+                    if prev_p.bar_index < c.bar_index < next_p.bar_index
+                ]
+                if container:
+                    hl_candle = min(container, key=lambda c: (c.low, c.bar_index))
+                    if hl_candle.low < curr_p.price:
+                        curr_p.bar_index = hl_candle.bar_index
+                        curr_p.timestamp = hl_candle.timestamp
+                        curr_p.price = hl_candle.low
+
+            elif (
+                curr_p.kind == PointKind.H
+                and prev_p.kind == PointKind.L
+                and next_p.kind == PointKind.L
+                and next_p.price < prev_p.price
+            ):
+                # L₁ → H₁ → L₂ where L₂ < L₁: minor LL context — refine H₁
+                container = [
+                    c for c in candles
+                    if prev_p.bar_index < c.bar_index < next_p.bar_index
+                ]
+                if container:
+                    lh_candle = min(container, key=lambda c: (-c.high, c.bar_index))
+                    if lh_candle.high > curr_p.price:
+                        curr_p.bar_index = lh_candle.bar_index
+                        curr_p.timestamp = lh_candle.timestamp
+                        curr_p.price = lh_candle.high
+
     def _compute_main_structure(
-        self, minor_points: list[StructurePoint], candles: list[OHLCVCandle]
+        self, minor_points: list[StructurePoint]
     ) -> tuple[list[StructurePoint], list[StructureLeg]]:
         """
-        Compute main structure from minor structure.
+        Compute main structure using a three-state construction machine (MS-7C).
 
-        Main structure is confirmed when minor structure breaks an existing range.
-        - If minor breaks above main high, previous lowest minor low becomes Main HL
-        - If minor breaks below main low, previous highest minor high becomes Main LH
+        States
+        ------
+        ESTABLISHING : bootstrap phase — no confirmed sequence direction yet.
+            At-or-above active H → BULLISH (HL + HH emitted).
+            At-or-below active L → BEARISH (LH + LL emitted).
 
-        Returns:
-            (main_points, main_legs)
+        BULLISH : confirmed uptrend (L → H → HL → HH → …).
+            At-or-above main_high → HH continuation (HL + HH emitted).
+            Strictly-below main_low → reversal (plain L emitted; prior HH is
+            immutable). Equal to main_low is not a reversal — not emitted.
+
+        BEARISH : confirmed downtrend (H → L → LH → LL → …).
+            At-or-below main_low → LL continuation (LH + LL emitted).
+            At-or-above main_high → reversal (plain H emitted; prior LL is
+            immutable). Equal triggers reversal (MS-7C: >= LH ceiling → H).
+
+        Threshold mapping (MS-7C):
+            HH / BULL confirmation : price >= main_high  (was strict >)
+            LL / BEAR confirmation : price <= main_low   (was strict <)
+            BULL reversal          : price <  main_low   (stays strict)
+            BEAR reversal          : price >= main_high  (was strict >)
+
+        Reversal protection (MS-7C):
+            Plain L and H emitted via reversal branches are tracked in
+            reversal_bars. _apply_hl / _apply_lh never upgrade a reversal
+            point to HL / LH even if a subsequent equal-value confirmation
+            finds it as a retroactive candidate.
+
+        All points derive exclusively from minor_points — no raw candle access.
         """
-        points: list[StructurePoint] = []
-        main_low: Optional[float] = None
-        main_high: Optional[float] = None
+        _EST  = "establishing"
+        _BULL = "bullish"
+        _BEAR = "bearish"
 
-        for i, minor_point in enumerate(minor_points):
+        points:       list[StructurePoint] = []
+        main_low:     Optional[float] = None
+        main_high:    Optional[float] = None
+        sequence:     str = _EST
+        reversal_bars: set[int] = set()  # bar indices of emitted reversal L/H (MS-7C)
+
+        _HIGH_KINDS = (PointKind.H, PointKind.HH, PointKind.LH)
+        _LOW_KINDS  = (PointKind.L, PointKind.LL, PointKind.HL)
+
+        def _make(kind: PointKind, src: StructurePoint) -> StructurePoint:
+            pt = StructurePoint(
+                id=f"main_{self._point_counter}",
+                level=StructureLevel.MAIN,
+                kind=kind,
+                timestamp=src.timestamp,
+                bar_index=src.bar_index,
+                price=src.price,
+                source="minor",
+                confirmed=True,
+            )
+            self._point_counter += 1
+            return pt
+
+        def _hl_candidate(after_bar: int, before_bar: int) -> Optional[StructurePoint]:
+            """Lowest minor L strictly inside (after_bar, before_bar)."""
+            cands = [
+                mp for mp in minor_points
+                if mp.kind == PointKind.L
+                and after_bar < mp.bar_index < before_bar
+            ]
+            return min(cands, key=lambda p: (p.price, p.bar_index)) if cands else None
+
+        def _lh_candidate(after_bar: int, before_bar: int) -> Optional[StructurePoint]:
+            """Highest minor H strictly inside (after_bar, before_bar)."""
+            cands = [
+                mp for mp in minor_points
+                if mp.kind == PointKind.H
+                and after_bar < mp.bar_index < before_bar
+            ]
+            return min(cands, key=lambda p: (-p.price, p.bar_index)) if cands else None
+
+        def _apply_hl(hl: Optional[StructurePoint]) -> None:
+            if hl is None:
+                return
+            existing = next(
+                (p for p in points if p.bar_index == hl.bar_index and p.kind in _LOW_KINDS),
+                None,
+            )
+            if existing is not None:
+                if existing.bar_index not in reversal_bars:  # MS-7C: never upgrade a reversal L
+                    existing.kind = PointKind.HL
+            else:
+                points.append(_make(PointKind.HL, hl))
+
+        def _apply_lh(lh: Optional[StructurePoint]) -> None:
+            if lh is None:
+                return
+            existing = next(
+                (p for p in points if p.bar_index == lh.bar_index and p.kind in _HIGH_KINDS),
+                None,
+            )
+            if existing is not None:
+                if existing.bar_index not in reversal_bars:  # MS-7C: never upgrade a reversal H
+                    existing.kind = PointKind.LH
+            else:
+                points.append(_make(PointKind.LH, lh))
+
+        for mp in minor_points:
+            # ── Bootstrap: first minor point ─────────────────────────────────
             if main_low is None and main_high is None:
-                # Initialize: first minor point sets the first main range
-                if minor_point.kind == PointKind.L:
-                    main_low = minor_point.price
+                if mp.kind == PointKind.L:
+                    main_low = mp.price
+                    points.append(_make(PointKind.L, mp))
                 else:
-                    main_high = minor_point.price
-                # Create a main point from this minor point
-                main_point = StructurePoint(
-                    id=f"main_{self._point_counter}",
-                    level=StructureLevel.MAIN,
-                    kind=PointKind.L if minor_point.kind == PointKind.L else PointKind.H,
-                    timestamp=minor_point.timestamp,
-                    bar_index=minor_point.bar_index,
-                    price=minor_point.price,
-                    source="minor",
-                    confirmed=True,
-                )
-                self._point_counter += 1
-                points.append(main_point)
+                    main_high = mp.price
+                    points.append(_make(PointKind.H, mp))
                 continue
 
-            # Check if minor point breaks existing main range
-            if minor_point.price > (main_high or 0):
-                # Broke above main high
-                # Find the lowest minor low before this break
-                lowest_before = min(
-                    (p.price for j, p in enumerate(minor_points) if j < i and p.kind == PointKind.L),
-                    default=None,
-                )
-                if lowest_before is not None and lowest_before not in [p.price for p in points]:
-                    # Add the new HL point
-                    hl_point = StructurePoint(
-                        id=f"main_{self._point_counter}",
-                        level=StructureLevel.MAIN,
-                        kind=PointKind.HL,
-                        timestamp=minor_points[next(j for j, p in enumerate(minor_points) if p.price == lowest_before and p.kind == PointKind.L)].timestamp,
-                        bar_index=minor_points[next(j for j, p in enumerate(minor_points) if p.price == lowest_before and p.kind == PointKind.L)].bar_index,
-                        price=lowest_before,
-                        source="minor",
-                        confirmed=True,
-                    )
-                    self._point_counter += 1
-                    points.append(hl_point)
+            # ── Bootstrap: waiting for the opposite side ──────────────────────
+            if main_high is None:
+                if mp.kind == PointKind.H:
+                    main_high = mp.price
+                    points.append(_make(PointKind.H, mp))
+                continue
 
-                # Add the new main high (HH)
-                hh_point = StructurePoint(
-                    id=f"main_{self._point_counter}",
-                    level=StructureLevel.MAIN,
-                    kind=PointKind.HH,
-                    timestamp=minor_point.timestamp,
-                    bar_index=minor_point.bar_index,
-                    price=minor_point.price,
-                    source="minor",
-                    confirmed=True,
-                )
-                self._point_counter += 1
-                points.append(hh_point)
-                main_high = minor_point.price
+            if main_low is None:
+                if mp.kind == PointKind.L:
+                    main_low = mp.price
+                    points.append(_make(PointKind.L, mp))
+                continue
 
-            elif minor_point.price < (main_low or float("inf")):
-                # Broke below main low
-                # Find the highest minor high before this break
-                highest_before = max(
-                    (p.price for j, p in enumerate(minor_points) if j < i and p.kind == PointKind.H),
-                    default=None,
-                )
-                if highest_before is not None and highest_before not in [p.price for p in points]:
-                    # Add the new LH point
-                    lh_point = StructurePoint(
-                        id=f"main_{self._point_counter}",
-                        level=StructureLevel.MAIN,
-                        kind=PointKind.LH,
-                        timestamp=minor_points[next(j for j, p in enumerate(minor_points) if p.price == highest_before and p.kind == PointKind.H)].timestamp,
-                        bar_index=minor_points[next(j for j, p in enumerate(minor_points) if p.price == highest_before and p.kind == PointKind.H)].bar_index,
-                        price=highest_before,
-                        source="minor",
-                        confirmed=True,
-                    )
-                    self._point_counter += 1
-                    points.append(lh_point)
+            # ── Confirmation phase (MS-7C thresholds) ────────────────────────
+            # Separate flags so each branch gets the correct equality semantics.
+            is_at_or_above  = mp.price >= main_high  # confirmation + BEAR reversal
+            is_at_or_below  = mp.price <= main_low   # confirmation
+            is_strictly_below = mp.price < main_low  # BULL reversal (stays strict)
 
-                # Add the new main low (LL)
-                ll_point = StructurePoint(
-                    id=f"main_{self._point_counter}",
-                    level=StructureLevel.MAIN,
-                    kind=PointKind.LL,
-                    timestamp=minor_point.timestamp,
-                    bar_index=minor_point.bar_index,
-                    price=minor_point.price,
-                    source="minor",
-                    confirmed=True,
+            if is_at_or_above and sequence != _BEAR:
+                # At-or-above active ceiling — HH + HL.
+                # Fires in ESTABLISHING (→ BULLISH) and BULLISH continuation.
+                # Equal high (price == main_high) is eligible for HH (MS-7C).
+                last_h = next((p for p in reversed(points) if p.kind in _HIGH_KINDS), None)
+                hl = _hl_candidate(
+                    after_bar=last_h.bar_index if last_h else -1,
+                    before_bar=mp.bar_index,
                 )
-                self._point_counter += 1
-                points.append(ll_point)
-                main_low = minor_point.price
+                _apply_hl(hl)
+                points.append(_make(PointKind.HH, mp))
+                main_high = mp.price
+                if hl is not None:
+                    main_low = hl.price
+                sequence = _BULL
+
+            elif is_at_or_below and sequence != _BULL:
+                # At-or-below active floor — LL + LH.
+                # Fires in ESTABLISHING (→ BEARISH) and BEARISH continuation.
+                # Equal low (price == main_low) is eligible for LL (MS-7C).
+                last_l = next((p for p in reversed(points) if p.kind in _LOW_KINDS), None)
+                lh = _lh_candidate(
+                    after_bar=last_l.bar_index if last_l else -1,
+                    before_bar=mp.bar_index,
+                )
+                _apply_lh(lh)
+                points.append(_make(PointKind.LL, mp))
+                main_low = mp.price
+                if lh is not None:
+                    main_high = lh.price
+                sequence = _BEAR
+
+            elif is_strictly_below and sequence == _BULL:
+                # BULLISH reversal: strictly below HL (active floor).
+                # Equal to HL is not a reversal and is not emitted (MS-7C).
+                # Emit plain L. Prior HH label is immutable. No LH created.
+                points.append(_make(PointKind.L, mp))
+                reversal_bars.add(mp.bar_index)         # MS-7C: protect from retroactive HL
+                main_low = mp.price
+                # main_high stays at the prior HH.price (set on last BULL confirmation).
+                sequence = _EST
+
+            elif is_at_or_above and sequence == _BEAR:
+                # BEARISH reversal: at-or-above LH (active ceiling).
+                # Equal to LH triggers reversal (MS-7C: price >= LH ceiling → H).
+                # Emit plain H. Prior LL label is immutable. No HL created.
+                points.append(_make(PointKind.H, mp))
+                reversal_bars.add(mp.bar_index)         # MS-7C: protect from retroactive LH
+                main_high = mp.price
+                # main_low stays at the prior LL.price (set on last BEAR confirmation).
+                sequence = _EST
 
         # Build main legs
         legs: list[StructureLeg] = []
         for i in range(len(points) - 1):
-            leg = self._create_structure_leg(
-                StructureLevel.MAIN, points[i], points[i + 1]
-            )
-            legs.append(leg)
+            legs.append(self._create_structure_leg(StructureLevel.MAIN, points[i], points[i + 1]))
 
         return points, legs
+
+    def _label_structure_points(self, points: list[StructurePoint]) -> None:
+        """
+        Relabel structure points in-place using same-kind comparative labeling (MS-7A).
+
+        Rules — High-type pivot (raw kind H / HH / LH):
+          current >= prev_high AND prev_high was LH  → H  (bullish reversal above LH)
+          current >= prev_high  (otherwise)           → HH (higher high or equal)
+          current <  prev_high                        → LH (lower high)
+
+        Rules — Low-type pivot (raw kind L / LL / HL):
+          current >  prev_low                         → HL (higher low)
+          current <  prev_low  AND prev_low was HL    → L  (bearish reversal below HL)
+          current <= prev_low  (otherwise)            → LL (lower low or equal)
+
+        Bootstrap: first high-type pivot → H; first low-type pivot → L.
+        Only point.kind is mutated; bar_index, timestamp, and price are unchanged.
+        """
+        _HIGH_KINDS = (PointKind.H, PointKind.HH, PointKind.LH)
+        _LOW_KINDS  = (PointKind.L, PointKind.LL, PointKind.HL)
+
+        prev_high_price: Optional[float] = None
+        prev_high_kind:  Optional[PointKind] = None
+        prev_low_price:  Optional[float] = None
+        prev_low_kind:   Optional[PointKind] = None
+
+        for pt in points:
+            if pt.kind in _HIGH_KINDS:
+                if prev_high_price is None:
+                    pt.kind        = PointKind.H
+                    prev_high_price = pt.price
+                    prev_high_kind  = PointKind.H
+                else:
+                    if pt.price >= prev_high_price and prev_high_kind == PointKind.LH:
+                        pt.kind = PointKind.H   # bullish reversal: break above prior LH
+                    elif pt.price >= prev_high_price:
+                        pt.kind = PointKind.HH  # higher high (continuation or EST break)
+                    else:
+                        pt.kind = PointKind.LH  # lower high
+                    prev_high_price = pt.price
+                    prev_high_kind  = pt.kind
+            else:
+                if prev_low_price is None:
+                    pt.kind       = PointKind.L
+                    prev_low_price = pt.price
+                    prev_low_kind  = PointKind.L
+                else:
+                    if pt.price > prev_low_price:
+                        pt.kind = PointKind.HL  # higher low
+                    elif pt.price < prev_low_price and prev_low_kind == PointKind.HL:
+                        pt.kind = PointKind.L   # bearish reversal: break below prior HL
+                    else:
+                        pt.kind = PointKind.LL  # lower low (or equal)
+                    prev_low_price = pt.price
+                    prev_low_kind  = pt.kind
 
     def _create_structure_point(
         self,

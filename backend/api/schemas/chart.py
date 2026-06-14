@@ -142,3 +142,106 @@ class ChartIndicatorMetadata(BaseModel):
 class ChartIndicatorsListResponse(BaseModel):
     """Response for GET /chart/indicators."""
     indicators: list[ChartIndicatorMetadata]
+
+
+# ---------------------------------------------------------------------------
+# POST /chart/market-structure — request and response (MS-1 / MS-2)
+# ---------------------------------------------------------------------------
+
+class OHLCVCandleInput(BaseModel):
+    """Single OHLCV candle for market structure computation input."""
+    model_config = ConfigDict(extra="forbid")
+    timestamp: str   # ISO 8601 UTC
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class MarketStructureRequest(BaseModel):
+    """Request body for POST /chart/market-structure."""
+    model_config = ConfigDict(extra="forbid")
+    candles: list[OHLCVCandleInput]
+
+
+class StructurePointResponse(BaseModel):
+    """One turning point in the market structure."""
+    id: str
+    level: str           # "minor" | "main"
+    kind: str            # "H" | "L" | "HH" | "HL" | "LH" | "LL" | "unknown"
+    timestamp: str       # ISO 8601 UTC
+    bar_index: int       # 0-based index into the input candles array
+    price: float
+    source: str          # "price" | "minor" | "main"
+    confirmed: bool
+
+
+class StructureLegResponse(BaseModel):
+    """One directional segment between two structure points."""
+    id: str
+    level: str           # "minor" | "main"
+    from_point_id: str
+    to_point_id: str
+    direction: str       # "up" | "down"
+    start_bar_index: int
+    end_bar_index: int
+    start_price: float
+    end_price: float
+
+
+class StructureDebugEventResponse(BaseModel):
+    """Per-candle decision log for structure verification."""
+    bar_index: int
+    timestamp: str
+    candle_relationship: str   # "higher_high" | "lower_low" | "inside_bar" | "outside_bar" | "ambiguous_startup"
+    previous_direction: Optional[str] = None   # "up" | "down" | null
+    new_direction: Optional[str] = None        # "up" | "down" | null
+    action: str
+    reason: str
+    affected_level: str        # "minor" | "main"
+
+
+class BosEventResponse(BaseModel):
+    """One Break of Structure event for visual chart verification."""
+    status:                        str            # "valid" | "pending" | "invalid"
+    direction:                     str            # "bullish" | "bearish"
+    structure_scope:               str            # "minor" | "main"
+    break_level:                   float
+    protected_level:               float
+    break_candle_index:            int
+    break_candle_timestamp:        str
+    confirmation_level:            Optional[float] = None
+    confirmation_candle_index:     Optional[int]   = None
+    confirmation_candle_timestamp: Optional[str]   = None
+    invalidation_candle_index:     Optional[int]   = None
+    invalidation_candle_timestamp: Optional[str]   = None
+    event_type:                    str = "bos"
+    event_effect:                  str = "continuation"
+
+
+class ChochEventResponse(BaseModel):
+    """One Change of Character event for visual chart verification."""
+    direction:                     str    # "bullish" | "bearish"
+    structure_scope:               str    # "minor" | "main"
+    protected_level:               float
+    break_candle_index:            int
+    break_candle_timestamp:        str
+    structure_reference_index:     int
+    structure_reference_timestamp: str
+    reference_structure_type:      str    # "HL" | "LH"
+    violated_trend:                str    # "uptrend" | "downtrend"
+    event_type:                    str = "choch"
+    status:                        str = "valid"
+    event_effect:                  str = "transition"
+
+
+class MarketStructureResponse(BaseModel):
+    """Full market structure result returned by POST /chart/market-structure."""
+    minor_points:  list[StructurePointResponse]
+    minor_legs:    list[StructureLegResponse]
+    main_points:   list[StructurePointResponse]
+    main_legs:     list[StructureLegResponse]
+    debug_events:  list[StructureDebugEventResponse]
+    bos_events:    list[BosEventResponse]   = []
+    choch_events:  list[ChochEventResponse] = []

@@ -37,6 +37,8 @@ import type { IndicatorInstance } from './types/chartIndicators'
 import { useChartSettings } from './hooks/useChartSettings'
 import ChartHeader from './components/ChartHeader'
 import type { SelectedAsset } from './components/AssetResolverInput'
+import { fetchMarketStructure } from './api/marketStructure'
+import type { StructureResult } from './types/marketStructure'
 
 type Status     = 'idle' | 'loading' | 'success' | 'error'
 type ActiveView = 'chart' | 'composer' | 'credentials' | 'report' | 'admin' | 'datasets' | 'history' | 'forward-test' | 'paper-trading' | 'lifecycle'
@@ -86,6 +88,11 @@ export default function App() {
   const chartHandleRef = useRef<ChartHandle | null>(null)
   // Chart-UX-3C.5: hovered instance for ownership feedback (sidebar ↔ chart legend)
   const [hoveredInstanceId, setHoveredInstanceId] = useState<string | null>(null)
+
+  // MS-2: Market structure overlay state
+  const [structureResult, setStructureResult] = useState<StructureResult | null>(null)
+  // Fingerprint of the candle set we last fetched structure for (avoids re-fetch on toggle)
+  const structureFingerprintRef = useRef<string>('')
 
   // Derived chart props — memoized to avoid spurious Chart effect re-runs
   const visibleArtifacts = useMemo(() =>
@@ -151,6 +158,47 @@ export default function App() {
       setResumableRunId(s.latestRunId)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // MS-2: Fetch market structure when candles load and any structure toggle is on.
+  // Fingerprint prevents re-fetching when only toggles change (data doesn't change).
+  // All structure toggle states are in deps so the first toggle-on triggers the fetch.
+  useEffect(() => {
+    const s = chartSettings.structure
+    const needsStructure = s.showMinorStructure || s.showMainStructure ||
+                           s.showStructureLabels || s.showDebugMetadata ||
+                           s.showBos || s.showChoch
+
+    if (!needsStructure || candles.length === 0) return
+
+    const fp = `${candles.length}::${candles[0].timestamp}::${candles[candles.length - 1].timestamp}`
+    if (fp === structureFingerprintRef.current) return  // same candles, already fetched
+
+    structureFingerprintRef.current = fp
+    setStructureResult(null)
+
+    fetchMarketStructure(candles)
+      .then(result => {
+        // Guard against stale fetch completing after candles changed
+        if (structureFingerprintRef.current === fp) setStructureResult(result)
+      })
+      .catch(() => {
+        if (structureFingerprintRef.current === fp) structureFingerprintRef.current = ''
+      })
+  }, [ // eslint-disable-line react-hooks/exhaustive-deps
+    candles,
+    chartSettings.structure.showMinorStructure,
+    chartSettings.structure.showMainStructure,
+    chartSettings.structure.showStructureLabels,
+    chartSettings.structure.showDebugMetadata,
+    chartSettings.structure.showBos,
+    chartSettings.structure.showChoch,
+  ])
+
+  // Clear structure result when candles change (new dataset invalidates cached result)
+  useEffect(() => {
+    structureFingerprintRef.current = ''
+    setStructureResult(null)
+  }, [candles]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist session context whenever key state changes
   useEffect(() => {
@@ -518,6 +566,7 @@ export default function App() {
                     onIndicatorRemove={id => indicatorPanelRef.current?.removeInstance(id)}
                     volumeColorModes={volumeColorModes}
                     chartSettings={chartSettings}
+                    structureResult={structureResult}
                   />
                 )}
               </div>

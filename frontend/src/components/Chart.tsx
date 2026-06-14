@@ -53,6 +53,7 @@ import type { IndicatorArtifactResponse, IndicatorSeriesPoint } from '../types/c
 import { ChartLegendOverlay } from './ChartLegendOverlay'
 import ChartDataInspector, { type InspectorCandle, type InspectorIndicatorValues } from './ChartDataInspector'
 import type { ChartSettings } from '../types/chartSettings'
+import type { StructureResult, StructureLeg, BosEvent, ChochEvent } from '../types/marketStructure'
 import { getTheme, buildLwChartColorOptions } from '../themes'
 import type { ThemePreset } from '../types/chartTheme'
 
@@ -82,6 +83,8 @@ interface ChartProps {
   volumeColorModes?:     Map<string, string>
   /** Chart-wide visualization preferences (CHART-SETTINGS-1A) */
   chartSettings?:          ChartSettings
+  /** Market structure computation result for visual verification overlay (MS-2) */
+  structureResult?:        StructureResult | null
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +186,30 @@ function buildVolumeColorMap(candles: OHLCVCandle[]): Map<UTCTimestamp, string> 
     map.set(ts, color)
   }
   return map
+}
+
+// Build interpolated line data for all structure legs so LW Charts renders
+// a connected straight line between each pair of turning points.
+// Bars not covered by any leg become WhitespaceData so the series breaks there.
+function buildStructureLineData(
+  legs: StructureLeg[],
+  candleTimestamps: UTCTimestamp[],
+): Array<LineData<Time> | WhitespaceData<Time>> {
+  const barPrices = new Map<number, number>()
+  for (const leg of legs) {
+    const span = leg.endBarIndex - leg.startBarIndex
+    for (let i = 0; i <= span; i++) {
+      const barIdx = leg.startBarIndex + i
+      const progress = span === 0 ? 0 : i / span
+      barPrices.set(barIdx, leg.startPrice + progress * (leg.endPrice - leg.startPrice))
+    }
+  }
+  return candleTimestamps.map((ts, idx) => {
+    const price = barPrices.get(idx)
+    return price !== undefined
+      ? ({ time: ts as Time, value: price } as LineData<Time>)
+      : ({ time: ts as Time } as WhitespaceData<Time>)
+  })
 }
 
 function resyncRange(oscChart: IChartApi, priceChart: IChartApi | null) {
@@ -751,6 +778,7 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
   onHoverInstance, onIndicatorToggle, onIndicatorRemove,
   volumeColorModes,
   chartSettings,
+  structureResult,
 }: ChartProps, ref: React.Ref<ChartHandle>) {
   const priceContainerRef         = useRef<HTMLDivElement>(null)
   const chartRef                  = useRef<IChartApi | null>(null)
@@ -760,8 +788,18 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
   const priceSeriesMapRef         = useRef<Map<string, AnySeriesApi>>(new Map())
   const artifactPriceSeriesMapRef  = useRef<Map<string, AnySeriesApi>>(new Map())
   const artifactSeriesTitleMapRef  = useRef<Map<string, string>>(new Map())
+  // Structure overlay series and marker plugins (MS-2 / MS-6C)
+  const structureMinorSeriesRef    = useRef<ISeriesApi<'Line'> | null>(null)
+  const structureMainSeriesRef     = useRef<ISeriesApi<'Line'> | null>(null)
+  const structureMarkerApiRef      = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
+  // BoS and CHoCH event marker plugins (VIZ-1)
+  const bosMarkerApiRef            = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
+  const chochMarkerApiRef          = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
 
   const [priceChartApi, setPriceChartApi] = useState<IChartApi | null>(null)
+  // VIZ-1: hovered structure event for the inspection panel
+  const [hoveredStructureEvent, setHoveredStructureEvent] =
+    useState<{ type: 'bos'; event: BosEvent } | { type: 'choch'; event: ChochEvent } | null>(null)
 
   const oscContainerRef = useRef<HTMLDivElement>(null)
   const oscChartRef     = useRef<IChartApi | null>(null)
@@ -1044,12 +1082,18 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
       color: '#ffa726', lineWidth: 1, lineStyle: 2,
       crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
     })
-    const markerApi = createSeriesMarkers(candleSeries, [])
+    const markerApi          = createSeriesMarkers(candleSeries, [])
+    const structureMarkerApi = createSeriesMarkers(candleSeries, [])
+    const bosMarkerApi       = createSeriesMarkers(candleSeries, [])
+    const chochMarkerApi     = createSeriesMarkers(candleSeries, [])
 
-    chartRef.current          = chart
-    candleSeriesRef.current   = candleSeries
-    markerApiRef.current      = markerApi
-    forecastSeriesRef.current = forecastSeries
+    chartRef.current                  = chart
+    candleSeriesRef.current           = candleSeries
+    markerApiRef.current              = markerApi
+    structureMarkerApiRef.current     = structureMarkerApi
+    bosMarkerApiRef.current           = bosMarkerApi
+    chochMarkerApiRef.current         = chochMarkerApi
+    forecastSeriesRef.current         = forecastSeries
     setPriceChartApi(chart)
 
     const ro = new ResizeObserver(entries => {
@@ -1062,9 +1106,15 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
       priceSeriesMapRef.current.clear()
       artifactPriceSeriesMapRef.current.clear()
       markerApiRef.current?.detach()
+      structureMarkerApiRef.current?.detach()
+      bosMarkerApiRef.current?.detach()
+      chochMarkerApiRef.current?.detach()
       chart.remove()
       chartRef.current = null; candleSeriesRef.current = null
       markerApiRef.current = null; forecastSeriesRef.current = null
+      structureMarkerApiRef.current = null
+      bosMarkerApiRef.current = null; chochMarkerApiRef.current = null
+      structureMinorSeriesRef.current = null; structureMainSeriesRef.current = null
       setPriceChartApi(null)
     }
   }, [])
@@ -1503,6 +1553,273 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
     }
   }, [indicatorArtifacts, instanceColors, candles, volumeColorModes])
 
+  // ── Market structure overlay (MS-2) ──────────────────────────────────────
+  // Rebuilds the two structure LineSeries (minor=blue, main=orange) whenever
+  // Rebuild structure overlays whenever the result or visibility toggles change.
+  // priceChartApi in deps ensures this re-fires after chart creation on mount.
+  useEffect(() => {
+    const priceChart = chartRef.current
+    if (!priceChart) return
+
+    const s          = chartSettings?.structure
+    const showMinor  = s?.showMinorStructure  ?? false
+    const showMain   = s?.showMainStructure   ?? false
+    const showLabels = s?.showStructureLabels ?? false
+
+    // Always clear structure labels before rebuilding.
+    structureMarkerApiRef.current?.setMarkers([])
+
+    // Teardown previous series unconditionally — then rebuild if needed.
+    if (structureMinorSeriesRef.current) {
+      try { priceChart.removeSeries(structureMinorSeriesRef.current) } catch { /* ignore */ }
+      structureMinorSeriesRef.current = null
+    }
+    if (structureMainSeriesRef.current) {
+      try { priceChart.removeSeries(structureMainSeriesRef.current) } catch { /* ignore */ }
+      structureMainSeriesRef.current = null
+    }
+
+    if (!structureResult || candleTimestamps.length === 0) return
+
+    if (showMinor && structureResult.minorLegs.length > 0) {
+      const series = priceChart.addSeries(LineSeries, {
+        color: '#4a90d9', lineWidth: 1,
+        crosshairMarkerVisible: false,
+        lastValueVisible: false, priceLineVisible: false,
+      })
+      series.setData(buildStructureLineData(structureResult.minorLegs, candleTimestamps))
+      structureMinorSeriesRef.current = series
+    }
+
+    if (showMain && structureResult.mainLegs.length > 0) {
+      const series = priceChart.addSeries(LineSeries, {
+        color: '#e87722', lineWidth: 2,
+        crosshairMarkerVisible: false,
+        lastValueVisible: false, priceLineVisible: false,
+      })
+      series.setData(buildStructureLineData(structureResult.mainLegs, candleTimestamps))
+      structureMainSeriesRef.current = series
+    }
+
+    // Structure point labels — driven exclusively by backend point.kind.
+    if (showLabels) {
+      const HIGH_KINDS = new Set<string>(['H', 'HH', 'LH'])
+      const markers: SeriesMarker<Time>[] = []
+
+      if (showMinor) {
+        for (const pt of structureResult.minorPoints) {
+          const ts = candleTimestamps[pt.barIndex]
+          if (ts === undefined) continue
+          markers.push({
+            time:     ts as Time,
+            position: HIGH_KINDS.has(pt.kind) ? 'aboveBar' : 'belowBar',
+            color:    '#4a90d9',
+            shape:    'circle',
+            text:     pt.kind,
+            size:     1,
+          })
+        }
+      }
+
+      if (showMain) {
+        for (const pt of structureResult.mainPoints) {
+          const ts = candleTimestamps[pt.barIndex]
+          if (ts === undefined) continue
+          markers.push({
+            time:     ts as Time,
+            position: HIGH_KINDS.has(pt.kind) ? 'aboveBar' : 'belowBar',
+            color:    '#e87722',
+            shape:    'circle',
+            text:     pt.kind,
+            size:     1,
+          })
+        }
+      }
+
+      // LW Charts requires markers sorted ascending by time.
+      markers.sort((a, b) => (a.time as number) - (b.time as number))
+      structureMarkerApiRef.current?.setMarkers(markers)
+    }
+  }, [
+    structureResult, candleTimestamps,
+    chartSettings?.structure?.showMinorStructure,
+    chartSettings?.structure?.showMainStructure,
+    chartSettings?.structure?.showStructureLabels,
+    priceChartApi,
+  ])
+
+  // ── VIZ-1: Render BoS event markers ──────────────────────────────────────
+  useEffect(() => {
+    const bosApi = bosMarkerApiRef.current
+    if (!bosApi) return
+
+    if (
+      !structureResult ||
+      !chartSettings?.structure?.showBos ||
+      !chartSettings?.structure?.showMinorStructure ||
+      candleTimestamps.length === 0
+    ) {
+      bosApi.setMarkers([])
+      return
+    }
+
+    const allBos = structureResult.bosEvents
+
+    const markers: SeriesMarker<Time>[] = allBos.flatMap(ev => {
+      const ts = candleTimestamps[ev.breakCandleIndex]
+      if (ts === undefined) return []
+
+      const isBull     = ev.direction === 'bullish'
+      const baseColor  = isBull ? '#26a69a' : '#ef5350'
+      const pendColor  = '#f59e0b'
+      const invalColor = '#6b7280'
+
+      const label = ev.status === 'valid'   ? 'BoS'
+                  : ev.status === 'pending' ? 'BoS?'
+                  : 'BoS✗'
+
+      const color = ev.status === 'valid'   ? baseColor
+                  : ev.status === 'pending' ? pendColor
+                  : invalColor
+
+      const result: SeriesMarker<Time>[] = [{
+        time:     ts as Time,
+        position: isBull ? 'aboveBar' : 'belowBar',
+        color,
+        shape:    isBull ? 'arrowUp' : 'arrowDown',
+        text:     label,
+        size:     1,
+      }]
+
+      // Confirmation candle marker for pending-turned-valid BoS
+      if (ev.status === 'valid' && ev.confirmationCandleIndex !== undefined) {
+        const confTs = candleTimestamps[ev.confirmationCandleIndex]
+        if (confTs !== undefined) {
+          result.push({
+            time:     confTs as Time,
+            position: isBull ? 'aboveBar' : 'belowBar',
+            color:    baseColor,
+            shape:    'circle',
+            text:     'conf',
+            size:     0,
+          })
+        }
+      }
+
+      // Invalidation candle marker for invalid BoS
+      if (ev.status === 'invalid' && ev.invalidationCandleIndex !== undefined) {
+        const invTs = candleTimestamps[ev.invalidationCandleIndex]
+        if (invTs !== undefined) {
+          result.push({
+            time:     invTs as Time,
+            position: isBull ? 'belowBar' : 'aboveBar',
+            color:    invalColor,
+            shape:    'circle',
+            text:     'inv',
+            size:     0,
+          })
+        }
+      }
+
+      return result
+    })
+
+    markers.sort((a, b) => (a.time as number) - (b.time as number))
+    bosApi.setMarkers(markers)
+  }, [
+    structureResult, candleTimestamps,
+    chartSettings?.structure?.showBos,
+    chartSettings?.structure?.showMinorStructure,
+    priceChartApi,
+  ])
+
+  // ── VIZ-1: Render CHoCH event markers ────────────────────────────────────
+  useEffect(() => {
+    const chochApi = chochMarkerApiRef.current
+    if (!chochApi) return
+
+    if (
+      !structureResult ||
+      !chartSettings?.structure?.showChoch ||
+      !chartSettings?.structure?.showMinorStructure ||
+      candleTimestamps.length === 0
+    ) {
+      chochApi.setMarkers([])
+      return
+    }
+
+    const allChoch = structureResult.chochEvents
+
+    const markers: SeriesMarker<Time>[] = allChoch.flatMap(ev => {
+      const ts = candleTimestamps[ev.breakCandleIndex]
+      if (ts === undefined) return []
+
+      // Bullish CHoCH = uptrend violated (candle went BELOW HL) → below bar
+      // Bearish CHoCH = downtrend violated (candle went ABOVE LH) → above bar
+      const isBull = ev.direction === 'bullish'
+      return [{
+        time:     ts as Time,
+        position: isBull ? 'belowBar' : 'aboveBar',
+        color:    isBull ? '#4a90d9' : '#e87722',
+        shape:    'circle',
+        text:     'CHoCH',
+        size:     1,
+      }]
+    })
+
+    markers.sort((a, b) => (a.time as number) - (b.time as number))
+    chochApi.setMarkers(markers)
+  }, [
+    structureResult, candleTimestamps,
+    chartSettings?.structure?.showChoch,
+    chartSettings?.structure?.showMinorStructure,
+    priceChartApi,
+  ])
+
+  // ── VIZ-1: Crosshair-based event inspection ───────────────────────────────
+  // Separate subscription so structure event logic doesn't re-bind the
+  // main crosshair effect (which has different deps).
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart || !structureResult) {
+      setHoveredStructureEvent(null)
+      return
+    }
+
+    // Build bar-index → event lookup maps.
+    const bosByBar   = new Map<number, BosEvent>()
+    const chochByBar = new Map<number, ChochEvent>()
+    for (const ev of structureResult.bosEvents) {
+      bosByBar.set(ev.breakCandleIndex, ev)
+    }
+    for (const ev of structureResult.chochEvents) {
+      chochByBar.set(ev.breakCandleIndex, ev)
+    }
+
+    const onCrosshair = (param: MouseEventParams | null) => {
+      if (!param || !param.time) {
+        setHoveredStructureEvent(null)
+        return
+      }
+      const ts = param.time as number
+      // Find bar index by matching timestamp
+      const barIdx = candleTimestamps.indexOf(ts as UTCTimestamp)
+      if (barIdx === -1) { setHoveredStructureEvent(null); return }
+
+      const bos   = bosByBar.get(barIdx)
+      const choch = chochByBar.get(barIdx)
+      if (bos)   { setHoveredStructureEvent({ type: 'bos',   event: bos   }); return }
+      if (choch) { setHoveredStructureEvent({ type: 'choch', event: choch }); return }
+      setHoveredStructureEvent(null)
+    }
+
+    chart.subscribeCrosshairMove(onCrosshair)
+    return () => {
+      chart.unsubscribeCrosshairMove(onCrosshair)
+      setHoveredStructureEvent(null)
+    }
+  }, [structureResult, candleTimestamps, priceChartApi]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Commit handler: save to localStorage ─────────────────────────────────
   const commitHeight = (key: string, h: number) => {
     setOscPaneHeights(prev => {
@@ -1562,6 +1879,72 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
       {/* Price chart + legend overlay */}
       <div style={styles.priceWrapper}>
         <div ref={priceContainerRef} style={styles.priceChart} />
+        {/* Structure debug metadata panel (MS-2) */}
+        {chartSettings?.structure?.showDebugMetadata && structureResult && (
+          <div style={styles.structureDebugPanel} data-testid="structure-debug-panel">
+            <div style={styles.structureDebugTitle}>Structure Debug</div>
+            <div style={styles.structureDebugBody}>
+              <span>minor pts: {structureResult.minorPoints.length}</span>
+              <span>minor legs: {structureResult.minorLegs.length}</span>
+              <span>main pts: {structureResult.mainPoints.length}</span>
+              <span>main legs: {structureResult.mainLegs.length}</span>
+              <span>events: {structureResult.debugEvents.length}</span>
+            </div>
+            <div style={styles.structureDebugEvents}>
+              {structureResult.debugEvents.slice(-8).map((e, i) => (
+                <div key={i} style={styles.structureDebugEvent}>
+                  <span style={{ color: '#6b8cba' }}>#{e.barIndex}</span>
+                  {' '}
+                  <span style={{ color: '#c8a84b' }}>{e.candleRelationship}</span>
+                  {' '}
+                  <span style={{ color: '#9aa4b8' }}>{e.action}</span>
+                  {e.newDirection && (
+                    <span style={{ color: e.newDirection === 'up' ? '#26a69a' : '#ef5350' }}>
+                      {' →'}{e.newDirection}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* VIZ-1: BoS / CHoCH crosshair inspection panel */}
+        {hoveredStructureEvent && (
+          <div style={styles.eventInspectorPanel} data-testid="event-inspector-panel">
+            {hoveredStructureEvent.type === 'bos' ? (
+              <>
+                <div style={{ ...styles.eventInspectorTitle, color: hoveredStructureEvent.event.direction === 'bullish' ? '#26a69a' : '#ef5350' }}>
+                  BoS · {hoveredStructureEvent.event.status} · {hoveredStructureEvent.event.direction}
+                </div>
+                <div style={styles.eventInspectorRow}><span style={styles.eventKey}>scope</span><span>{hoveredStructureEvent.event.structureScope}</span></div>
+                <div style={styles.eventInspectorRow}><span style={styles.eventKey}>break level</span><span>{hoveredStructureEvent.event.breakLevel.toFixed(4)}</span></div>
+                <div style={styles.eventInspectorRow}><span style={styles.eventKey}>protected</span><span>{hoveredStructureEvent.event.protectedLevel.toFixed(4)}</span></div>
+                {hoveredStructureEvent.event.confirmationLevel !== undefined && (
+                  <div style={styles.eventInspectorRow}><span style={styles.eventKey}>conf level</span><span>{hoveredStructureEvent.event.confirmationLevel.toFixed(4)}</span></div>
+                )}
+                {hoveredStructureEvent.event.confirmationCandleIndex !== undefined && (
+                  <div style={styles.eventInspectorRow}><span style={styles.eventKey}>conf bar</span><span>#{hoveredStructureEvent.event.confirmationCandleIndex}</span></div>
+                )}
+                {hoveredStructureEvent.event.invalidationCandleIndex !== undefined && (
+                  <div style={styles.eventInspectorRow}><span style={styles.eventKey}>inv bar</span><span>#{hoveredStructureEvent.event.invalidationCandleIndex}</span></div>
+                )}
+                <div style={styles.eventInspectorRow}><span style={styles.eventKey}>break bar</span><span>#{hoveredStructureEvent.event.breakCandleIndex}</span></div>
+              </>
+            ) : (
+              <>
+                <div style={{ ...styles.eventInspectorTitle, color: hoveredStructureEvent.event.direction === 'bullish' ? '#4a90d9' : '#e87722' }}>
+                  CHoCH · {hoveredStructureEvent.event.direction}
+                </div>
+                <div style={styles.eventInspectorRow}><span style={styles.eventKey}>scope</span><span>{hoveredStructureEvent.event.structureScope}</span></div>
+                <div style={styles.eventInspectorRow}><span style={styles.eventKey}>violated</span><span>{hoveredStructureEvent.event.violatedTrend}</span></div>
+                <div style={styles.eventInspectorRow}><span style={styles.eventKey}>protected</span><span>{hoveredStructureEvent.event.protectedLevel.toFixed(4)}</span></div>
+                <div style={styles.eventInspectorRow}><span style={styles.eventKey}>ref type</span><span>{hoveredStructureEvent.event.referenceStructureType}</span></div>
+                <div style={styles.eventInspectorRow}><span style={styles.eventKey}>ref bar</span><span>#{hoveredStructureEvent.event.structureReferenceIndex}</span></div>
+                <div style={styles.eventInspectorRow}><span style={styles.eventKey}>break bar</span><span>#{hoveredStructureEvent.event.breakCandleIndex}</span></div>
+              </>
+            )}
+          </div>
+        )}
         <ChartLegendOverlay
           artifacts={(indicatorArtifacts ?? []).filter(a => a.series.some(s => s.pane === 'price_overlay'))}
           instanceColors={instanceColors}
@@ -1646,4 +2029,24 @@ const styles: Record<string, React.CSSProperties> = {
   oscChart: { width: '100%', height: '100%' },
   badge: { fontSize: '11px', color: '#ffa726', background: '#1a1a2e', padding: '2px 8px', borderRadius: '4px' },
   clearBtn: { background: '#111827', border: '1px solid #2a2d3e', borderRadius: 4, color: '#9aa4b8', fontFamily: 'monospace', fontSize: 11, padding: '3px 9px', cursor: 'pointer' },
+  structureDebugPanel: {
+    position: 'absolute', top: 8, right: 90, zIndex: 10,
+    background: 'rgba(10,12,24,0.88)', border: '1px solid #1e3050', borderRadius: 4,
+    padding: '6px 10px', fontFamily: 'monospace', fontSize: 10, color: '#8892a4',
+    maxWidth: 280, pointerEvents: 'none',
+  } as React.CSSProperties,
+  structureDebugTitle: { color: '#e87722', fontSize: 10, marginBottom: 4, fontWeight: 600 },
+  structureDebugBody: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 4 },
+  structureDebugEvents: { display: 'flex', flexDirection: 'column', gap: 1 },
+  structureDebugEvent: { fontSize: 9, lineHeight: '1.4' },
+  // VIZ-1: event inspection panel — appears on crosshair hover over BoS/CHoCH bar
+  eventInspectorPanel: {
+    position: 'absolute', bottom: 8, left: 8, zIndex: 10,
+    background: 'rgba(10,12,24,0.92)', border: '1px solid #1e3050', borderRadius: 4,
+    padding: '6px 10px', fontFamily: 'monospace', fontSize: 10, color: '#9aa4b8',
+    minWidth: 170, pointerEvents: 'none',
+  } as React.CSSProperties,
+  eventInspectorTitle: { fontSize: 10, marginBottom: 4, fontWeight: 600 },
+  eventInspectorRow: { display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 9, lineHeight: '1.5' },
+  eventKey: { color: '#4a5070' },
 }

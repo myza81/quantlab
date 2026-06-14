@@ -99,11 +99,28 @@
  * 116. autoScale does not throw when called with chart data loaded
  * 117. autoScale preserves visible logical range
  * 118. autoScale gracefully handles empty chart state
+ * Market Structure Overlay (MS-2 / MS-3A)
+ * 120. showMinorStructure: false — no blue series added
+ * 121. showMainStructure: false — no orange series added
+ * 122. showMinorStructure: true — blue LineSeries added
+ * 123. showMainStructure: true — orange LineSeries added
+ * 124. showMinorStructure: true — setData called with candle-length array
+ * 127. structureResult: null — no structure series added
+ * 128. structureResult: undefined — no structure series added
+ * 129. showDebugMetadata: true — debug panel in DOM
+ * 130. showDebugMetadata: false — debug panel absent
+ * 131. showDebugMetadata: true + null result — debug panel absent
+ * 132. toggle off → on — addSeries called after rerender
+ * 133. toggle on → off — removeSeries called after rerender
+ * 134. main structure lineWidth is 2
+ * 135. minor structure lineWidth is 1
+ * 136. non-degenerate main leg exercises interpolation path
+ * 137. no createSeriesMarkers called for structure (label rendering removed MS-3A)
  */
 import { createRef } from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { createChart } from 'lightweight-charts'
+import { createChart, createSeriesMarkers } from 'lightweight-charts'
 import Chart, { type ChartHandle } from '../Chart'
 import { DEFAULT_CHART_SETTINGS } from '../../types/chartSettings'
 import type { ChartSettings } from '../../types/chartSettings'
@@ -111,6 +128,7 @@ import type { IndicatorArtifactResponse } from '../../types/chartIndicators'
 import type { OHLCVCandle } from '../../api/marketData'
 import type { StrategyOverlay } from '../../types/strategy'
 import type { ToolVisualizationSeries } from '../../types/toolVisualization'
+import type { StructureResult } from '../../types/marketStructure'
 
 // ---------------------------------------------------------------------------
 // Global mocks
@@ -1905,5 +1923,529 @@ describe('Chart', () => {
 
     // No candles loaded — should not crash
     expect(() => chartRef.current?.autoScale()).not.toThrow()
+  })
+
+  // ── Market Structure Overlay (MS-2 / MS-3A) ──────────────────────────────
+  // Tests numbered 120–135 (125 and 126 removed in MS-3A — structure label
+  // rendering was removed; structure kinds remain in models only).
+  // Helpers local to this describe block.
+
+  function makeStructureSettings(structure: Partial<ChartSettings['structure']>): ChartSettings {
+    return {
+      ...DEFAULT_CHART_SETTINGS,
+      structure: { ...DEFAULT_CHART_SETTINGS.structure, ...structure },
+    }
+  }
+
+  function makeStructureResult(): StructureResult {
+    return {
+      minorPoints: [
+        { id: 'mp1', level: 'minor', kind: 'H',  timestamp: TS(0), barIndex: 0, price: 105, source: 'price', confirmed: true },
+        { id: 'mp2', level: 'minor', kind: 'L',  timestamp: TS(2), barIndex: 2, price: 99,  source: 'price', confirmed: true },
+        { id: 'mp3', level: 'minor', kind: 'H',  timestamp: TS(4), barIndex: 4, price: 112, source: 'price', confirmed: true },
+      ],
+      minorLegs: [
+        { id: 'ml1', level: 'minor', fromPointId: 'mp1', toPointId: 'mp2', direction: 'down', startBarIndex: 0, endBarIndex: 2, startPrice: 105, endPrice: 99 },
+        { id: 'ml2', level: 'minor', fromPointId: 'mp2', toPointId: 'mp3', direction: 'up',   startBarIndex: 2, endBarIndex: 4, startPrice: 99,  endPrice: 112 },
+      ],
+      mainPoints: [
+        { id: 'map1', level: 'main', kind: 'H',  timestamp: TS(0), barIndex: 0, price: 105, source: 'minor', confirmed: true },
+        { id: 'map2', level: 'main', kind: 'HH', timestamp: TS(4), barIndex: 4, price: 112, source: 'minor', confirmed: true },
+      ],
+      mainLegs: [
+        // Non-degenerate: different from/to points, different bar indices — exercises interpolation
+        { id: 'mal1', level: 'main', fromPointId: 'map1', toPointId: 'map2', direction: 'up', startBarIndex: 0, endBarIndex: 4, startPrice: 105, endPrice: 112 },
+      ],
+      debugEvents: [
+        { barIndex: 1, timestamp: TS(1), candleRelationship: 'higher_high', action: 'continue_up', reason: 'HH', affectedLevel: 'minor' },
+        { barIndex: 2, timestamp: TS(2), candleRelationship: 'lower_low', action: 'reversal_down', reason: 'LL', affectedLevel: 'minor', newDirection: 'down' },
+      ],
+      bosEvents:   [],
+      chochEvents: [],
+    }
+  }
+
+  it('120. showMinorStructure: false — no structure series added when toggle is off', () => {
+    mocks.addSeries.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMinorStructure: false }),
+    })
+    const blueSeriesCalls = mocks.addSeries.mock.calls.filter(([, opts]) =>
+      (opts as Record<string, unknown>)?.color === '#4a90d9'
+    )
+    expect(blueSeriesCalls).toHaveLength(0)
+  })
+
+  it('121. showMainStructure: false — no main structure series added when toggle is off', () => {
+    mocks.addSeries.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMainStructure: false }),
+    })
+    const orangeSeriesCalls = mocks.addSeries.mock.calls.filter(([, opts]) =>
+      (opts as Record<string, unknown>)?.color === '#e87722'
+    )
+    expect(orangeSeriesCalls).toHaveLength(0)
+  })
+
+  it('122. showMinorStructure: true — blue LineSeries added to price chart', () => {
+    mocks.addSeries.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMinorStructure: true }),
+    })
+    const blueSeriesCalls = mocks.addSeries.mock.calls.filter(([, opts]) =>
+      (opts as Record<string, unknown>)?.color === '#4a90d9'
+    )
+    expect(blueSeriesCalls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('123. showMainStructure: true — orange LineSeries added to price chart', () => {
+    mocks.addSeries.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMainStructure: true }),
+    })
+    const orangeSeriesCalls = mocks.addSeries.mock.calls.filter(([, opts]) =>
+      (opts as Record<string, unknown>)?.color === '#e87722'
+    )
+    expect(orangeSeriesCalls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('124. showMinorStructure: true — setData called with entries for each candle', () => {
+    mocks.setData.mockClear()
+    const candles = makeCandles(5)
+    renderChart({
+      candles,
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMinorStructure: true }),
+    })
+    const dataLengths = mocks.setData.mock.calls.map(([data]) => (data as unknown[]).length)
+    expect(dataLengths.some(l => l === candles.length)).toBe(true)
+  })
+
+  it('127. structureResult: null — no structure series added', () => {
+    mocks.addSeries.mockClear()
+    renderChart({
+      structureResult: null,
+      chartSettings:   makeStructureSettings({ showMinorStructure: true, showMainStructure: true }),
+    })
+    const blueOrOrange = mocks.addSeries.mock.calls.filter(([, opts]) => {
+      const c = (opts as Record<string, unknown>)?.color
+      return c === '#4a90d9' || c === '#e87722'
+    })
+    expect(blueOrOrange).toHaveLength(0)
+  })
+
+  it('128. structureResult: undefined — no structure series added', () => {
+    mocks.addSeries.mockClear()
+    renderChart({
+      chartSettings: makeStructureSettings({ showMinorStructure: true }),
+    })
+    const blueSeriesCalls = mocks.addSeries.mock.calls.filter(([, opts]) =>
+      (opts as Record<string, unknown>)?.color === '#4a90d9'
+    )
+    expect(blueSeriesCalls).toHaveLength(0)
+  })
+
+  it('129. showDebugMetadata: true — debug panel renders in DOM', () => {
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showDebugMetadata: true }),
+    })
+    expect(screen.getByTestId('structure-debug-panel')).toBeInTheDocument()
+  })
+
+  it('130. showDebugMetadata: false — debug panel absent from DOM', () => {
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showDebugMetadata: false }),
+    })
+    expect(screen.queryByTestId('structure-debug-panel')).not.toBeInTheDocument()
+  })
+
+  it('131. showDebugMetadata: true but structureResult: null — debug panel absent', () => {
+    renderChart({
+      structureResult: null,
+      chartSettings:   makeStructureSettings({ showDebugMetadata: true }),
+    })
+    expect(screen.queryByTestId('structure-debug-panel')).not.toBeInTheDocument()
+  })
+
+  it('132. toggle from off to on — addSeries called after rerender', () => {
+    const candles = makeCandles()
+    const { rerender } = renderChart({
+      candles,
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMinorStructure: false }),
+    })
+    mocks.addSeries.mockClear()
+
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        structureResult={makeStructureResult()}
+        chartSettings={makeStructureSettings({ showMinorStructure: true })} />
+    )
+    const blueSeriesCalls = mocks.addSeries.mock.calls.filter(([, opts]) =>
+      (opts as Record<string, unknown>)?.color === '#4a90d9'
+    )
+    expect(blueSeriesCalls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('133. toggle from on to off — removeSeries called after rerender', () => {
+    const candles = makeCandles()
+    const { rerender } = renderChart({
+      candles,
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMinorStructure: true }),
+    })
+    mocks.removeSeries.mockClear()
+
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        structureResult={makeStructureResult()}
+        chartSettings={makeStructureSettings({ showMinorStructure: false })} />
+    )
+    expect(mocks.removeSeries).toHaveBeenCalled()
+  })
+
+  it('134. main structure lineWidth is 2 (heavier than minor)', () => {
+    mocks.addSeries.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMainStructure: true }),
+    })
+    const mainCall = mocks.addSeries.mock.calls.find(([, opts]) =>
+      (opts as Record<string, unknown>)?.color === '#e87722'
+    )
+    expect(mainCall).toBeDefined()
+    expect((mainCall![1] as Record<string, unknown>).lineWidth).toBe(2)
+  })
+
+  it('135. minor structure lineWidth is 1 (lighter than main)', () => {
+    mocks.addSeries.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMinorStructure: true }),
+    })
+    const minorCall = mocks.addSeries.mock.calls.find(([, opts]) =>
+      (opts as Record<string, unknown>)?.color === '#4a90d9'
+    )
+    expect(minorCall).toBeDefined()
+    expect((minorCall![1] as Record<string, unknown>).lineWidth).toBe(1)
+  })
+
+  it('136. non-degenerate main leg exercises interpolation — setData entries cover span', () => {
+    // makeStructureResult() main leg: startBarIndex=0, endBarIndex=4 → span of 4 bars
+    // setData must be called with candle-length array (interpolation fills bar 0..4)
+    mocks.setData.mockClear()
+    const candles = makeCandles(6)  // 6 candles: indices 0–5
+    renderChart({
+      candles,
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMainStructure: true }),
+    })
+    const dataLengths = mocks.setData.mock.calls.map(([data]) => (data as unknown[]).length)
+    expect(dataLengths.some(l => l === candles.length)).toBe(true)
+  })
+
+  it('137. createSeriesMarkers called twice on mount — signal API + structure label API', () => {
+    // MS-6C: structure labels use a dedicated marker API, separate from signal markers.
+    vi.mocked(createSeriesMarkers).mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({ showMinorStructure: true, showMainStructure: true }),
+    })
+    // One call for signal markers, one for structure labels — both created on chart mount.
+    expect(vi.mocked(createSeriesMarkers).mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  // ── MS-6C: Structure label rendering ────────────────────────────────────────
+
+  it('138. showStructureLabels: false — setMarkers not called with structure kind text', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({
+        showMinorStructure:  true,
+        showStructureLabels: false,
+      }),
+    })
+    const structureLabelCall = mocks.setMarkers.mock.calls.find((c: unknown[][]) =>
+      Array.isArray(c[0]) && (c[0] as Array<{ text?: string }>).some(m => /^(H|L|HH|HL|LH|LL)$/.test(m.text ?? ''))
+    )
+    expect(structureLabelCall).toBeUndefined()
+  })
+
+  it('139. showStructureLabels: true + showMinorStructure: true — setMarkers called with minor kind labels', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({
+        showMinorStructure:  true,
+        showStructureLabels: true,
+      }),
+    })
+    const structureLabelCall = mocks.setMarkers.mock.calls.find((c: unknown[][]) =>
+      Array.isArray(c[0]) && (c[0] as Array<{ text?: string }>).some(m => /^(H|L|HH|HL|LH|LL)$/.test(m.text ?? ''))
+    )
+    expect(structureLabelCall).toBeDefined()
+  })
+
+  it('140. showStructureLabels: true + showMinorStructure: false — no minor kind labels in any setMarkers call', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({
+        showMinorStructure:  false,
+        showStructureLabels: true,
+      }),
+    })
+    // No call should contain minor labels (minor disabled)
+    const minorLabelCall = mocks.setMarkers.mock.calls.find((c: unknown[][]) =>
+      Array.isArray(c[0]) && (c[0] as Array<{ color?: string; text?: string }>).some(
+        m => m.color === '#4a90d9' && /^(H|L|HH|HL|LH|LL)$/.test(m.text ?? '')
+      )
+    )
+    expect(minorLabelCall).toBeUndefined()
+  })
+
+  it('141. showStructureLabels: true + showMainStructure: false — no main kind labels in any setMarkers call', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({
+        showMainStructure:   false,
+        showStructureLabels: true,
+      }),
+    })
+    const mainLabelCall = mocks.setMarkers.mock.calls.find((c: unknown[][]) =>
+      Array.isArray(c[0]) && (c[0] as Array<{ color?: string; text?: string }>).some(
+        m => m.color === '#e87722' && /^(H|L|HH|HL|LH|LL)$/.test(m.text ?? '')
+      )
+    )
+    expect(mainLabelCall).toBeUndefined()
+  })
+
+  it('142. H / HH / LH kind markers use position: aboveBar', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({
+        showMinorStructure:  true,
+        showMainStructure:   true,
+        showStructureLabels: true,
+      }),
+    })
+    // Collect all markers across all setMarkers calls that have structure kind text
+    const allMarkers = mocks.setMarkers.mock.calls
+      .flatMap((c: unknown[][]) => Array.isArray(c[0]) ? c[0] : []) as Array<{ text?: string; position?: string }>
+    const highKinds = allMarkers.filter(m => ['H', 'HH', 'LH'].includes(m.text ?? ''))
+    expect(highKinds.length).toBeGreaterThan(0)
+    highKinds.forEach(m => {
+      expect(m.position).toBe('aboveBar')
+    })
+  })
+
+  it('143. L / LL / HL kind markers use position: belowBar', () => {
+    mocks.setMarkers.mockClear()
+    // Use a result with a low-type point: makeStructureResult() has L at barIndex 2
+    renderChart({
+      structureResult: makeStructureResult(),
+      chartSettings:   makeStructureSettings({
+        showMinorStructure:  true,
+        showStructureLabels: true,
+      }),
+    })
+    const allMarkers = mocks.setMarkers.mock.calls
+      .flatMap((c: unknown[][]) => Array.isArray(c[0]) ? c[0] : []) as Array<{ text?: string; position?: string }>
+    const lowKinds = allMarkers.filter(m => ['L', 'LL', 'HL'].includes(m.text ?? ''))
+    expect(lowKinds.length).toBeGreaterThan(0)
+    lowKinds.forEach(m => {
+      expect(m.position).toBe('belowBar')
+    })
+  })
+
+  // ── MS-6H: Sequence-label integration guards ────────────────────────────────
+  // makeStructureResult() uses only plain H/L kinds in minorPoints — tests 138–143
+  // pass even if HL/HH text is never rendered. These tests use a dedicated fixture
+  // with HL and HH minor kinds to assert the actual marker text values.
+
+  function makeSequencedStructureResult(): StructureResult {
+    return {
+      minorPoints: [
+        { id: 'mp1', level: 'minor', kind: 'L',  timestamp: TS(0), barIndex: 0, price: 39,  source: 'price', confirmed: true },
+        { id: 'mp2', level: 'minor', kind: 'H',  timestamp: TS(2), barIndex: 2, price: 51,  source: 'price', confirmed: true },
+        { id: 'mp3', level: 'minor', kind: 'HL', timestamp: TS(4), barIndex: 4, price: 44,  source: 'price', confirmed: true },
+        { id: 'mp4', level: 'minor', kind: 'HH', timestamp: TS(6), barIndex: 6, price: 56,  source: 'price', confirmed: true },
+        { id: 'mp5', level: 'minor', kind: 'HL', timestamp: TS(8), barIndex: 8, price: 46,  source: 'price', confirmed: true },
+        { id: 'mp6', level: 'minor', kind: 'HH', timestamp: TS(10), barIndex: 10, price: 61, source: 'price', confirmed: true },
+      ],
+      minorLegs: [
+        { id: 'ml1', level: 'minor', fromPointId: 'mp1', toPointId: 'mp2', direction: 'up',   startBarIndex: 0, endBarIndex: 2,  startPrice: 39, endPrice: 51 },
+        { id: 'ml2', level: 'minor', fromPointId: 'mp2', toPointId: 'mp3', direction: 'down', startBarIndex: 2, endBarIndex: 4,  startPrice: 51, endPrice: 44 },
+        { id: 'ml3', level: 'minor', fromPointId: 'mp3', toPointId: 'mp4', direction: 'up',   startBarIndex: 4, endBarIndex: 6,  startPrice: 44, endPrice: 56 },
+        { id: 'ml4', level: 'minor', fromPointId: 'mp4', toPointId: 'mp5', direction: 'down', startBarIndex: 6, endBarIndex: 8,  startPrice: 56, endPrice: 46 },
+        { id: 'ml5', level: 'minor', fromPointId: 'mp5', toPointId: 'mp6', direction: 'up',   startBarIndex: 8, endBarIndex: 10, startPrice: 46, endPrice: 61 },
+      ],
+      mainPoints: [],
+      mainLegs:   [],
+      debugEvents: [],
+      bosEvents:   [],
+      chochEvents: [],
+    }
+  }
+
+  it('145. minor marker text includes HL when backend fixture has HL minor kind', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      candles:         makeCandles(11),
+      structureResult: makeSequencedStructureResult(),
+      chartSettings:   makeStructureSettings({ showMinorStructure: true, showStructureLabels: true }),
+    })
+    const allMarkers = mocks.setMarkers.mock.calls
+      .flatMap((c: unknown[][]) => Array.isArray(c[0]) ? c[0] : []) as Array<{ text?: string; color?: string }>
+    const hlMarkers = allMarkers.filter(m => m.text === 'HL' && m.color === '#4a90d9')
+    expect(hlMarkers.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('146. minor marker text includes HH when backend fixture has HH minor kind', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      candles:         makeCandles(11),
+      structureResult: makeSequencedStructureResult(),
+      chartSettings:   makeStructureSettings({ showMinorStructure: true, showStructureLabels: true }),
+    })
+    const allMarkers = mocks.setMarkers.mock.calls
+      .flatMap((c: unknown[][]) => Array.isArray(c[0]) ? c[0] : []) as Array<{ text?: string; color?: string }>
+    const hhMarkers = allMarkers.filter(m => m.text === 'HH' && m.color === '#4a90d9')
+    expect(hhMarkers.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('144. labels removed when showStructureLabels toggled off after being on', () => {
+    const candles = makeCandles(5)
+    const result  = makeStructureResult()
+    const { rerender } = renderChart({
+      candles,
+      structureResult: result,
+      chartSettings:   makeStructureSettings({ showMinorStructure: true, showStructureLabels: true }),
+    })
+    mocks.setMarkers.mockClear()
+
+    rerender(
+      <Chart candles={candles} symbol="AAPL" timeframe="1d"
+        structureResult={result}
+        chartSettings={makeStructureSettings({ showMinorStructure: true, showStructureLabels: false })} />
+    )
+    // After toggling off, setMarkers([]) must be called (labels cleared)
+    const clearCall = mocks.setMarkers.mock.calls.find(
+      (c: unknown[][]) => Array.isArray(c[0]) && (c[0] as unknown[]).length === 0
+    )
+    expect(clearCall).toBeDefined()
+  })
+
+  // ── MS-EVENT-CLEANUP-2: Minor-structure gate for BoS / CHoCH markers ──────
+  // BoS and CHoCH are minor-structure events; both toggles must be on.
+
+  function makeStructureResultWithBosEvent(): StructureResult {
+    return {
+      ...makeStructureResult(),
+      bosEvents: [{
+        status: 'valid', direction: 'bullish', structureScope: 'minor',
+        breakLevel: 110, protectedLevel: 100,
+        breakCandleIndex: 1, breakCandleTimestamp: TS(1),
+        eventType: 'bos', eventEffect: 'continuation',
+      }],
+    }
+  }
+
+  function makeStructureResultWithChochEvent(): StructureResult {
+    return {
+      ...makeStructureResult(),
+      chochEvents: [{
+        direction: 'bullish', structureScope: 'minor', protectedLevel: 95,
+        breakCandleIndex: 2, breakCandleTimestamp: TS(2),
+        structureReferenceIndex: 1, structureReferenceTimestamp: TS(1),
+        referenceStructureType: 'HL', violatedTrend: 'uptrend',
+        eventType: 'choch', status: 'valid', eventEffect: 'transition',
+      }],
+    }
+  }
+
+  it('147. CHoCH hidden when showMinorStructure: false even if showChoch and showMainStructure are true', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      candles:         makeCandles(5),
+      structureResult: makeStructureResultWithChochEvent(),
+      chartSettings:   makeStructureSettings({
+        showMinorStructure: false,
+        showMainStructure:  true,
+        showChoch:          true,
+      }),
+    })
+    const hasChochMarker = mocks.setMarkers.mock.calls.some(
+      (call: unknown[][]) =>
+        Array.isArray(call[0]) &&
+        (call[0] as { text?: string }[]).some(m => m.text === 'CHoCH'),
+    )
+    expect(hasChochMarker).toBe(false)
+  })
+
+  it('148. CHoCH visible when showMinorStructure: true and showChoch: true (showMainStructure irrelevant)', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      candles:         makeCandles(5),
+      structureResult: makeStructureResultWithChochEvent(),
+      chartSettings:   makeStructureSettings({
+        showMinorStructure: true,
+        showMainStructure:  false,
+        showChoch:          true,
+      }),
+    })
+    const hasChochMarker = mocks.setMarkers.mock.calls.some(
+      (call: unknown[][]) =>
+        Array.isArray(call[0]) &&
+        (call[0] as { text?: string }[]).some(m => m.text === 'CHoCH'),
+    )
+    expect(hasChochMarker).toBe(true)
+  })
+
+  it('149. BoS hidden when showMinorStructure: false even if showBos and showMainStructure are true', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      candles:         makeCandles(5),
+      structureResult: makeStructureResultWithBosEvent(),
+      chartSettings:   makeStructureSettings({
+        showMinorStructure: false,
+        showMainStructure:  true,
+        showBos:            true,
+      }),
+    })
+    const hasBoSMarker = mocks.setMarkers.mock.calls.some(
+      (call: unknown[][]) =>
+        Array.isArray(call[0]) &&
+        (call[0] as { text?: string }[]).some(m => m.text === 'BoS'),
+    )
+    expect(hasBoSMarker).toBe(false)
+  })
+
+  it('150. BoS visible when showMinorStructure: true and showBos: true (showMainStructure irrelevant)', () => {
+    mocks.setMarkers.mockClear()
+    renderChart({
+      candles:         makeCandles(5),
+      structureResult: makeStructureResultWithBosEvent(),
+      chartSettings:   makeStructureSettings({
+        showMinorStructure: true,
+        showMainStructure:  false,
+        showBos:            true,
+      }),
+    })
+    const hasBoSMarker = mocks.setMarkers.mock.calls.some(
+      (call: unknown[][]) =>
+        Array.isArray(call[0]) &&
+        (call[0] as { text?: string }[]).some(m => m.text === 'BoS'),
+    )
+    expect(hasBoSMarker).toBe(true)
   })
 })

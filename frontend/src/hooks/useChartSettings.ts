@@ -15,6 +15,7 @@ function loadSettings(): ChartSettings {
       appearance:  { ...DEFAULT_CHART_SETTINGS.appearance, ...(parsed.appearance ?? {}) },
       scales:      { ...DEFAULT_CHART_SETTINGS.scales,     ...(parsed.scales     ?? {}) },
       layout:      { ...DEFAULT_CHART_SETTINGS.layout,     ...(parsed.layout     ?? {}) },
+      structure:   { ...DEFAULT_CHART_SETTINGS.structure,  ...(parsed.structure  ?? {}) },
       themePreset: parsed.themePreset ?? DEFAULT_CHART_SETTINGS.themePreset,
     }
   } catch {
@@ -36,6 +37,7 @@ export function useChartSettings() {
         appearance:  { ...prev.appearance, ...(patch.appearance ?? {}) },
         scales:      { ...prev.scales,     ...(patch.scales     ?? {}) },
         layout:      { ...prev.layout,     ...(patch.layout     ?? {}) },
+        structure:   { ...prev.structure,  ...(patch.structure  ?? {}) },
         themePreset: patch.themePreset ?? prev.themePreset,
       }
       saveSettings(next)
