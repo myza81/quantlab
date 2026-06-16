@@ -160,7 +160,7 @@ export function Sidebar({ activeView, onNavigate, isAdmin }: SidebarProps) {
       title: 'Settings',
       items: [{
         id: 'settings', label: 'Settings',
-        icon: LuSettings, views: ['credentials', 'datasets'],
+        icon: LuSettings, views: ['credentials', 'datasets', 'research-engines'],
       }],
     },
     {
@@ -172,7 +172,7 @@ export function Sidebar({ activeView, onNavigate, isAdmin }: SidebarProps) {
 
   function handleNavigate(item: NavItemConfig) {
     if (item.id === 'settings') {
-      if (!['credentials', 'datasets'].includes(activeView)) onNavigate('credentials')
+      if (!['credentials', 'datasets', 'research-engines'].includes(activeView)) onNavigate('credentials')
     } else if (item.views.length > 0) {
       onNavigate(item.views[0])
     }

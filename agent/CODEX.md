@@ -320,6 +320,40 @@ python -m pip install <package>
 
 ---
 
+## Research Engine Versioning Rules
+
+Full specification: `docs/RESEARCH_ENGINE_VERSIONING.md`
+
+Applies to every analytical engine: market structure, indicators, signals, features, risk models.
+
+**Lifecycle** (no skipping, no undocumented jumps):
+
+```
+Experimental → Validated → Candidate → Production → Deprecated → Retired
+```
+
+**Three absolute rules:**
+
+1. No cross-version imports between engine versions
+2. No inheritance across engine versions
+3. No shared mutable state between engine versions
+
+**Production engines are immutable.** Do not edit a Production engine in place. Create a new version at Experimental state instead.
+
+**Consume contracts, not implementations.** Downstream code imports the domain's public contract types only. Never import a concrete engine class in a consumer module.
+
+**Forbidden actions for this agent:**
+
+* Editing a Production engine's implementation
+* Importing V1 from V2 or V2 from V1
+* Connecting an Experimental engine to a production pipeline or API route
+* Removing tests when promoting an engine to a new lifecycle state
+* Leaving a Deprecated engine with no migration or retirement plan
+
+When you are asked to modify an engine and you believe it is Production-state, stop, document the issue in `agent/HANDOFF.md`, and request confirmation before proceeding.
+
+---
+
 ## Behavioral Contract
 
 Failure to follow workflow rules is considered an implementation violation.

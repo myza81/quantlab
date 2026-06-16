@@ -29,6 +29,7 @@ from backend.api.routes import admin
 from backend.api.routes import forward_testing
 from backend.api.routes import paper_trading
 from backend.api.routes import chart
+from backend.api.routes import engine_registry
 
 setup_logging()
 
@@ -100,3 +101,4 @@ app.include_router(admin.router)
 app.include_router(forward_testing.router)
 app.include_router(paper_trading.router)
 app.include_router(chart.router)
+app.include_router(engine_registry.router)

@@ -69,6 +69,9 @@ vi.mock('../PaperTradingPanel', () => ({ PaperTradingPanel: () => <div data-test
 vi.mock('../StrategyLifecycleDashboard', () => ({
   StrategyLifecycleDashboard: () => <div data-testid="lifecycle-dashboard" />,
 }))
+vi.mock('../EngineRegistryPanel', () => ({
+  EngineRegistryPanel: () => <div data-testid="engine-registry-panel" />,
+}))
 vi.mock('../SessionProvenanceStrip', () => ({
   SessionProvenanceStrip: () => <div data-testid="provenance-strip" />,
 }))
@@ -302,6 +305,38 @@ describe('AppNavigation — Settings sub-tabs', () => {
     // Clicking Settings again when on Dataset Catalog should be a no-op (stay on Dataset Catalog)
     clickNav('Settings')
     expect(screen.getByTestId('catalog-manager')).toBeTruthy()
+  })
+
+  it('Settings exposes Research Engines sub-tab', () => {
+    render(<App />)
+    clickNav('Settings')
+    expect(screen.getByRole('button', { name: 'Research Engines' })).toBeTruthy()
+  })
+
+  it('Research Engines sub-tab shows EngineRegistryPanel', () => {
+    render(<App />)
+    clickNav('Settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Research Engines' }))
+    expect(screen.getByTestId('engine-registry-panel')).toBeTruthy()
+    expect(screen.queryByTestId('credential-manager')).toBeNull()
+    expect(screen.queryByTestId('catalog-manager')).toBeNull()
+  })
+
+  it('Settings tab stays active when on Research Engines sub-tab', () => {
+    render(<App />)
+    clickNav('Settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Research Engines' }))
+    clickNav('Settings')
+    expect(screen.getByTestId('engine-registry-panel')).toBeTruthy()
+  })
+
+  it('Data Providers sub-tab returns from Research Engines', () => {
+    render(<App />)
+    clickNav('Settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Research Engines' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Data Providers' }))
+    expect(screen.getByTestId('credential-manager')).toBeTruthy()
+    expect(screen.queryByTestId('engine-registry-panel')).toBeNull()
   })
 })
 

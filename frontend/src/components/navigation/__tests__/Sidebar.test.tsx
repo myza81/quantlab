@@ -220,6 +220,13 @@ describe('Sidebar — Desktop: navigation callbacks', () => {
     expect(onNavigate).not.toHaveBeenCalled()
   })
 
+  it('Settings no-op from research-engines', () => {
+    const onNavigate = vi.fn()
+    render(<Sidebar {...defaultProps} onNavigate={onNavigate} activeView="research-engines" />)
+    fireEvent.click(screen.getByTestId('nav-settings'))
+    expect(onNavigate).not.toHaveBeenCalled()
+  })
+
   it('Admin → admin', () => {
     const onNavigate = vi.fn()
     render(<Sidebar {...defaultProps} onNavigate={onNavigate} isAdmin={true} />)
@@ -279,6 +286,11 @@ describe('Sidebar — Desktop: active states', () => {
 
   it('Settings active when activeView=datasets', () => {
     render(<Sidebar {...defaultProps} activeView="datasets" />)
+    expect(screen.getByTestId('nav-settings')).toHaveAttribute('data-active', 'true')
+  })
+
+  it('Settings active when activeView=research-engines', () => {
+    render(<Sidebar {...defaultProps} activeView="research-engines" />)
     expect(screen.getByTestId('nav-settings')).toHaveAttribute('data-active', 'true')
   })
 

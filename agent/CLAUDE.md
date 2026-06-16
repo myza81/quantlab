@@ -482,3 +482,53 @@ Always prefer:
 python -m pip install ...
 
 inside the activated `.venv`.
+
+---
+
+## Research Engine Governance
+
+Full specification: `docs/RESEARCH_ENGINE_VERSIONING.md`  
+Guardrails summary: `agent/ARCHITECTURE_GUARDRAILS.md` section 29
+
+This policy applies to every analytical engine in the platform — market structure, indicators, signal generators, feature engines, risk models, and any future research module.
+
+### Engine Lifecycle
+
+```
+Experimental → Validated → Candidate → Production → Deprecated → Retired
+```
+
+No engine skips states. Promotions require documented evidence at each step.
+
+### Immutability Rule
+
+A Production engine must never be edited in place. When the logic must change, create a new version at Experimental state. The Production version is immutable from the moment of promotion.
+
+### Engine Independence Requirements
+
+- No cross-version imports between engine versions
+- No inheritance across engine versions
+- No shared mutable state between engine versions
+
+These three rules are absolute. No exceptions.
+
+### Contract-Based Consumption
+
+Downstream modules must import only the domain's public contract types. No module may import a concrete engine class directly. When a new engine version replaces the current Production version, downstream consumers must not require code changes.
+
+### Promotion Discipline
+
+Each lifecycle transition requires:
+
+- Experimental → Validated: all tests pass, schema frozen, promotion note written
+- Validated → Candidate: comparison against production output documented, visual verification (where applicable), no tests removed
+- Candidate → Production: architecture approval obtained, prior Production version's deprecation record prepared
+
+### What Agents Must Not Do
+
+- Edit a Production engine's logic in place
+- Import one engine version from another
+- Wire an Experimental engine into a production pipeline or API route
+- Create downstream consumers that import concrete engine classes
+- Skip lifecycle states because validation "seems obvious"
+- Leave a Deprecated engine with no retirement plan or migration timeline

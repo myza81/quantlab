@@ -1,0 +1,131 @@
+engines:
+
+  - human_name: "Classic Minor Structure"
+    technical_id: "minor_structure_v1"
+    engine_type: "minor_structure"
+    lifecycle_status: "production"
+    created_date: "2026-06-13"
+    frozen_date: "2026-06-14"
+    retired_date: null
+    rulebook_status: "frozen"
+    purpose: >-
+      Baseline production minor structure engine. Produces raw swing turning
+      points and directional legs from OHLCV candle data, candle by candle.
+      Benchmark for all future experimental minor structure variants.
+    key_characteristics:
+      - "Candle-by-candle sweep with 4 relationship classes: Inside Bar, Outside Bar, Higher High, Lower Low"
+      - "Classification priority: inside bar → outside bar → higher high → lower low"
+      - "Inside bar reversal gate: close vs prev.close comparison determines direction"
+      - "Outside bar always continues current direction — never reverses"
+      - "Tracker-based pivot placement (MS-4B): last_high_candle / last_low_candle"
+      - "Minor container pivot refinement pass (MS-4F) corrects missed extremes"
+      - "Fully deterministic — no state retained between compute_structure() calls"
+      - "Volume stored in candle but not used in any structure computation"
+    input_contract:
+      type: "list[OHLCVCandle]"
+      fields:
+        - timestamp
+        - bar_index
+        - open
+        - high
+        - low
+        - close
+        - volume
+      notes: "Minimum viable input is 2 candles. Volume is stored but not used."
+    output_contract:
+      type: "StructureResult (minor portion)"
+      fields:
+        - minor_points
+        - minor_legs
+        - debug_events
+      notes: >-
+        Points are emitted as plain H or L at emission time.
+        The MS-7A label pass (run after main structure) relabels them to HH/HL/LH/LL.
+    dependencies:
+      - OHLCVCandle
+      - StructurePoint
+      - StructureLeg
+      - StructureDebugEvent
+    supersedes: null
+    superseded_by: null
+    validation_status: "production_validated"
+    notes: >-
+      Frozen at commit de8c4e8 (MARKET-STRUCTURE-CHECKPOINT-1, 2026-06-14).
+      No modifications to this engine are permitted.
+      Future changes must create minor_structure_v2 as an independent Experimental engine.
+      Rulebook: docs/MARKET_STRUCTURE_RULEBOOK.md sections 2–3.
+    change_log:
+      - date: "2026-06-13"
+        commit: "28cec617"
+        description: "Initial production implementation — MARKET-STRUCTURE-1A"
+      - date: "2026-06-14"
+        commit: "de8c4e8"
+        description: "Frozen as production baseline — MARKET-STRUCTURE-CHECKPOINT-1"
+
+  - human_name: "Classic Main Structure"
+    technical_id: "main_structure_v1"
+    engine_type: "main_structure"
+    lifecycle_status: "production"
+    created_date: "2026-06-13"
+    frozen_date: "2026-06-14"
+    retired_date: null
+    rulebook_status: "frozen"
+    purpose: >-
+      Baseline production main structure engine. Derives higher-level market
+      structure exclusively from minor structure output — never from raw candles.
+      Produces the labelled HH/HL/LH/LL sequence that represents confirmed trend
+      direction and key structural thresholds.
+      Benchmark for all future experimental main structure variants.
+    key_characteristics:
+      - "Derived-only: consumes minor structure points, never raw OHLCV candles"
+      - "Three-state machine: ESTABLISHING → BULLISH → BEARISH"
+      - "MS-7C equal-value thresholds: price ≥ main_high qualifies as HH; price ≤ main_low qualifies as LL"
+      - "HL/LH candidate selection by bar scan between structural pivots"
+      - "Reversal protection: plain L/H emitted during reversals cannot be retroactively relabelled"
+      - "Asymmetric reversal thresholds: BULLISH reversal requires strict <; BEARISH reversal requires ≥"
+      - "Boundary advancement (MS-6B) after every confirmation or reversal event"
+      - "MS-7A minor label pass runs independently after main structure is complete"
+    input_contract:
+      type: "list[StructurePoint]"
+      fields:
+        - id
+        - level
+        - kind
+        - timestamp
+        - bar_index
+        - price
+        - source
+        - confirmed
+        - metadata
+      notes: >-
+        Consumes minor_structure_v1 output. At consumption time all minor points
+        are plain H or L — the MS-7A label pass has not yet run.
+        This ordering is a critical dependency.
+    output_contract:
+      type: "StructureResult (main portion)"
+      fields:
+        - main_points
+        - main_legs
+      notes: >-
+        Main points carry level=MAIN and source='minor'.
+        Bar indices and timestamps are inherited from the source minor points.
+    dependencies:
+      - minor_structure_v1
+      - StructurePoint
+      - StructureLeg
+    supersedes: null
+    superseded_by: null
+    validation_status: "production_validated"
+    notes: >-
+      Frozen at commit de8c4e8 (MARKET-STRUCTURE-CHECKPOINT-1, 2026-06-14).
+      No modifications to this engine are permitted.
+      Future changes must create main_structure_v2 as an independent Experimental engine.
+      The BULLISH reversal asymmetry (strict < vs BEARISH ≥) is intentional per MS-7C.
+      Rulebook: docs/MARKET_STRUCTURE_RULEBOOK.md sections 4–6.
+    change_log:
+      - date: "2026-06-13"
+        commit: "28cec617"
+        description: "Initial production implementation — MARKET-STRUCTURE-1A"
+      - date: "2026-06-14"
+        commit: "de8c4e8"
+        description: "Frozen as production baseline — MARKET-STRUCTURE-CHECKPOINT-1"

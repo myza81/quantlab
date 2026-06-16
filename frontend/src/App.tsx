@@ -11,6 +11,7 @@ import { CatalogManager } from './components/CatalogManager'
 import { ForwardTestPanel } from './components/ForwardTestPanel'
 import { PaperTradingPanel } from './components/PaperTradingPanel'
 import { StrategyLifecycleDashboard } from './components/StrategyLifecycleDashboard'
+import { EngineRegistryPanel } from './components/EngineRegistryPanel'
 import { SessionProvenanceStrip } from './components/SessionProvenanceStrip'
 import { StrategyContextProvider } from './context/StrategyContext'
 import { StrategyContextBar } from './components/StrategyContextBar'
@@ -41,7 +42,7 @@ import { fetchMarketStructure } from './api/marketStructure'
 import type { StructureResult } from './types/marketStructure'
 
 type Status     = 'idle' | 'loading' | 'success' | 'error'
-type ActiveView = 'chart' | 'composer' | 'credentials' | 'report' | 'admin' | 'datasets' | 'history' | 'forward-test' | 'paper-trading' | 'lifecycle'
+type ActiveView = 'chart' | 'composer' | 'credentials' | 'report' | 'admin' | 'datasets' | 'history' | 'forward-test' | 'paper-trading' | 'lifecycle' | 'research-engines'
 type AuthView   = 'login' | 'register'
 
 // Workflow pages where the persistent Strategy Context Bar is shown (NAV-UX-3A/3B).
@@ -436,8 +437,8 @@ export default function App() {
               </div>
             )}
 
-            {/* ── Settings (Data Providers + Dataset Catalog) ── */}
-            {(activeView === 'credentials' || activeView === 'datasets') && (
+            {/* ── Settings (Data Providers + Dataset Catalog + Research Engines) ── */}
+            {(activeView === 'credentials' || activeView === 'datasets' || activeView === 'research-engines') && (
               <div style={{ ...st.fill, flexDirection: 'column' }}>
                 <div style={st.settingsSubBar}>
                   <NavTab
@@ -450,6 +451,11 @@ export default function App() {
                     active={activeView === 'datasets'}
                     onClick={() => setActiveView('datasets')}
                   />
+                  <NavTab
+                    label="Research Engines"
+                    active={activeView === 'research-engines'}
+                    onClick={() => setActiveView('research-engines')}
+                  />
                 </div>
                 {activeView === 'credentials' && (
                   <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -459,6 +465,11 @@ export default function App() {
                 {activeView === 'datasets' && (
                   <div style={{ flex: 1, overflowY: 'auto' }}>
                     <CatalogManager onLoadIntoChart={handleCatalogLoad} />
+                  </div>
+                )}
+                {activeView === 'research-engines' && (
+                  <div style={{ flex: 1, overflow: 'hidden' }}>
+                    <EngineRegistryPanel />
                   </div>
                 )}
               </div>

@@ -635,3 +635,42 @@ This is a modular Strategy Research Lab and strategy-building ecosystem.
 The primary objective is to build a rigorous environment for discovering, composing, testing, validating, and managing strategies before any autonomous trading is allowed.
 
 All code must respect that lifecycle and the Strategy Tools Builder Layer as a permanent platform direction.
+
+---
+
+## 29. Research Engine Versioning Rules
+
+Full governance specification: `docs/RESEARCH_ENGINE_VERSIONING.md`
+
+These rules apply platform-wide — to every analytical engine: market structure, indicators, signal generators, feature engines, risk models, ML models, and any future research module.
+
+**Lifecycle states** (in order):
+Experimental → Validated → Candidate → Production → Deprecated → Retired
+
+No engine may skip a state. Demotion is permitted when evidence fails.
+
+**Engine independence** — all three rules are non-negotiable:
+
+* No cross-version imports. V2 must not import from V1.
+* No inheritance across versions. New versions copy relevant logic; they do not subclass prior versions.
+* No shared mutable state between versions.
+
+**Immutability of production engines** — a Production engine must not be edited in place. Changes create a new version at Experimental state. The Production version becomes immutable at the moment of promotion.
+
+**Contract-based consumption** — downstream modules must import only the domain's public contract types, never a concrete engine class. All output is consumed through the contract, never through a direct engine import.
+
+**Promotion requires evidence** — each lifecycle transition requires documented proof: tests passed, comparisons run, visual verification (where applicable), and a written promotion note.
+
+**Retirement discipline** — a Deprecated engine must have a migration plan and a target retirement date. Engine code referenced by historical production records must be archived before deletion.
+
+**Forbidden patterns:**
+
+* Editing a Production engine in place
+* Importing across engine versions
+* Inheriting across engine versions
+* Downstream consumers importing concrete engine classes
+* Skipping lifecycle states
+* Leaving Deprecated engines with no retirement plan
+* Shared module-level state between versions
+* Research engine logic embedded inside strategy modules
+* Experimental engines wired into production pipelines
