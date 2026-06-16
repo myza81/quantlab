@@ -10,6 +10,13 @@ _Source of truth for individual engine details: each engine's own record in this
 
 Each row represents one engine version. Engines are grouped by domain. A domain may have multiple versions in different lifecycle states simultaneously.
 
+**Naming convention:**
+
+- **Human Name** — a short research label, treated like a git commit message. Describes the core analytical idea being tested. This is the primary display name in the version log UI and in this catalog. Example: `Classic Minor Structure`.
+- **Technical ID** — the stable machine reference. Used by code, APIs, pipeline configs, and the YAML registry. Never changes once assigned. Format: `<domain>_v<n>`. Example: `minor_structure_v1`.
+
+Full naming rules: `docs/RESEARCH_ENGINE_VERSIONING.md` Section B.1.
+
 **Lifecycle states:**
 
 | Status | Meaning |

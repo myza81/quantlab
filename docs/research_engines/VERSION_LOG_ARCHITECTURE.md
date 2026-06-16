@@ -55,8 +55,12 @@ Each engine version record contains the following fields. This is the schema for
 
 ```yaml
 # Schema: one record per engine version
-human_name:         string          # "Classic Minor Structure"
-technical_id:       string          # "minor_structure_v1"  — unique key
+human_name:         string          # Short research label — treated like a git commit message.
+                                    # Mandatory. Describes the core idea, not the component name.
+                                    # Example: "Classic Minor Structure"
+technical_id:       string          # Stable machine reference — used by code, APIs, and configs.
+                                    # Never changes once assigned. Format: <domain>_v<n>
+                                    # Example: "minor_structure_v1"
 engine_type:        string          # "minor_structure" | "main_structure" | etc.
 lifecycle_status:   string          # "experimental" | "validated" | "candidate" | "production" | "deprecated" | "retired"
 created_date:       date            # ISO 8601 date

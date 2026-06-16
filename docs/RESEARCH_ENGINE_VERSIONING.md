@@ -59,6 +59,46 @@ The engine has been removed from active use. Its code is archived (not deleted i
 
 ---
 
+## B.1 — Human Name vs Technical ID
+
+Every engine record has two identifying fields with distinct purposes.
+
+**Technical ID** (`technical_id`)
+
+The machine-authoritative reference. Used by code, APIs, configuration files, pipeline specs, and the YAML registry. Never changes once assigned. Format: `<domain>_v<n>` (e.g., `minor_structure_v1`). Any code, config, or log that references an engine must use the technical ID.
+
+**Human Name** (`human_name`)
+
+A mandatory short research label — treated like a git commit message. It names the core research idea or approach being tested, not the software component. It is the primary display identifier in the version log UI and in documentation tables.
+
+**Rules for human names:**
+
+- **Mandatory.** Every engine record must have one.
+- **Short.** One to five words. No version numbers in the name itself — the version is encoded in the technical ID.
+- **Descriptive.** Names the research hypothesis, not the implementation class.
+- **Stable within a version.** Once a Production engine is frozen, its human name must not be changed.
+
+**Good human names:**
+
+| Human Name | What it communicates |
+|---|---|
+| Classic Minor Structure | Baseline candle-sweep approach — no ML, no lookahead |
+| Trend-Filtered Minor Structure | Same sweep but conditional on trend state |
+| Momentum-Gated Pivots | Pivot placement with momentum confirmation gate |
+
+**Poor human names (avoid these):**
+
+| Human Name | Problem |
+|---|---|
+| Minor Structure Engine V2 | Version number belongs in `technical_id`, not the name |
+| MarketStructureV2 | Reads like a class name, not a research description |
+| Updated Algorithm | Says nothing about what changed or why |
+| New Approach | Generic; meaningless as a log entry |
+
+**The distinction in one sentence:** `technical_id` answers "which version of code is running?" — `human_name` answers "what research idea does this version implement?"
+
+---
+
 ## C — Engine Independence
 
 Engine versions must be fully independent units. This is non-negotiable.

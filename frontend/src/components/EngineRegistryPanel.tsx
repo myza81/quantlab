@@ -152,6 +152,7 @@ function EngineCard({ engine }: { engine: EngineRecord }) {
           >
             {engine.human_name}
           </span>
+          <span style={{ fontSize: 10, color: '#252d3a', fontFamily: 'monospace' }}>id:</span>
           <span
             data-testid="engine-technical-id"
             style={{ fontSize: 10, color: '#3a4455', fontFamily: 'monospace' }}
@@ -307,8 +308,9 @@ export function EngineRegistryPanel() {
       <div style={s.header}>
         <div style={s.title}>Research Engine Version Log</div>
         <div style={s.subtitle}>
-          Read-only visibility into versioned analytical engines.
-          No engine selection or pipeline configuration.
+          Research log — versioned engine history for each analytical domain.
+          Human names describe the research idea; technical IDs are stable machine references.
+          Read-only. No engine selection or pipeline configuration.
         </div>
       </div>
 
