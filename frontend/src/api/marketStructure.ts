@@ -206,15 +206,21 @@ function mapResponse(raw: RawMarketStructureResponse): StructureResult {
  */
 export async function fetchMarketStructure(
   candles: OHLCVCandle[],
+  engineId?: string,
 ): Promise<StructureResult> {
   const sorted = [...candles].sort(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
   )
 
+  const body: Record<string, unknown> = { candles: sorted }
+  if (engineId && engineId !== 'minor_structure_v1') {
+    body.engine_id = engineId
+  }
+
   const raw = await authedFetch('/chart/market-structure', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ candles: sorted }),
+    body:    JSON.stringify(body),
   }).then(r => r.json() as Promise<RawMarketStructureResponse>)
 
   return mapResponse(raw)

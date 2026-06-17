@@ -18,10 +18,13 @@ from backend.api.schemas.chart import (
 )
 from backend.tools.bos_detection import BoSEvent, detect_bos
 from backend.tools.choch_detection import CHoCHEvent, detect_choch
+from fastapi import HTTPException
 from backend.tools.market_structure import (
     MarketStructureEngine,
     OHLCVCandle,
 )
+from backend.tools.market_structure_v2 import MinorStructureV2Engine
+from backend.tools.market_structure_v3 import MinorStructureV3Engine
 
 
 def _map_bos(ev: BoSEvent) -> BosEventResponse:
@@ -67,7 +70,20 @@ def compute_market_structure_from_candles(
     BoS and CHoCH detectors run against already-labeled minor and main structure
     points so all three outputs (structure, BoS, CHoCH) are consistent.
     """
-    engine = MarketStructureEngine()
+    if request.engine_id == "minor_structure_v2":
+        engine: MarketStructureEngine | MinorStructureV2Engine | MinorStructureV3Engine = MinorStructureV2Engine()
+    elif request.engine_id == "minor_structure_v3":
+        engine = MinorStructureV3Engine()
+    elif request.engine_id == "minor_structure_v1":
+        engine = MarketStructureEngine()
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown engine_id: {request.engine_id!r}. "
+                "Valid values: minor_structure_v1, minor_structure_v2, minor_structure_v3"
+            ),
+        )
 
     ohlcv_candles = [
         OHLCVCandle(

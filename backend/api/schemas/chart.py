@@ -163,6 +163,7 @@ class MarketStructureRequest(BaseModel):
     """Request body for POST /chart/market-structure."""
     model_config = ConfigDict(extra="forbid")
     candles: list[OHLCVCandleInput]
+    engine_id: str = "minor_structure_v1"
 
 
 class StructurePointResponse(BaseModel):

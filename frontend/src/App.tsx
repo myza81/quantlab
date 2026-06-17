@@ -160,6 +160,16 @@ export default function App() {
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Clear the fingerprint and stale result whenever the candle dataset is replaced.
+  // Must run BEFORE the fetch effect (defined below) so that when both fire in the
+  // same render pass (e.g. candles loaded with structure already enabled after a
+  // refresh), the fetch effect sees an empty fingerprint and stores the new fp
+  // before its async guard check — not an empty string overwritten by this effect.
+  useEffect(() => {
+    structureFingerprintRef.current = ''
+    setStructureResult(null)
+  }, [candles]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // MS-2: Fetch market structure when candles load and any structure toggle is on.
   // Fingerprint prevents re-fetching when only toggles change (data doesn't change).
   // All structure toggle states are in deps so the first toggle-on triggers the fetch.
@@ -171,13 +181,14 @@ export default function App() {
 
     if (!needsStructure || candles.length === 0) return
 
-    const fp = `${candles.length}::${candles[0].timestamp}::${candles[candles.length - 1].timestamp}`
-    if (fp === structureFingerprintRef.current) return  // same candles, already fetched
+    const engineId = s.minorStructureEngine ?? 'minor_structure_v1'
+    const fp = `${engineId}::${candles.length}::${candles[0].timestamp}::${candles[candles.length - 1].timestamp}`
+    if (fp === structureFingerprintRef.current) return  // same candles+engine, already fetched
 
     structureFingerprintRef.current = fp
     setStructureResult(null)
 
-    fetchMarketStructure(candles)
+    fetchMarketStructure(candles, engineId)
       .then(result => {
         // Guard against stale fetch completing after candles changed
         if (structureFingerprintRef.current === fp) setStructureResult(result)
@@ -193,13 +204,8 @@ export default function App() {
     chartSettings.structure.showDebugMetadata,
     chartSettings.structure.showBos,
     chartSettings.structure.showChoch,
+    chartSettings.structure.minorStructureEngine,
   ])
-
-  // Clear structure result when candles change (new dataset invalidates cached result)
-  useEffect(() => {
-    structureFingerprintRef.current = ''
-    setStructureResult(null)
-  }, [candles]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist session context whenever key state changes
   useEffect(() => {

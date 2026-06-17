@@ -23,7 +23,7 @@ export default function ChartSettingsPanel({ settings, onChange, onClose }: Char
     onChange({ labels: { ...settings.labels, [key]: value } })
   }
 
-  function patchStructure(key: keyof ChartSettings['structure'], value: boolean) {
+  function patchStructure(key: keyof ChartSettings['structure'], value: boolean | string) {
     onChange({ structure: { ...settings.structure, [key]: value } })
   }
 
@@ -124,6 +124,33 @@ export default function ChartSettingsPanel({ settings, onChange, onClose }: Char
           testId="settings-toggle-choch"
           checked={settings.structure.showChoch}
           onChange={v => patchStructure('showChoch', v)}
+          labelColor={tc.panelText}
+        />
+      </div>
+
+      {/* ── Experimental ── */}
+      <div style={{ ...s.section, borderTop: `1px solid ${tc.toolbarBorder}` }}>
+        <div data-testid="settings-section-experimental" style={{ ...s.sectionHeader, color: tc.panelMuted }}>Experimental</div>
+        <div style={{ padding: '2px 10px 4px', fontSize: 10, fontFamily: 'monospace', color: tc.panelMuted }}>Minor Structure Engine</div>
+        <RadioRow
+          label="Classic (V1)"
+          testId="settings-radio-engine-v1"
+          selected={settings.structure.minorStructureEngine === 'minor_structure_v1'}
+          onSelect={() => patchStructure('minorStructureEngine', 'minor_structure_v1')}
+          labelColor={tc.panelText}
+        />
+        <RadioRow
+          label="Ignore Inside Bar (V2)"
+          testId="settings-radio-engine-v2"
+          selected={settings.structure.minorStructureEngine === 'minor_structure_v2'}
+          onSelect={() => patchStructure('minorStructureEngine', 'minor_structure_v2')}
+          labelColor={tc.panelText}
+        />
+        <RadioRow
+          label="Container Breakout (V3)"
+          testId="settings-radio-engine-v3"
+          selected={settings.structure.minorStructureEngine === 'minor_structure_v3'}
+          onSelect={() => patchStructure('minorStructureEngine', 'minor_structure_v3')}
           labelColor={tc.panelText}
         />
       </div>

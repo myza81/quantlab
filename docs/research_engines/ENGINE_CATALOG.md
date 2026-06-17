@@ -39,6 +39,8 @@ Full lifecycle governance: `docs/RESEARCH_ENGINE_VERSIONING.md`
 | Human Name | Technical ID | Status | Frozen | Supersedes | Superseded By | Record |
 |---|---|---|---|---|---|---|
 | Classic Minor Structure | `minor_structure_v1` | **Production** | 2026-06-14 | — | — | [minor_structure_v1.md](minor_structure_v1.md) |
+| Minor Structure Ignore Inside Bar | `minor_structure_v2` | Experimental | — | — | — | [minor_structure_v2.md](minor_structure_v2.md) |
+| Container Breakout Minor Structure | `minor_structure_v3` | Experimental | — | — | — | [minor_structure_v3.md](minor_structure_v3.md) |
 
 ### Main Structure
 

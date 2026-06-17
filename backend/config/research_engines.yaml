@@ -129,3 +129,126 @@ engines:
       - date: "2026-06-14"
         commit: "de8c4e8"
         description: "Frozen as production baseline — MARKET-STRUCTURE-CHECKPOINT-1"
+
+  - human_name: "Minor Structure Ignore Inside Bar"
+    technical_id: "minor_structure_v2"
+    engine_type: "minor_structure"
+    lifecycle_status: "experimental"
+    created_date: "2026-06-16"
+    frozen_date: null
+    retired_date: null
+    rulebook_status: "active"
+    purpose: >-
+      Test whether ignoring inside bars during structure construction produces
+      cleaner and more visually intuitive minor structure. Inside bars are tracked
+      as clusters; clusters of 4 or more create a confirmed pivot at the cluster
+      extreme after breakout. Runtime: backend/tools/market_structure_v2.py.
+    key_characteristics:
+      - "All V1 rules apply except inside-bar handling"
+      - "Inside bars compared against mother candle n0, not the previous candle"
+      - "Inside bars continue previous structure direction — no pivot, no reversal"
+      - "Clusters of 1–3 inside bars: no pivot created; breakout candle processed by V1 rules"
+      - "Clusters of 4+ inside bars: pivot at cluster extreme after breakout (lowest low / highest high)"
+      - "Mother candle n0 remains the comparison reference until breakout"
+      - "Selectable via engine_id: minor_structure_v2 in POST /chart/market-structure"
+    input_contract:
+      type: "list[OHLCVCandle]"
+      fields:
+        - timestamp
+        - bar_index
+        - open
+        - high
+        - low
+        - close
+        - volume
+      notes: "Same input contract as minor_structure_v1. Minimum viable input is 2 candles."
+    output_contract:
+      type: "StructureResult (minor portion)"
+      fields:
+        - minor_points
+        - minor_legs
+        - debug_events
+      notes: "Same output contract as minor_structure_v1. No new contract types introduced."
+    dependencies:
+      - OHLCVCandle
+      - StructurePoint
+      - StructureLeg
+      - StructureDebugEvent
+    supersedes: null
+    superseded_by: null
+    validation_status: "not_validated"
+    notes: >-
+      Runtime: backend/tools/market_structure_v2.py (MinorStructureV2Engine).
+      V2 does not import minor_structure_v1 engine code — independent unit.
+      The close-comparison inside-bar reversal gate from V1 is removed entirely.
+      Hypothesis: produces fewer, more visually intuitive pivots.
+      Record: docs/research_engines/minor_structure_v2.md
+    change_log:
+      - date: "2026-06-16"
+        commit: null
+        description: "Design record created — RESEARCH-ENGINE-LOG-3"
+      - date: "2026-06-16"
+        commit: null
+        description: "Runtime implementation added — MinorStructureV2Engine; 9 unit tests; chart engine selector wired"
+
+  - human_name: "Container Breakout Minor Structure"
+    technical_id: "minor_structure_v3"
+    engine_type: "minor_structure"
+    lifecycle_status: "experimental"
+    created_date: "2026-06-16"
+    frozen_date: null
+    retired_date: null
+    rulebook_status: "active"
+    purpose: >-
+      Test whether defining structure through container breakouts — rather than
+      candle-by-candle comparison — produces cleaner, more durable minor structure
+      pivots. Inside-container candles are ignored; pivots emitted only on
+      high/low state transitions at the true leg extreme.
+    key_characteristics:
+      - "Active container [temp_support, temp_resistance] initialized from first candle"
+      - "Four classifications: inside_container, outside_container, bullish_breakout, bearish_breakout"
+      - "Inside-container candles: continue state, no pivot, no container reset"
+      - "Outside-container candles: continue state, no pivot, reset container"
+      - "Bullish breakout: state = high, reset container"
+      - "Bearish breakout: state = low, reset container"
+      - "Pivots emitted only on high/low state transitions"
+      - "True-extreme placement: H at highest high candle of completed up leg; L at lowest low candle of completed down leg"
+      - "Equal boundary values are inside-container (strict breakout conditions)"
+      - "Close price is not used"
+      - "Selectable via engine_id: minor_structure_v3 in POST /chart/market-structure"
+    input_contract:
+      type: "list[OHLCVCandle]"
+      fields:
+        - timestamp
+        - bar_index
+        - open
+        - high
+        - low
+        - close
+        - volume
+      notes: "Same input contract as minor_structure_v1. Close and volume are not used in V3 computation."
+    output_contract:
+      type: "StructureResult (minor portion)"
+      fields:
+        - minor_points
+        - minor_legs
+        - debug_events
+      notes: "Same output contract as minor_structure_v1. Debug action values differ: inside_container, outside_container, bullish_breakout, bearish_breakout."
+    dependencies:
+      - OHLCVCandle
+      - StructurePoint
+      - StructureLeg
+      - StructureDebugEvent
+    supersedes: null
+    superseded_by: null
+    validation_status: "not_validated"
+    notes: >-
+      Runtime: backend/tools/market_structure_v3.py (MinorStructureV3Engine).
+      V3 does not import minor_structure_v1 or minor_structure_v2 engine code — independent unit.
+      The close price is not used in any V3 computation (high/low only).
+      V3 is expected to produce fewer pivots in ranging markets.
+      Record: docs/research_engines/minor_structure_v3.md
+    change_log:
+      - date: "2026-06-16"
+        commit: null
+        description: "Design record created and runtime implementation added — MinorStructureV3Engine"
