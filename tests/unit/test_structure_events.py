@@ -80,15 +80,15 @@ _DOWN_POINTS = [
 _UP_SAFE = [
     _flat(0, 90), _flat(1, 93),
     _flat(2, 100), _flat(3, 97),
-    _flat(4, 95), _flat(5, 102),
-    _flat(6, 110), _flat(7, 107),
+    _flat(4, 95), _flat(5, 97),    # 97 ≤ H.price(100): BoS-safe; 97 ≥ HL(95): CHoCH-safe
+    _flat(6, 97), _flat(7, 97),    # bar 6 = SP(HH); candle high=97 ≤ 100 → no BoS trigger
 ]
 
 _DOWN_SAFE = [
     _flat(0, 110), _flat(1, 105),
     _flat(2, 90), _flat(3, 95),
-    _flat(4, 100), _flat(5, 88),
-    _flat(6, 80), _flat(7, 83),
+    _flat(4, 100), _flat(5, 92),   # 92 ≥ L.price(90): BoS-safe; 92 ≤ LH(100): CHoCH-safe
+    _flat(6, 92), _flat(7, 92),    # bar 6 = SP(LL); candle low=92 ≥ 90 → no BoS trigger
 ]
 
 
@@ -101,20 +101,22 @@ def _make_bos_valid() -> BoSEvent:
 
 
 def _make_bos_pending() -> BoSEvent:
-    """Pending (unresolved) bullish BoS event."""
-    candles = _UP_SAFE + [_candle(8, high=115, low=109, close=109)]
+    """Pending (unresolved) bullish BoS event: high=105 > H.price(100), close=99 ≤ 100."""
+    candles = _UP_SAFE + [_candle(8, high=105, low=99, close=99)]
     events = detect_bos(_UP_POINTS, candles, "minor")
     assert events and events[0].status == BoSStatus.PENDING
     return events[0]
 
 
 def _make_bos_invalid() -> BoSEvent:
-    """Invalidated bullish BoS event."""
+    """Invalidated bullish BoS: pending at bar 8, L structure point (CHoCH) at bar 10."""
+    points = list(_UP_POINTS) + [_sp(10, 92, PointKind.L)]
     candles = _UP_SAFE + [
-        _candle(8, high=115, low=109, close=109),
-        _candle(9, high=100, low=93,  close=94),
+        _candle(8, high=105, low=99, close=99),   # pending: conf_level=105
+        _flat(9, 102),
+        _flat(10, 92),   # bar 10 = SP(L) → INVALID
     ]
-    events = detect_bos(_UP_POINTS, candles, "minor")
+    events = detect_bos(points, candles, "minor")
     invalid = [e for e in events if e.status == BoSStatus.INVALID]
     assert invalid
     return invalid[0]
@@ -346,7 +348,7 @@ class TestBoSBehaviorUnchanged:
         ev = _make_bos_valid()
         assert ev.status               == BoSStatus.VALID
         assert ev.direction            == BoSDirection.BULLISH
-        assert ev.break_level          == 110.0
+        assert ev.break_level          == 100.0   # H.price (new spec; was HH.price=110)
         assert ev.protected_level      == 95.0
         assert ev.break_candle_index   == 8
         assert ev.confirmation_level   is None
@@ -355,13 +357,13 @@ class TestBoSBehaviorUnchanged:
     def test_pending_bos_fields_unaffected(self):
         ev = _make_bos_pending()
         assert ev.status             == BoSStatus.PENDING
-        assert ev.confirmation_level == 115.0
+        assert ev.confirmation_level == 105.0   # break_candle.high (was 115.0)
         assert ev.event_type         == "bos"   # contract field present but benign
 
     def test_invalid_bos_fields_unaffected(self):
         ev = _make_bos_invalid()
         assert ev.status == BoSStatus.INVALID
-        assert ev.invalidation_candle_index == 9
+        assert ev.invalidation_candle_index == 10   # L structure point at bar 10
 
     def test_no_bos_without_trend(self):
         points = [_sp(0, 90, PointKind.L), _sp(2, 100, PointKind.H)]

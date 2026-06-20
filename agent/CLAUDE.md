@@ -403,7 +403,15 @@ If architecture violations are discovered:
 
 ## REQUIRED DOCUMENT CONSISTENCY
 
-Ensure implementation consistency across:
+The canonical registry of all architecture documents is:
+
+```
+docs/ARCHITECTURE_INDEX.md
+```
+
+Before implementation, read the index. Load the ACTIVE_ARCHITECTURE documents for every domain the task touches. Implementation must not violate any loaded architecture document.
+
+The following contracts are especially critical and must always be consistent with implementation:
 
 ```
 docs/
@@ -423,7 +431,7 @@ agent/
   TASKS.md
 ```
 
-Implementation must not violate documented contracts.
+If a new architecture document is created during an implementation session, register it in `docs/ARCHITECTURE_INDEX.md` before closing the session.
 
 ---
 

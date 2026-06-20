@@ -177,7 +177,7 @@ export default function App() {
     const s = chartSettings.structure
     const needsStructure = s.showMinorStructure || s.showMainStructure ||
                            s.showStructureLabels || s.showDebugMetadata ||
-                           s.showBos || s.showChoch
+                           s.showBos || s.showChoch || s.showExperimentalBos
 
     if (!needsStructure || candles.length === 0) return
 
@@ -204,6 +204,7 @@ export default function App() {
     chartSettings.structure.showDebugMetadata,
     chartSettings.structure.showBos,
     chartSettings.structure.showChoch,
+    chartSettings.structure.showExperimentalBos,
     chartSettings.structure.minorStructureEngine,
   ])
 

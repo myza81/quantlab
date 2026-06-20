@@ -22,12 +22,13 @@ export interface ChartSettingsLayout {
 }
 
 export interface ChartSettingsStructure {
-  showMinorStructure: boolean
-  showMainStructure: boolean
-  showStructureLabels: boolean
-  showDebugMetadata: boolean
-  showBos: boolean
-  showChoch: boolean
+  showMinorStructure:    boolean
+  showMainStructure:     boolean
+  showStructureLabels:   boolean
+  showDebugMetadata:     boolean
+  showBos:               boolean
+  showChoch:             boolean
+  showExperimentalBos:   boolean
   minorStructureEngine: 'minor_structure_v1' | 'minor_structure_v2' | 'minor_structure_v3'
 }
 
@@ -69,6 +70,7 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
     showDebugMetadata:    false,
     showBos:              false,
     showChoch:            false,
+    showExperimentalBos:  false,
     minorStructureEngine: 'minor_structure_v1',
   },
   themePreset: 'quantlab-dark',

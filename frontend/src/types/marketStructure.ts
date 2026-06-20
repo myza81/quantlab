@@ -89,17 +89,78 @@ export interface ChochEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Lineage metadata (RESEARCH-TOOL-LINEAGE-GUARD-1)
+// ---------------------------------------------------------------------------
+
+/** Lineage for a versioned research tool execution (root, e.g. structure engine). */
+export interface ToolLineage {
+  toolDomain:       string   // "market_structure"
+  toolId:           string   // "minor_structure_v3"
+  versionId:        string
+  humanName:        string   // "Container Breakout Minor Structure"
+  lifecycleStatus:  string   // "production" | "experimental"
+  implementationRef: string  // "backend/tools/market_structure_v3.py::MinorStructureV3Engine"
+}
+
+/** Lineage for a tool whose input is another tool's output (e.g. BoS, CHoCH). */
+export interface DerivedToolLineage {
+  toolDomain:       string   // "structure_event"
+  toolId:           string   // "bos_detection" | "choch_detection"
+  parentToolDomain: string   // "market_structure"
+  parentEngineId:   string   // must equal structureLineage.toolId
+}
+
+// ---------------------------------------------------------------------------
+// Market bias (experimental geometric engine)
+// ---------------------------------------------------------------------------
+
+export interface MarketBias {
+  engine:        string
+  bias:          'BULLISH' | 'BEARISH' | 'SIDEWAY'
+  condition:     string   // "CONTINUATION" | "REVERSAL" | "CONSOLIDATION" | "VOLATILE" | "INSUFFICIENT_DATA"
+  reason:        string
+  pivotsUsed:    number[]
+  currentClose:  number
+  boundaries:    { support: number | null; resistance: number | null }
+}
+
+// ---------------------------------------------------------------------------
+// Experimental pivot-triplet BoS event (Scenario 1: bullish only)
+// ---------------------------------------------------------------------------
+
+export interface ExperimentalBosEvent {
+  direction:             'bullish'
+  p1BarIndex:            number
+  p1Price:               number
+  p1Timestamp:           string
+  p2BarIndex:            number
+  p2Price:               number
+  p2Timestamp:           string
+  p3BarIndex:            number
+  p3Price:               number
+  p3Timestamp:           string
+  breakCandleIndex:      number
+  breakCandleTimestamp:  string
+  brokenLevel:           number
+}
+
+// ---------------------------------------------------------------------------
 // Aggregate result returned by the market-structure API call
 // ---------------------------------------------------------------------------
 
 export interface StructureResult {
-  minorPoints:  StructurePoint[]
-  minorLegs:    StructureLeg[]
-  mainPoints:   StructurePoint[]
-  mainLegs:     StructureLeg[]
-  debugEvents:  StructureDebugEvent[]
-  bosEvents:    BosEvent[]
-  chochEvents:  ChochEvent[]
+  minorPoints:           StructurePoint[]
+  minorLegs:             StructureLeg[]
+  mainPoints:            StructurePoint[]
+  mainLegs:              StructureLeg[]
+  debugEvents:           StructureDebugEvent[]
+  bosEvents:             BosEvent[]
+  chochEvents:           ChochEvent[]
+  experimentalBosEvents: ExperimentalBosEvent[]
+  marketBias?:           MarketBias
+  structureLineage?:     ToolLineage
+  bosLineage?:           DerivedToolLineage
+  chochLineage?:         DerivedToolLineage
 }
 
 export interface StructureDisplay {

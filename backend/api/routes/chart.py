@@ -126,10 +126,4 @@ def post_market_structure(
     Returns StructureResult with minor/main points, legs, and debug events
     for visual verification on the chart.  No trading signals are generated.
     """
-    if len(request.candles) < 2:
-        return MarketStructureResponse(
-            minor_points=[], minor_legs=[],
-            main_points=[], main_legs=[],
-            debug_events=[],
-        )
     return compute_market_structure_from_candles(request)

@@ -99,21 +99,22 @@ _DOWNTREND_POINTS = [
     _sp(6,  80,  PointKind.LL),
 ]
 
-# Safe candles at structure-point bars plus one filler bar in each gap.
-# Prices kept inside (96–109) for uptrend, (81–99) for downtrend to avoid
-# accidental CHoCH triggers.
+# Safe candles: must not trigger CHoCH (lows ≥ HL=95 in bull, highs ≤ LH=100 in bear)
+# and must not trigger BoS (highs ≤ H.price=100 in bull, lows ≥ L.price=90 in bear).
+# Bar 6 = SP(HH)/SP(LL): HH/LL candles now fall through to BoS scan, so their
+# candle OHLC must also be within the safe range.
 _UPTREND_SAFE_CANDLES = [
     _flat(0, 90), _flat(1, 93),
     _flat(2, 100), _flat(3, 97),
-    _flat(4, 95), _flat(5, 102),
-    _flat(6, 110), _flat(7, 107),
+    _flat(4, 95), _flat(5, 97),    # 97 ≤ H.price(100): BoS-safe; 97 ≥ HL(95): CHoCH-safe
+    _flat(6, 97), _flat(7, 97),    # bar 6 = SP(HH); candle high=97 ≤ 100 → no BoS trigger
 ]
 
 _DOWNTREND_SAFE_CANDLES = [
     _flat(0, 110), _flat(1, 105),
     _flat(2, 90), _flat(3, 95),
-    _flat(4, 100), _flat(5, 88),
-    _flat(6, 80), _flat(7, 83),
+    _flat(4, 100), _flat(5, 92),   # 92 ≥ L.price(90): BoS-safe; 92 ≤ LH(100): CHoCH-safe
+    _flat(6, 92), _flat(7, 92),    # bar 6 = SP(LL); candle low=92 ≥ 90 → no BoS trigger
 ]
 
 
@@ -465,21 +466,20 @@ class TestCHoCHScopeIsolation:
 class TestCHoCHCoexistsWithBoSInvalidation:
     """
     Scenario:
-      Uptrend: L(0,90), H(2,100), HL(4,95), HH(6,110)
-      Bar 8: high=115, close=109 → BoS PENDING (breaks HH=110, close < 110).
-      Bar 10: low=93 → both BoS INVALID and CHoCH BULLISH fire.
-
-    The two detectors are independent.  Run both and verify each
-    produces the correct event at bar 10.
+      Uptrend: L(0,90), H(2,100), HL(4,95), HH(6,110), then L(10,93) as CHoCH.
+      Bar 8: high=105, close=99 → BoS PENDING (breaks H=100, close ≤ 100).
+      Bar 10: candle low=93 < HL=95 → CHoCH BULLISH fires.
+              SP(L) at bar 10                → BoS INVALID fires.
+      Both detectors are independent; both events are at bar 10.
     """
 
-    _POINTS = _UPTREND_POINTS
+    _POINTS = _UPTREND_POINTS + [_sp(10, 93, PointKind.L)]
 
     def _candles(self):
         return _UPTREND_SAFE_CANDLES + [
-            _candle(8,  high=115, low=109, close=109),   # BoS pending
-            _flat(9, 107),                                # neutral
-            _candle(10, high=100, low=93,  close=94),    # breaches HL=95
+            _candle(8,  high=105, low=99, close=99),  # BoS pending (break 100, conf=105)
+            _flat(9, 101),                             # below conf_level, no SP
+            _flat(10, 93),  # bar 10 = SP(L): CHoCH(low=93<95) + BoS INVALID
         ]
 
     def test_choch_fires_at_bar_10(self):
@@ -630,12 +630,14 @@ class TestCHoCHRegressionBoS:
         assert events[0].status == BoSStatus.VALID
 
     def test_bos_invalid_unaffected(self):
+        """Pending bull BoS invalidated by L structure point (CHoCH) at bar 10."""
+        points = list(_UPTREND_POINTS) + [_sp(10, 93, PointKind.L)]
         candles = _UPTREND_SAFE_CANDLES + [
-            _candle(8,  high=115, low=109, close=109),
-            _candle(9,  high=113, low=97,  close=110),
-            _candle(10, high=100, low=93,  close=94),
+            _candle(8,  high=105, low=99, close=99),   # pending: break 100, conf=105
+            _flat(9, 102),                              # below conf_level
+            _flat(10, 93),   # bar 10 = SP(L) → INVALID
         ]
-        events = detect_bos(_UPTREND_POINTS, candles, "minor")
+        events = detect_bos(points, candles, "minor")
         assert len(events) == 1
         assert events[0].status == BoSStatus.INVALID
 

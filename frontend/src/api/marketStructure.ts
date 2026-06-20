@@ -20,6 +20,10 @@ import type {
   BosDirection,
   ChochEvent,
   ChochDirection,
+  ExperimentalBosEvent,
+  MarketBias,
+  ToolLineage,
+  DerivedToolLineage,
 } from '../types/marketStructure'
 
 // ---------------------------------------------------------------------------
@@ -92,14 +96,61 @@ interface RawChochEvent {
   event_effect: string
 }
 
+interface RawToolLineage {
+  tool_domain:        string
+  tool_id:            string
+  version_id:         string
+  human_name:         string
+  lifecycle_status:   string
+  implementation_ref: string
+}
+
+interface RawDerivedToolLineage {
+  tool_domain:        string
+  tool_id:            string
+  parent_tool_domain: string
+  parent_engine_id:   string
+}
+
+interface RawMarketBias {
+  engine:        string
+  bias:          string
+  condition:     string
+  reason:        string
+  pivots_used:   number[]
+  current_close: number
+  boundaries:    { support: number | null; resistance: number | null }
+}
+
+interface RawExperimentalBosEvent {
+  direction:              string
+  p1_bar_index:           number
+  p1_price:               number
+  p1_timestamp:           string
+  p2_bar_index:           number
+  p2_price:               number
+  p2_timestamp:           string
+  p3_bar_index:           number
+  p3_price:               number
+  p3_timestamp:           string
+  break_candle_index:     number
+  break_candle_timestamp: string
+  broken_level:           number
+}
+
 interface RawMarketStructureResponse {
-  minor_points:  RawStructurePoint[]
-  minor_legs:    RawStructureLeg[]
-  main_points:   RawStructurePoint[]
-  main_legs:     RawStructureLeg[]
-  debug_events:  RawDebugEvent[]
-  bos_events:    RawBosEvent[]
-  choch_events:  RawChochEvent[]
+  minor_points:             RawStructurePoint[]
+  minor_legs:               RawStructureLeg[]
+  main_points:              RawStructurePoint[]
+  main_legs:                RawStructureLeg[]
+  debug_events:             RawDebugEvent[]
+  bos_events:               RawBosEvent[]
+  choch_events:             RawChochEvent[]
+  experimental_bos_events?: RawExperimentalBosEvent[]
+  market_bias?:             RawMarketBias
+  structure_lineage?:       RawToolLineage
+  bos_lineage?:             RawDerivedToolLineage
+  choch_lineage?:           RawDerivedToolLineage
 }
 
 // ---------------------------------------------------------------------------
@@ -182,15 +233,70 @@ function mapChochEvent(raw: RawChochEvent): ChochEvent {
   }
 }
 
+function mapExperimentalBosEvent(raw: RawExperimentalBosEvent): ExperimentalBosEvent {
+  return {
+    direction:            raw.direction as 'bullish',
+    p1BarIndex:           raw.p1_bar_index,
+    p1Price:              raw.p1_price,
+    p1Timestamp:          raw.p1_timestamp,
+    p2BarIndex:           raw.p2_bar_index,
+    p2Price:              raw.p2_price,
+    p2Timestamp:          raw.p2_timestamp,
+    p3BarIndex:           raw.p3_bar_index,
+    p3Price:              raw.p3_price,
+    p3Timestamp:          raw.p3_timestamp,
+    breakCandleIndex:     raw.break_candle_index,
+    breakCandleTimestamp: raw.break_candle_timestamp,
+    brokenLevel:          raw.broken_level,
+  }
+}
+
+function mapMarketBias(raw: RawMarketBias): MarketBias {
+  return {
+    engine:       raw.engine,
+    bias:         raw.bias as MarketBias['bias'],
+    condition:    raw.condition,
+    reason:       raw.reason,
+    pivotsUsed:   raw.pivots_used,
+    currentClose: raw.current_close,
+    boundaries:   raw.boundaries,
+  }
+}
+
+function mapToolLineage(raw: RawToolLineage): ToolLineage {
+  return {
+    toolDomain:        raw.tool_domain,
+    toolId:            raw.tool_id,
+    versionId:         raw.version_id,
+    humanName:         raw.human_name,
+    lifecycleStatus:   raw.lifecycle_status,
+    implementationRef: raw.implementation_ref,
+  }
+}
+
+function mapDerivedToolLineage(raw: RawDerivedToolLineage): DerivedToolLineage {
+  return {
+    toolDomain:       raw.tool_domain,
+    toolId:           raw.tool_id,
+    parentToolDomain: raw.parent_tool_domain,
+    parentEngineId:   raw.parent_engine_id,
+  }
+}
+
 function mapResponse(raw: RawMarketStructureResponse): StructureResult {
   return {
-    minorPoints:  raw.minor_points.map(mapPoint),
-    minorLegs:    raw.minor_legs.map(mapLeg),
-    mainPoints:   raw.main_points.map(mapPoint),
-    mainLegs:     raw.main_legs.map(mapLeg),
-    debugEvents:  raw.debug_events.map(mapDebugEvent),
-    bosEvents:    (raw.bos_events   ?? []).map(mapBosEvent),
-    chochEvents:  (raw.choch_events ?? []).map(mapChochEvent),
+    minorPoints:           raw.minor_points.map(mapPoint),
+    minorLegs:             raw.minor_legs.map(mapLeg),
+    mainPoints:            raw.main_points.map(mapPoint),
+    mainLegs:              raw.main_legs.map(mapLeg),
+    debugEvents:           raw.debug_events.map(mapDebugEvent),
+    bosEvents:             (raw.bos_events             ?? []).map(mapBosEvent),
+    chochEvents:           (raw.choch_events            ?? []).map(mapChochEvent),
+    experimentalBosEvents: (raw.experimental_bos_events ?? []).map(mapExperimentalBosEvent),
+    marketBias:            raw.market_bias ? mapMarketBias(raw.market_bias) : undefined,
+    structureLineage:      raw.structure_lineage ? mapToolLineage(raw.structure_lineage)           : undefined,
+    bosLineage:            raw.bos_lineage       ? mapDerivedToolLineage(raw.bos_lineage)          : undefined,
+    chochLineage:          raw.choch_lineage     ? mapDerivedToolLineage(raw.choch_lineage)        : undefined,
   }
 }
 

@@ -53,7 +53,7 @@ import type { IndicatorArtifactResponse, IndicatorSeriesPoint } from '../types/c
 import { ChartLegendOverlay } from './ChartLegendOverlay'
 import ChartDataInspector, { type InspectorCandle, type InspectorIndicatorValues } from './ChartDataInspector'
 import type { ChartSettings } from '../types/chartSettings'
-import type { StructureResult, StructureLeg, BosEvent, ChochEvent } from '../types/marketStructure'
+import type { StructureResult, StructureLeg, BosEvent, ChochEvent, ExperimentalBosEvent } from '../types/marketStructure'
 import { getTheme, buildLwChartColorOptions } from '../themes'
 import type { ThemePreset } from '../types/chartTheme'
 
@@ -795,6 +795,8 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
   // BoS and CHoCH event marker plugins (VIZ-1)
   const bosMarkerApiRef            = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const chochMarkerApiRef          = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
+  // Experimental pivot-triplet BoS marker plugin
+  const expBosMarkerApiRef         = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
 
   const [priceChartApi, setPriceChartApi] = useState<IChartApi | null>(null)
   // VIZ-1: hovered structure event for the inspection panel
@@ -841,11 +843,18 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
   const allIndicatorValsByTsRef = useRef<Map<string, Map<string, Map<number, number | null>>>>(new Map())
   // Combined inspector values for current crosshair position
   const [inspectorIndVals, setInspectorIndVals] = useState<InspectorIndicatorValues>(new Map())
+  const [crosshairCandleIndex, setCrosshairCandleIndex] = useState<number | null>(null)
 
   const candleTimestamps = useMemo(
     () => normalizeChartData(candles.map(c => ({ time: toUTCTimestamp(c.timestamp) }))).map(d => d.time),
     [candles]
   )
+
+  const candleTsToIndex = useMemo(() => {
+    const m = new Map<number, number>()
+    candleTimestamps.forEach((ts, i) => m.set(ts as number, i))
+    return m
+  }, [candleTimestamps])
 
   // Keep chartSettingsRef always current so overlay/artifact effects can read settings
   // without adding chartSettings to their dependency arrays (which would rebuild all series
@@ -1086,6 +1095,7 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
     const structureMarkerApi = createSeriesMarkers(candleSeries, [])
     const bosMarkerApi       = createSeriesMarkers(candleSeries, [])
     const chochMarkerApi     = createSeriesMarkers(candleSeries, [])
+    const expBosMarkerApi    = createSeriesMarkers(candleSeries, [])
 
     chartRef.current                  = chart
     candleSeriesRef.current           = candleSeries
@@ -1093,6 +1103,7 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
     structureMarkerApiRef.current     = structureMarkerApi
     bosMarkerApiRef.current           = bosMarkerApi
     chochMarkerApiRef.current         = chochMarkerApi
+    expBosMarkerApiRef.current        = expBosMarkerApi
     forecastSeriesRef.current         = forecastSeries
     setPriceChartApi(chart)
 
@@ -1109,11 +1120,13 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
       structureMarkerApiRef.current?.detach()
       bosMarkerApiRef.current?.detach()
       chochMarkerApiRef.current?.detach()
+      expBosMarkerApiRef.current?.detach()
       chart.remove()
       chartRef.current = null; candleSeriesRef.current = null
       markerApiRef.current = null; forecastSeriesRef.current = null
       structureMarkerApiRef.current = null
       bosMarkerApiRef.current = null; chochMarkerApiRef.current = null
+      expBosMarkerApiRef.current = null
       structureMinorSeriesRef.current = null; structureMainSeriesRef.current = null
       setPriceChartApi(null)
     }
@@ -1197,6 +1210,7 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
         setCrosshairValues(new Map())
         setInspectorCandle(null)
         setInspectorIndVals(new Map())
+        setCrosshairCandleIndex(null)
         return
       }
 
@@ -1230,6 +1244,8 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
           close: candle.close, volume: candle.volume,
           change, changePct,
         })
+        const barIdx = candleTsToIndex.get(ts)
+        setCrosshairCandleIndex(barIdx !== undefined ? barIdx : null)
       }
 
       // ── Inspector indicator values (all series, by pre-indexed ts) ──
@@ -1246,7 +1262,7 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
 
     chart.subscribeCrosshairMove(onCrosshair)
     return () => { chart.unsubscribeCrosshairMove(onCrosshair) }
-  }, [indicatorArtifacts, candleByTs])
+  }, [indicatorArtifacts, candleByTs, candleTsToIndex])
 
   // ── Update candlestick data ───────────────────────────────────────────────
   useEffect(() => {
@@ -1776,6 +1792,43 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
     priceChartApi,
   ])
 
+  // ── Experimental pivot-triplet BoS markers ───────────────────────────────
+  useEffect(() => {
+    const api = expBosMarkerApiRef.current
+    if (!api) return
+
+    if (
+      !structureResult ||
+      !chartSettings?.structure?.showExperimentalBos ||
+      candleTimestamps.length === 0
+    ) {
+      api.setMarkers([])
+      return
+    }
+
+    const markers: SeriesMarker<Time>[] = structureResult.experimentalBosEvents.flatMap(
+      (ev: ExperimentalBosEvent) => {
+        const ts = candleTimestamps[ev.breakCandleIndex]
+        if (ts === undefined) return []
+        return [{
+          time:     ts as Time,
+          position: 'aboveBar' as const,
+          color:    '#a78bfa',   // violet — visually distinct from production BoS
+          shape:    'arrowUp' as const,
+          text:     'xBoS',
+          size:     1,
+        }]
+      },
+    )
+
+    markers.sort((a, b) => (a.time as number) - (b.time as number))
+    api.setMarkers(markers)
+  }, [
+    structureResult, candleTimestamps,
+    chartSettings?.structure?.showExperimentalBos,
+    priceChartApi,
+  ])
+
   // ── VIZ-1: Crosshair-based event inspection ───────────────────────────────
   // Separate subscription so structure event logic doesn't re-bind the
   // main crosshair effect (which has different deps).
@@ -1852,6 +1905,7 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
           instanceColors={instanceColors}
           instanceVisible={instanceVisible}
           indicatorValues={inspectorCandle !== null ? inspectorIndVals : undefined}
+          candleNumber={crosshairCandleIndex ?? (candleTimestamps.length > 0 ? candleTimestamps.length - 1 : undefined)}
         />
       </div>
 
@@ -1879,7 +1933,7 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
       {/* Price chart + legend overlay */}
       <div style={styles.priceWrapper}>
         <div ref={priceContainerRef} style={styles.priceChart} />
-        {/* Structure debug metadata panel (MS-2) */}
+        {/* Structure debug metadata panel (MS-2 / RESEARCH-TOOL-LINEAGE-GUARD-1) */}
         {chartSettings?.structure?.showDebugMetadata && structureResult && (
           <div style={styles.structureDebugPanel} data-testid="structure-debug-panel">
             <div style={styles.structureDebugTitle}>Structure Debug</div>
@@ -1890,6 +1944,62 @@ const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({
               <span>main legs: {structureResult.mainLegs.length}</span>
               <span>events: {structureResult.debugEvents.length}</span>
             </div>
+            {/* Lineage block */}
+            {structureResult.structureLineage && (
+              <div style={styles.structureDebugBody} data-testid="lineage-block">
+                <span style={{ color: '#9aa4b8' }}>engine</span>
+                <span
+                  style={{ color: structureResult.structureLineage.lifecycleStatus === 'production' ? '#26a69a' : '#f59e0b' }}
+                  data-testid="lineage-engine-id"
+                >
+                  {structureResult.structureLineage.toolId}
+                </span>
+                <span style={{ color: '#9aa4b8' }}>status</span>
+                <span>{structureResult.structureLineage.lifecycleStatus}</span>
+                {structureResult.bosLineage && (
+                  <>
+                    <span style={{ color: '#9aa4b8' }}>bos parent</span>
+                    <span>{structureResult.bosLineage.parentEngineId}</span>
+                  </>
+                )}
+                {structureResult.chochLineage && (
+                  <>
+                    <span style={{ color: '#9aa4b8' }}>choch parent</span>
+                    <span>{structureResult.chochLineage.parentEngineId}</span>
+                  </>
+                )}
+              </div>
+            )}
+            {/* Lineage mismatch warning */}
+            {structureResult.structureLineage &&
+              chartSettings?.structure?.minorStructureEngine &&
+              chartSettings.structure.minorStructureEngine !== structureResult.structureLineage.toolId && (
+              <div
+                style={{ color: '#ef5350', fontWeight: 700, padding: '2px 0', fontSize: '10px' }}
+                data-testid="lineage-mismatch-warning"
+              >
+                ⚠ ENGINE MISMATCH: selected={chartSettings.structure.minorStructureEngine} response={structureResult.structureLineage.toolId}
+              </div>
+            )}
+            {/* Market bias block (MARKET-BIAS-INSPECTOR-1) */}
+            {structureResult.marketBias && (
+              <div style={styles.structureDebugBody} data-testid="market-bias-block">
+                <span style={{ color: '#9aa4b8' }}>bias</span>
+                <span style={{
+                  color: structureResult.marketBias.bias === 'BULLISH' ? '#26a69a'
+                       : structureResult.marketBias.bias === 'BEARISH' ? '#ef5350'
+                       : '#9aa4b8', // SIDEWAY
+                }}>
+                  {structureResult.marketBias.bias}
+                </span>
+                <span style={{ color: '#9aa4b8' }}>condition</span>
+                <span>{structureResult.marketBias.condition}</span>
+                <span style={{ color: '#9aa4b8' }}>reason</span>
+                <span>{structureResult.marketBias.reason}</span>
+                <span style={{ color: '#9aa4b8' }}>pivots</span>
+                <span>{structureResult.marketBias.pivotsUsed.map(p => p.toFixed(2)).join(', ') || '—'}</span>
+              </div>
+            )}
             <div style={styles.structureDebugEvents}>
               {structureResult.debugEvents.slice(-8).map((e, i) => (
                 <div key={i} style={styles.structureDebugEvent}>

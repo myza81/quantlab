@@ -237,12 +237,83 @@ class ChochEventResponse(BaseModel):
     event_effect:                  str = "transition"
 
 
+class ToolLineageResponse(BaseModel):
+    """
+    Lineage metadata for a versioned research tool execution.
+
+    Included in every POST /chart/market-structure response so callers can
+    verify exactly which engine produced the output and never silently receive
+    a different version than requested.
+    """
+    tool_domain:        str   # "market_structure" | "structure_event" | "indicator"
+    tool_id:            str   # version-specific id, e.g. "minor_structure_v3"
+    version_id:         str   # same as tool_id for engine-versioned tools
+    human_name:         str   # "Container Breakout Minor Structure"
+    lifecycle_status:   str   # "production" | "experimental" | "retired"
+    implementation_ref: str   # "backend/tools/market_structure_v3.py::MinorStructureV3Engine"
+
+
+class DerivedToolLineageResponse(BaseModel):
+    """
+    Lineage for a tool whose input is another tool's output (e.g. BoS, CHoCH).
+
+    parent_engine_id and parent_tool_domain form a traceable link back to the
+    exact structure engine that fed this derived tool.  Any mismatch between
+    parent_engine_id and the structure_lineage.tool_id in the same response is
+    a data-lineage error.
+    """
+    tool_domain:        str   # "structure_event"
+    tool_id:            str   # "bos_detection" | "choch_detection"
+    parent_tool_domain: str   # "market_structure"
+    parent_engine_id:   str   # e.g. "minor_structure_v3" — must match structure_lineage.tool_id
+
+
+class ExperimentalBosEventResponse(BaseModel):
+    """One experimental bullish BoS event from the pivot-triplet detector."""
+    direction:              str    # "bullish"
+    p1_bar_index:           int
+    p1_price:               float
+    p1_timestamp:           str
+    p2_bar_index:           int
+    p2_price:               float
+    p2_timestamp:           str
+    p3_bar_index:           int
+    p3_price:               float
+    p3_timestamp:           str
+    break_candle_index:     int
+    break_candle_timestamp: str
+    broken_level:           float
+
+
+class MarketBiasResponse(BaseModel):
+    """
+    Market bias output from the experimental local bias engine.
+
+    The engine field identifies the exact version that produced this result,
+    preserving future versioning capability without API redesign.
+    bias is always "BULLISH", "BEARISH", or "SIDEWAY".
+    condition is the market state within that bias.
+    """
+    engine:        str                        # "market_bias_local_v1"
+    bias:          str                        # "BULLISH" | "BEARISH" | "SIDEWAY"
+    condition:     str                        # "CONTINUATION" | "REVERSAL" | "CONSOLIDATION" | "VOLATILE" | "INSUFFICIENT_DATA"
+    reason:        str                        # machine-readable reason slug
+    pivots_used:   list[float]               # [P4, P3, P2, P1, P0] or []
+    current_close: float                     # informational/debug only
+    boundaries:    dict[str, Optional[float]] # {"support": ..., "resistance": ...}
+
+
 class MarketStructureResponse(BaseModel):
     """Full market structure result returned by POST /chart/market-structure."""
-    minor_points:  list[StructurePointResponse]
-    minor_legs:    list[StructureLegResponse]
-    main_points:   list[StructurePointResponse]
-    main_legs:     list[StructureLegResponse]
-    debug_events:  list[StructureDebugEventResponse]
-    bos_events:    list[BosEventResponse]   = []
-    choch_events:  list[ChochEventResponse] = []
+    minor_points:            list[StructurePointResponse]
+    minor_legs:              list[StructureLegResponse]
+    main_points:             list[StructurePointResponse]
+    main_legs:               list[StructureLegResponse]
+    debug_events:            list[StructureDebugEventResponse]
+    bos_events:              list[BosEventResponse]                = []
+    choch_events:            list[ChochEventResponse]              = []
+    experimental_bos_events: list[ExperimentalBosEventResponse]   = []
+    market_bias:             Optional[MarketBiasResponse]          = None
+    structure_lineage:       Optional[ToolLineageResponse]         = None
+    bos_lineage:             Optional[DerivedToolLineageResponse]  = None
+    choch_lineage:           Optional[DerivedToolLineageResponse]  = None

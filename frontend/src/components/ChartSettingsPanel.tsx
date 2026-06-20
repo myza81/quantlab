@@ -131,6 +131,13 @@ export default function ChartSettingsPanel({ settings, onChange, onClose }: Char
       {/* ── Experimental ── */}
       <div style={{ ...s.section, borderTop: `1px solid ${tc.toolbarBorder}` }}>
         <div data-testid="settings-section-experimental" style={{ ...s.sectionHeader, color: tc.panelMuted }}>Experimental</div>
+        <ToggleRow
+          label="Pivot BoS (Exp)"
+          testId="settings-toggle-experimental-bos"
+          checked={settings.structure.showExperimentalBos}
+          onChange={v => patchStructure('showExperimentalBos', v)}
+          labelColor={tc.panelMuted}
+        />
         <div style={{ padding: '2px 10px 4px', fontSize: 10, fontFamily: 'monospace', color: tc.panelMuted }}>Minor Structure Engine</div>
         <RadioRow
           label="Classic (V1)"

@@ -197,6 +197,8 @@ def test_valid_candles_return_200(client: TestClient) -> None:
 _EXPECTED_RESPONSE_KEYS = {
     "minor_points", "minor_legs", "main_points", "main_legs", "debug_events",
     "bos_events", "choch_events",
+    "experimental_bos_events", "market_bias",
+    "structure_lineage", "bos_lineage", "choch_lineage",
 }
 
 
@@ -446,3 +448,111 @@ def test_empty_candles_returns_empty_event_lists(client: TestClient) -> None:
     data = resp.json()
     assert data["bos_events"]   == []
     assert data["choch_events"] == []
+
+
+# ---------------------------------------------------------------------------
+# Engine selection and market_bias lineage (MARKET-BIAS-HARDENING-1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("engine_id", ["minor_structure_v2", "minor_structure_v3"])
+class TestAlternateEngineLineage:
+    """
+    Route-level regression guard for non-default minor structure engines.
+
+    Verifies the end-to-end lineage path for each selectable engine:
+
+        engine_id in request
+        → build_minor_structure_engine()
+        → engine.compute_structure() → result.main_points
+        → compute_market_bias(result.main_points)
+        → response.market_bias
+
+    These tests do NOT assert specific bias outcomes (BULLISH/BEARISH/SIDEWAY).
+    Bias-rule correctness is covered by test_market_bias_geometric_v1.py.
+    The sole purpose here is to verify that the integration path and lineage
+    metadata remain intact when a non-default engine is selected.
+
+    Optional divergence test (V1 vs V3 producing different market_bias) is
+    omitted: all existing fixtures use clean up/down segments with no inside
+    bars, so every engine produces identical minor/main points on them.
+    """
+
+    def test_request_succeeds(self, client: TestClient, engine_id: str) -> None:
+        resp = client.post("/chart/market-structure", json={
+            "candles":   _two_cycle_candles(),
+            "engine_id": engine_id,
+        })
+        assert resp.status_code == 200
+
+    def test_structure_lineage_tool_id_matches_selected_engine(
+        self, client: TestClient, engine_id: str
+    ) -> None:
+        resp = client.post("/chart/market-structure", json={
+            "candles":   _two_cycle_candles(),
+            "engine_id": engine_id,
+        })
+        data = resp.json()
+        assert data["structure_lineage"]["tool_id"] == engine_id
+
+    def test_market_bias_key_present_in_response(
+        self, client: TestClient, engine_id: str
+    ) -> None:
+        resp = client.post("/chart/market-structure", json={
+            "candles":   _two_cycle_candles(),
+            "engine_id": engine_id,
+        })
+        assert "market_bias" in resp.json()
+
+    def test_market_bias_is_not_null(self, client: TestClient, engine_id: str) -> None:
+        resp = client.post("/chart/market-structure", json={
+            "candles":   _two_cycle_candles(),
+            "engine_id": engine_id,
+        })
+        assert resp.json()["market_bias"] is not None
+
+    def test_market_bias_engine_is_market_bias_local_v1(
+        self, client: TestClient, engine_id: str
+    ) -> None:
+        resp = client.post("/chart/market-structure", json={
+            "candles":   _two_cycle_candles(),
+            "engine_id": engine_id,
+        })
+        assert resp.json()["market_bias"]["engine"] == "market_bias_local_v1"
+
+    def test_market_bias_response_schema(self, client: TestClient, engine_id: str) -> None:
+        """market_bias carries all required fields including the new condition field."""
+        resp = client.post("/chart/market-structure", json={
+            "candles":   _two_cycle_candles(),
+            "engine_id": engine_id,
+        })
+        mb = resp.json()["market_bias"]
+        assert "engine"        in mb
+        assert "bias"          in mb
+        assert "condition"     in mb   # replaces base_state
+        assert "reason"        in mb
+        assert "pivots_used"   in mb
+        assert "current_close" in mb
+        assert "boundaries"    in mb
+        assert mb["bias"] in ("BULLISH", "BEARISH", "SIDEWAY")
+        assert "support"    in mb["boundaries"]
+        assert "resistance" in mb["boundaries"]
+
+    def test_bos_lineage_parent_matches_selected_engine(
+        self, client: TestClient, engine_id: str
+    ) -> None:
+        resp = client.post("/chart/market-structure", json={
+            "candles":   _two_cycle_candles(),
+            "engine_id": engine_id,
+        })
+        data = resp.json()
+        assert data["bos_lineage"]["parent_engine_id"] == engine_id
+
+    def test_choch_lineage_parent_matches_selected_engine(
+        self, client: TestClient, engine_id: str
+    ) -> None:
+        resp = client.post("/chart/market-structure", json={
+            "candles":   _two_cycle_candles(),
+            "engine_id": engine_id,
+        })
+        data = resp.json()
+        assert data["choch_lineage"]["parent_engine_id"] == engine_id

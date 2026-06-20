@@ -16,7 +16,9 @@ Agents must not behave like autonomous code generators making uncontrolled archi
 
 # 1. Mandatory Context Loading Order
 
-Before starting any implementation work, read the following files in this exact order:
+Before starting any implementation work, follow this sequence in full.
+
+## Step 1 — Constitutional Files (always, in this order)
 
 ```
 1. agent/HANDOFF.md
@@ -26,11 +28,31 @@ Before starting any implementation work, read the following files in this exact 
 5. agent/REPOSITORY_STATE.md
 ```
 
-Only after understanding the current project state may implementation proceed.
+## Step 2 — Architecture Discovery
 
-If module-specific documentation exists, retrieve only the documentation relevant to the active task.
+```
+6. docs/ARCHITECTURE_INDEX.md
+```
 
-Do not load unnecessary documents into context.
+Read the index. Identify every domain the current task touches using the domain taxonomy in Section 3 of the index. Load all ACTIVE_ARCHITECTURE documents for those domains.
+
+When uncertain whether a domain is affected, load its architecture. One missed document is how architectural drift begins.
+
+Do not load the full document set. Load only what is relevant to the current task scope.
+
+## Step 3 — State Architectural Constraints
+
+Before writing any code, explicitly state:
+
+- what the loaded architecture requires
+- what it forbids
+- what is unspecified and therefore requires escalation before proceeding
+
+## Step 4 — Implement
+
+Only after completing Steps 1–3 may implementation proceed.
+
+After implementation, confirm whether any architecture documents need updating. If the work changed a contract, interface, or lifecycle behavior, update the relevant document before closing the session.
 
 ---
 

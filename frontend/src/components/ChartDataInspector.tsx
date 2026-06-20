@@ -57,6 +57,8 @@ interface ChartDataInspectorProps {
   instanceColors?:     Map<string, string>
   instanceVisible?:    Map<string, boolean>
   indicatorValues?:    InspectorIndicatorValues
+  /** 1-based candle index for the current crosshair position */
+  candleNumber?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +81,7 @@ export function fmtVolume(v: number): string {
 // ---------------------------------------------------------------------------
 
 export default function ChartDataInspector({
-  symbol, timeframe, exchange, candle, theme,
+  symbol, timeframe, exchange, candle, theme, candleNumber,
 }: ChartDataInspectorProps) {
   const tc = theme?.colors
 
@@ -128,6 +130,11 @@ export default function ChartDataInspector({
         {changeStr !== undefined && (
           <span data-testid="inspector-change" style={{ ...s.changeVal, color: movementColor }}>
             {changeStr}
+          </span>
+        )}
+        {candleNumber !== undefined && (
+          <span data-testid="inspector-candle-number" style={s.candleNumber}>
+            #{candleNumber}
           </span>
         )}
       </div>
@@ -181,5 +188,12 @@ const s: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     marginLeft: 6,
     flexShrink: 0,
+  },
+  candleNumber: {
+    fontSize:   11,
+    fontFamily: 'monospace',
+    marginLeft: 8,
+    flexShrink: 0,
+    color:      '#4a5070',
   },
 }

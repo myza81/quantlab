@@ -33,8 +33,11 @@ Before starting ANY work, ALWAYS read in this order:
 2. `agent/HANDOFF.md`
 3. `agent/TASKS.md`
 4. `agent/REPOSITORY_STATE.md`
+5. `docs/ARCHITECTURE_INDEX.md` — identify domains the task touches, load relevant ACTIVE_ARCHITECTURE documents
 
 Do not begin implementation without completing this step.
+
+The full architecture discovery workflow is defined in `agent/WORKFLOW_AGENT.md` Section 1.
 
 ---
 
